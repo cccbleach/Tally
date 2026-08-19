@@ -14,9 +14,9 @@ struct RegisterView: View {
 
             TextField("昵称（可选）", text: $displayName)
                 .textFieldStyle(.roundedBorder)
-            TextField("邮箱", text: $email)
-                .textContentType(.emailAddress)
-                .keyboardType(.emailAddress)
+            TextField("手机号 / 邮箱", text: $email)
+                .textContentType(.username)
+                .keyboardType(.default)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)

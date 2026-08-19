@@ -22,14 +22,26 @@ function enforceLimiter(limiter: AuthLimiter, req: FastifyRequest) {
   if (!allowed) throw tooManyRequests("RATE_LIMITED", "请求过于频繁，请稍后再试");
 }
 
+// 账号：邮箱 或 手机号（中国大陆常见格式，可带 +/空格）
+const accountValidator = z
+  .string()
+  .trim()
+  .min(3, "请输入邮箱或手机号")
+  .refine(
+    (v) =>
+      /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ||
+      /^\+?[0-9]{6,20}$/.test(v.replace(/\s+/g, "")), // 手机号允许内部空格，归一化由 service 处理
+    { message: "请输入有效的邮箱或手机号" },
+  );
+
 const registerSchema = z.object({
-  email: z.string().email("邮箱格式不正确"),
+  email: accountValidator,
   password: z.string().min(8, "密码至少 8 位").max(128, "密码过长"),
   displayName: z.string().max(40, "昵称过长").optional(),
 });
 
 const loginSchema = z.object({
-  email: z.string().email("邮箱格式不正确"),
+  email: accountValidator,
   password: z.string().min(1, "密码不能为空"),
 });
 

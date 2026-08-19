@@ -18,7 +18,7 @@
 | iOS | SwiftUI + Swift 5（语言模式），iOS 17+，MVVM（`@Observable` + async/await），Swift Charts |
 | 后端 | Node.js 24 + TypeScript + Fastify |
 | 数据库 | SQLite（单文件）+ Drizzle ORM |
-| 认证 | 邮箱密码 + JWT（`jose`），密码用 `crypto.scrypt` 加盐哈希 |
+| 认证 | 账号（邮箱或手机号）+ 密码 + JWT（`jose`），密码用 `crypto.scrypt` 加盐哈希 |
 | 校验 | zod |
 | 工程 | XcodeGen 声明式生成 `.xcodeproj` |
 
@@ -78,7 +78,7 @@ cd ios && xcodegen generate
 ```bash
 cd backend
 pnpm typecheck
-pnpm test        # 40 个测试，覆盖认证/账户/分类/流水/统计/预算/周期账单（含幂等、契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、迁移校验、乐观锁、安全/令牌刷新/密码重置等回归）
+pnpm test        # 41 个测试，覆盖认证/账户/分类/流水/统计/预算/周期账单（含幂等、契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、迁移校验、乐观锁、安全/令牌刷新/密码重置/手机号注册等回归）
 ```
 
 ## 部署

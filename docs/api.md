@@ -19,8 +19,8 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | /auth/register | 注册，入参 `{email, password(≥8), displayName?}`，成功自动播种默认分类，返回 `{user, token, refreshToken}` |
-| POST | /auth/login | 登录，入参 `{email, password}`，返回 `{user, token, refreshToken}` |
+| POST | /auth/register | 注册，入参 `{account, password(≥8), displayName?}`，账号可为邮箱或手机号；成功自动播种默认分类，返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
+| POST | /auth/login | 登录，入参 `{account, password}`，账号可为邮箱或手机号；返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
 | POST | /auth/refresh | 刷新，入参 `{refreshToken}`，返回 `{token, refreshToken}` |
 | GET | /auth/me | 当前用户，返回 `{user}` |
 

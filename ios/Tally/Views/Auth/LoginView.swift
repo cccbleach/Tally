@@ -19,9 +19,9 @@ struct LoginView: View {
                 Text("简单记账，清楚生活").font(.subheadline).foregroundColor(.secondary)
                 Spacer()
 
-                TextField("邮箱", text: $email)
-                    .textContentType(.emailAddress)
-                    .keyboardType(.emailAddress)
+                TextField("手机号 / 邮箱", text: $email)
+                    .textContentType(.username)
+                    .keyboardType(.default)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textFieldStyle(.roundedBorder)

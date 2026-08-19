@@ -586,3 +586,19 @@ test("健康检查校验数据库可达", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().status, "ok");
 });
+
+test("支持手机号注册与登录", async () => {
+  const register = await req("POST", "/api/v1/auth/register", {
+    email: "13800138000",
+    password: "phone12345",
+  });
+  assert.equal(register.statusCode, 200, register.body);
+  assert.ok(register.json().token);
+
+  // 手机号登录（带空格也应归一化成功）
+  const login = await req("POST", "/api/v1/auth/login", {
+    email: "138 0013 8000",
+    password: "phone12345",
+  });
+  assert.equal(login.statusCode, 200, login.body);
+});
