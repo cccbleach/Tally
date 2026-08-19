@@ -1,0 +1,118 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { and, asc, eq } from "drizzle-orm";
+import type { AppDb } from "../db/client.js";
+import { categories } from "../db/schema.js";
+import { getUserId, makeAuth } from "../middleware/auth.js";
+import { badRequest, notFound } from "../lib/errors.js";
+import { getLedgerId } from "../lib/ledger.js";
+import type { Jwt } from "../auth/jwt.js";
+
+const createSchema = z.object({
+  name: z.string().min(1, "分类名不能为空").max(20, "分类名过长"),
+  type: z.enum(["income", "expense"]),
+  icon: z.string().max(100).optional(),
+  color: z.string().max(20).optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+const updateSchema = z.object({
+  name: z.string().min(1).max(20).optional(),
+  icon: z.string().max(100).nullable().optional(),
+  color: z.string().max(20).nullable().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+type CategoryRow = typeof categories.$inferSelect;
+
+function toDto(row: CategoryRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    icon: row.icon,
+    color: row.color,
+    sortOrder: row.sortOrder,
+  };
+}
+
+export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["db"]; jwt: Jwt }) {
+  const { db } = deps;
+  const auth = makeAuth(deps.jwt);
+
+  app.get("/api/v1/categories", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const ledgerId = getLedgerId(db, userId);
+    const rows = db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .orderBy(asc(categories.sortOrder), asc(categories.createdAt))
+      .all();
+    return { items: rows.map(toDto) };
+  });
+
+  app.post("/api/v1/categories", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const ledgerId = getLedgerId(db, userId);
+    const body = createSchema.parse(req.body);
+    const row = {
+      id: randomUUID(),
+      userId,
+      ledgerId,
+      name: body.name,
+      type: body.type,
+      icon: body.icon ?? null,
+      color: body.color ?? null,
+      sortOrder: body.sortOrder ?? 999,
+      createdAt: new Date().toISOString(),
+    };
+    db.insert(categories).values(row).run();
+    return { item: toDto(row) };
+  });
+
+  app.patch("/api/v1/categories/:id", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const ledgerId = getLedgerId(db, userId);
+    const { id } = req.params as { id: string };
+    const body = updateSchema.parse(req.body);
+    const existing = db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .get();
+    if (!existing) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
+    const patch: Partial<typeof categories.$inferInsert> = {};
+    if (body.name !== undefined) patch.name = body.name;
+    if (body.icon !== undefined) patch.icon = body.icon;
+    if (body.color !== undefined) patch.color = body.color;
+    if (body.sortOrder !== undefined) patch.sortOrder = body.sortOrder;
+    db.update(categories)
+      .set(patch)
+      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .run();
+    const updated = db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .get();
+    return { item: toDto(updated as CategoryRow) };
+  });
+
+  app.delete("/api/v1/categories/:id", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const ledgerId = getLedgerId(db, userId);
+    const { id } = req.params as { id: string };
+    const existing = db
+      .select()
+      .from(categories)
+      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .get();
+    if (!existing) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
+    db.delete(categories)
+      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .run();
+    return { ok: true };
+  });
+}

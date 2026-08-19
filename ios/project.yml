@@ -1,0 +1,37 @@
+name: Tally
+options:
+  bundleIdPrefix: com.tally
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  Tally:
+    type: application
+    platform: iOS
+    sources:
+      - Tally
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tally.app
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+    info:
+      path: Tally/Support/Info.plist
+      properties:
+        CFBundleDisplayName: Tally
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 生产用 HTTPS；开发期通过 NSAllowsLocalNetworking 放行本地/局域网 HTTP
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+          NSAllowsLocalNetworking: true
