@@ -14,6 +14,11 @@ import { randomUUID } from "node:crypto";
 import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
 import { setRate } from "../src/lib/currency.js";
 
+// 测试保持确定：强制走短信“开发模式”（本地生成/校验验证码），不依赖真实短信网络
+process.env.ALIYUN_SMS_ENABLED = "false";
+process.env.ALIYUN_ACCESS_KEY_ID = "";
+process.env.ALIYUN_ACCESS_KEY_SECRET = "";
+
 let app: FastifyInstance;
 let db: ReturnType<typeof createDb>["db"];
 let sqlite: ReturnType<typeof createDb>["sqlite"];
