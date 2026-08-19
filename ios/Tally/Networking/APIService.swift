@@ -221,10 +221,14 @@ struct APIService {
         let _: OKResponse = try await client.request("DELETE", "/api/v1/transactions/\(id)")
     }
 
-    // 账单导入（微信/支付宝导出的 txt/csv，后端解析并去重入库）
-    func importBill(source: String, content: String) async throws -> ImportResult {
-        struct Body: Encodable { let mode: String; let source: String; let content: String }
-        return try await client.request("POST", "/api/v1/transactions/import", body: Body(mode: "raw", source: source, content: content))
+    // 账单导入（微信/支付宝导出的文件原始字节，后端自动识别编码并解析）
+    func importBill(source: String, data: Data) async throws -> ImportResult {
+        struct Body: Encodable { let mode: String; let source: String; let contentBase64: String }
+        return try await client.request(
+            "POST",
+            "/api/v1/transactions/import",
+            body: Body(mode: "raw", source: source, contentBase64: data.base64EncodedString())
+        )
     }
 
     // 统计

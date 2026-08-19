@@ -70,7 +70,9 @@
 
 **账单导入（微信/支付宝等）**
 - 方式一（原始文件，推荐客户端上传）：
-  `{mode:"raw", source:"wechat"|"alipay", content:"<文件内容>"}` —— 后端按常见导出格式解析（微信 txt / 支付宝 csv）
+  `{mode:"raw", source:"wechat"|"alipay"|"bank", content:"<文本内容>" 或 contentBase64:"<文件base64>"}`
+  - 微信：支持 txt / xlsx（自动识别）；支付宝：csv；银行：pdf / csv（当前按招商银行等常见“日期 币种 金额 余额 摘要”格式）
+  - 后端自动识别 UTF-8 / GBK 编码
 - 方式二（客户端已解析）：
   `{mode:"items", items:[{date, amount, type, note?, externalId?}]}`
 - 返回 `{imported, skipped, total}`；按 `(user_id, external_id)` 唯一去重，重复导入自动跳过。

@@ -10,7 +10,14 @@ import { getLedgerId } from "../lib/ledger.js";
 import { loadRelationMaps, type RelationMaps } from "../services/transactionService.js";
 import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
-import { parseAlipay, parseWechat, type ParsedBill } from "../lib/billParser.js";
+import {
+  decodeBillBuffer,
+  parseAlipay,
+  parseBankPdf,
+  parseWechat,
+  parseWechatXlsx,
+  type ParsedBill,
+} from "../lib/billParser.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -39,14 +46,12 @@ const updateSchema = z.object({
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
-const billImportSchema = z.discriminatedUnion("mode", [
-  z.object({
-    mode: z.literal("raw"),
-    source: z.enum(["wechat", "alipay"]),
-    content: z.string().min(1, "账单内容不能为空"),
-  }),
-  z.object({
-    mode: z.literal("items"),
+const billImportSchema = z
+  .object({
+    mode: z.enum(["raw", "items"]),
+    source: z.enum(["wechat", "alipay", "bank"]).optional(),
+    content: z.string().optional(),
+    contentBase64: z.string().optional(),
     items: z
       .array(
         z.object({
@@ -57,10 +62,14 @@ const billImportSchema = z.discriminatedUnion("mode", [
           externalId: z.string().max(100).optional(),
         }),
       )
-      .min(1, "无账单条目")
-      .max(5000, "单次最多导入 5000 条"),
-  }),
-]);
+      .optional(),
+  })
+  .refine(
+    (v) =>
+      (v.mode === "raw" && (!!v.content || !!v.contentBase64)) ||
+      (v.mode === "items" && !!v.items && v.items.length > 0),
+    { message: "账单参数不完整" },
+  );
 
 type TransactionRow = typeof transactions.$inferSelect;
 
@@ -275,9 +284,19 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
     let items: ParsedBill[];
     if (body.mode === "raw") {
-      items = body.source === "wechat" ? parseWechat(body.content) : parseAlipay(body.content);
+      const buf = body.contentBase64 ? Buffer.from(body.contentBase64, "base64") : null;
+      const content = buf ? decodeBillBuffer(buf) : (body.content ?? "");
+      if (body.source === "bank") {
+        if (!buf) throw badRequest("BANK_NEED_FILE", "银行账单请上传 PDF 文件");
+        items = await parseBankPdf(buf);
+      } else if (body.source === "wechat") {
+        // 微信导出可能是 txt 或 xlsx；xlsx 文件头为 PK（zip）
+        items = buf && buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? parseWechatXlsx(buf) : parseWechat(content);
+      } else {
+        items = parseAlipay(content);
+      }
     } else {
-      items = body.items.map((i) => ({
+      items = (body.items ?? []).map((i) => ({
         date: i.date,
         amount: i.amount,
         type: i.type,
@@ -307,7 +326,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
         type: it.type,
         amount: it.amount,
-        currency: "CNY",
+        currency: it.currency ?? "CNY",
         note: it.note,
         date: it.date,
         transferToAccountId: null,
