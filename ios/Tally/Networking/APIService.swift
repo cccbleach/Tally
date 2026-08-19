@@ -222,12 +222,12 @@ struct APIService {
     }
 
     // 账单导入（微信/支付宝导出的文件原始字节，后端自动识别编码并解析）
-    func importBill(source: String, data: Data) async throws -> ImportResult {
-        struct Body: Encodable { let mode: String; let source: String; let contentBase64: String }
+    func importBill(source: String, data: Data, force: Bool = false) async throws -> ImportResult {
+        struct Body: Encodable { let mode: String; let source: String; let contentBase64: String; let force: Bool }
         return try await client.request(
             "POST",
             "/api/v1/transactions/import",
-            body: Body(mode: "raw", source: source, contentBase64: data.base64EncodedString())
+            body: Body(mode: "raw", source: source, contentBase64: data.base64EncodedString(), force: force)
         )
     }
 
@@ -277,5 +277,68 @@ struct APIService {
 
     func deleteRecurring(id: String) async throws {
         let _: OKResponse = try await client.request("DELETE", "/api/v1/recurring/\(id)")
+    }
+
+    // 家庭 / 账本
+    func families() async throws -> [Family] {
+        let res: ListResponse<Family> = try await client.request("GET", "/api/v1/families")
+        return res.items
+    }
+
+    func createFamily(name: String) async throws -> FamilyCreateItem {
+        struct Body: Encodable { let name: String }
+        let res: FamilyCreateResponse = try await client.request("POST", "/api/v1/families", body: Body(name: name))
+        return res.item
+    }
+
+    func addFamilyMember(familyId: String, account: String) async throws {
+        struct Body: Encodable { let account: String }
+        let _: OKResponse = try await client.request("POST", "/api/v1/families/\(familyId)/members", body: Body(account: account))
+    }
+
+    func ledgers() async throws -> [LedgerInfo] {
+        let res: ListResponse<LedgerInfo> = try await client.request("GET", "/api/v1/ledgers")
+        return res.items
+    }
+
+    func switchLedger(id: String) async throws {
+        struct Body: Encodable { let ledgerId: String }
+        let _: OKResponse = try await client.request("POST", "/api/v1/ledgers/switch", body: Body(ledgerId: id))
+    }
+
+    // 负债
+    func liabilities() async throws -> LiabilitySummary {
+        try await client.request("GET", "/api/v1/liabilities")
+    }
+
+    func loans() async throws -> [LoanItem] {
+        let res: ListResponse<LoanItem> = try await client.request("GET", "/api/v1/loans")
+        return res.items
+    }
+
+    // 信用卡账单
+    func creditCardBills() async throws -> [CreditCardBillItem] {
+        struct Res: Decodable { let items: [CreditCardBillItem] }
+        let res: Res = try await client.request("GET", "/api/v1/credit-card-bills")
+        return res.items
+    }
+
+    func createCreditCardBill(accountId: String, period: String, statementBalance: Int, minimumPayment: Int?, dueDate: String?) async throws {
+        struct Body: Encodable {
+            let period: String
+            let statementBalance: Int
+            let minimumPayment: Int?
+            let dueDate: String?
+        }
+        let _: ItemResponse<CreditCardBillItem> = try await client.request(
+            "POST",
+            "/api/v1/credit-cards/\(accountId)/bills",
+            body: Body(period: period, statementBalance: statementBalance, minimumPayment: minimumPayment, dueDate: dueDate)
+        )
+    }
+
+    func markCreditCardBillPaid(id: String, paid: Bool) async throws {
+        struct Body: Encodable { let paid: Bool }
+        let _: OKResponse = try await client.request("PATCH", "/api/v1/credit-card-bills/\(id)", body: Body(paid: paid))
     }
 }

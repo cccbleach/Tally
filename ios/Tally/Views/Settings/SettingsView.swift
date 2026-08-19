@@ -74,7 +74,11 @@ struct BillImportView: View {
 
     private func importFile(_ url: URL) async {
         importing = true
-        defer { importing = false }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+            importing = false
+        }
         do {
             let data = try Data(contentsOf: url)
             lastData = data

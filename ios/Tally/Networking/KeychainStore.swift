@@ -5,7 +5,7 @@ import Security
 // 即使 Keychain 写入失败（模拟器/真机权限等原因），登录态仍可正常使用；
 // 重启后如 Keychain 可用则从其中恢复。
 enum KeychainStore {
-    private static let service = "com.tally.app"
+    private static let service = "com.tally.logan"
     private static let tokenAccount = "authToken"
     private static let refreshAccount = "refreshToken"
 

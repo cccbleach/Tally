@@ -203,6 +203,12 @@ struct ImportResult: Codable {
     let imported: Int
     let skipped: Int
     let total: Int
+    let suspectedDuplicates: [SuspectedDuplicate]?
+}
+
+struct SuspectedDuplicate: Codable, Hashable {
+    let dedupKey: String
+    let existingId: String
 }
 
 struct APIErrorResponse: Codable {
@@ -212,4 +218,72 @@ struct APIErrorResponse: Codable {
 struct APIErrorBody: Codable {
     let code: String
     let message: String
+}
+
+// MARK: - 家庭 / 账本 / 负债
+
+struct Family: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let ownerUserId: String
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct FamilyCreateResponse: Codable {
+    let item: FamilyCreateItem
+}
+
+struct FamilyCreateItem: Codable {
+    let id: String
+    let name: String
+    let ownerUserId: String
+    let createdAt: String
+    let updatedAt: String
+    let ledgerId: String?
+}
+
+struct LedgerInfo: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let currency: String
+    let isDefault: Bool
+    let familyId: String?
+    let isCurrent: Bool
+}
+
+struct LiabilitySummary: Codable {
+    let totalDebt: Int
+    let creditCards: [CreditCardLiability]
+    let loans: [LoanItem]
+    let creditCardBills: [CreditCardBillItem]
+}
+
+struct CreditCardLiability: Codable, Identifiable, Hashable {
+    let accountId: String
+    let name: String
+    let debt: Int
+    let creditLimit: Int?
+    let billingDay: Int?
+    let repaymentDay: Int?
+    var id: String { accountId }
+}
+
+struct LoanItem: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let type: String
+    let remainingPrincipal: Int
+    let monthlyPayment: Int
+    let nextPaymentDate: String?
+}
+
+struct CreditCardBillItem: Codable, Identifiable, Hashable {
+    let accountId: String
+    let period: String
+    let statementBalance: Int
+    let minimumPayment: Int
+    let dueDate: String?
+    let paid: Bool
+    var id: String { accountId + "|" + period }
 }
