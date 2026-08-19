@@ -17,7 +17,8 @@ function enabled(): boolean {
   );
 }
 
-export async function sendVerifyCode(phone: string, code: string): Promise<SmsResult> {
+// 短信认证服务由服务端生成验证码；我们通过 returnVerifyCode 取回并在本地校验。
+export async function sendVerifyCode(phone: string): Promise<SmsResult> {
   if (!enabled()) return { sent: false };
 
   // 统一凭据来源到阿里云默认环境变量
@@ -38,26 +39,25 @@ export async function sendVerifyCode(phone: string, code: string): Promise<SmsRe
     config.endpoint = "dypnsapi.aliyuncs.com";
     const client = new Dypnsapi(config);
 
+    // 按阿里云规范：TemplateParam 为 JSON 字符串，code 用 ##code## 占位（由服务端生成），min 为有效分钟数
     const req = new SendSmsVerifyCodeRequest({
       countryCode: process.env.ALIYUN_SMS_COUNTRY_CODE ?? "86",
       schemeName: process.env.ALIYUN_SMS_SCHEME_NAME ?? "Tally",
       phoneNumber: phone.includes("+") ? phone.replace("+", "") : phone,
-      signName: process.env.ALIYUN_SMS_SIGN_NAME ?? "Tally",
+      signName: process.env.ALIYUN_SMS_SIGN_NAME ?? "",
       templateCode: process.env.ALIYUN_SMS_TEMPLATE_CODE ?? "100001",
-      templateParam: JSON.stringify({ code, min: "5" }),
-      returnVerifyCode: true,
+      templateParam: JSON.stringify({ code: "##code##", min: 10 }),
+      returnVerifyCode: true, // 在响应中返回明文验证码，便于本地核验
     });
     const resp = await client.sendSmsVerifyCodeWithOptions(req, new RuntimeOptions({}));
     const body = resp?.body;
-    // 业务失败（如签名/模板无效、超限等）：视为未发送，走降级回传验证码
-    if (body && body.success === false) {
+    // 业务失败（签名/模板无效、频率限制、欠费等）：视为未发送，走降级
+    if (!body || body.success === false || !body.verifyCode) {
       console.error("[sms] 阿里云返回发送失败:", JSON.stringify(body ?? {}));
-      return { sent: false, code };
+      return { sent: false };
     }
-    // 阿里云返回 verifyCode 时以它为准（通常与我们传入的一致）
-    const sentCode = body?.verifyCode ?? code;
-    console.log("[sms] 阿里云短信发送结果:", JSON.stringify(body ?? {}));
-    return { sent: true, code: sentCode };
+    console.log("[sms] 阿里云短信发送成功, verifyCode:", body.verifyCode);
+    return { sent: true, code: body.verifyCode };
   } catch (e: any) {
     console.error("[sms] 发送失败，降级为开发模式回传验证码:", e?.message ?? e);
     return { sent: false };

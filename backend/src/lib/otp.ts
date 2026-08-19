@@ -33,6 +33,12 @@ export function createOtpStore(opts: Partial<OtpOptions> = {}) {
       store.set(key, { code, expiresAt: now + ttlMs, attempts: 0 });
       return code;
     },
+    // 存入外部（如短信服务）生成的验证码，仍沿用本地的过期/尝试次数校验
+    store(key: string, code: string): void {
+      const now = Date.now();
+      cleanup(now);
+      store.set(key, { code, expiresAt: now + ttlMs, attempts: 0 });
+    },
     verify(key: string, input: string): { ok: boolean; reason?: "expired" | "invalid" | "exhausted" } {
       const now = Date.now();
       const e = store.get(key);

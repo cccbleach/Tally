@@ -103,11 +103,14 @@ export function registerAuthRoutes(
     enforceLimiter(deps.authLimiter, req);
     const body = requestCodeSchema.parse(req.body);
     const phone = body.email.trim().toLowerCase();
+    // 短信认证：由服务端生成验证码并返回；失败则回退到本地生成（开发模式）
+    const sms = await sendVerifyCode(phone);
+    if (sms.sent && sms.code) {
+      deps.otp.store(phone, sms.code);
+      return { ok: true }; // 真实验证码已通过短信下发
+    }
     const code = deps.otp.generate(phone);
-    const sms = await sendVerifyCode(phone, code);
-    // 已配置并成功发送短信 → 不回传验证码；否则降级为开发/兜底模式，直接返回验证码
-    if (sms.sent) return { ok: true };
-    return { ok: true, code };
+    return { ok: true, code }; // 开发/降级模式：直接把验证码返回给客户端
   });
 
   app.post("/api/v1/auth/login-code", async (req) => {
