@@ -9,6 +9,11 @@ export interface SmsResult {
   code?: string;
 }
 
+export interface VerifyResult {
+  supported: boolean; // 是否启用了短信认证（可用时以服务端校验为准）
+  ok?: boolean;
+}
+
 function enabled(): boolean {
   return (
     (process.env.ALIYUN_SMS_ENABLED === "true" || process.env.ALIYUN_SMS_ENABLED === "1") &&
@@ -51,15 +56,53 @@ export async function sendVerifyCode(phone: string): Promise<SmsResult> {
     });
     const resp = await client.sendSmsVerifyCodeWithOptions(req, new RuntimeOptions({}));
     const body = resp?.body;
-    // 业务失败（签名/模板无效、频率限制、欠费等）：视为未发送，走降级
-    if (!body || body.success === false || !body.verifyCode) {
+    const sentCode = body?.model?.verifyCode;
+    // 业务失败（签名/模板无效、频率限制、欠费等）视为未发送；成功则取服务端生成的验证码
+    if (!body || body.success === false || !sentCode) {
       console.error("[sms] 阿里云返回发送失败:", JSON.stringify(body ?? {}));
       return { sent: false };
     }
-    console.log("[sms] 阿里云短信发送成功, verifyCode:", body.verifyCode);
-    return { sent: true, code: body.verifyCode };
+    console.log("[sms] 阿里云短信发送成功, verifyCode:", sentCode);
+    return { sent: true, code: sentCode };
   } catch (e: any) {
     console.error("[sms] 发送失败，降级为开发模式回传验证码:", e?.message ?? e);
     return { sent: false };
+  }
+}
+
+// 服务端校验验证码（CheckSmsVerifyCode）。未启用时返回 { supported: false }，由调用方回退到本地校验。
+export async function checkVerifyCode(phone: string, code: string): Promise<VerifyResult> {
+  if (!enabled()) return { supported: false };
+  try {
+    const OpenApi = require("@alicloud/openapi-client");
+    const DypnMod = require("@alicloud/dypnsapi20170525");
+    const Dypnsapi = DypnMod.default;
+    const CheckSmsVerifyCodeRequest = DypnMod.CheckSmsVerifyCodeRequest;
+    const Credential = require("@alicloud/credentials").default;
+    const { RuntimeOptions } = require("@alicloud/tea-util");
+
+    const ak = process.env.ALIYUN_ACCESS_KEY_ID ?? process.env.ALIBABA_CLOUD_ACCESS_KEY_ID;
+    const sk = process.env.ALIYUN_ACCESS_KEY_SECRET ?? process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET;
+    if (ak) process.env.ALIBABA_CLOUD_ACCESS_KEY_ID = ak;
+    if (sk) process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET = sk;
+
+    const config = new OpenApi.Config({ credential: new Credential() });
+    config.endpoint = "dypnsapi.aliyuncs.com";
+    const client = new Dypnsapi(config);
+
+    const req = new CheckSmsVerifyCodeRequest({
+      countryCode: process.env.ALIYUN_SMS_COUNTRY_CODE ?? "86",
+      phoneNumber: phone.includes("+") ? phone.replace("+", "") : phone,
+      schemeName: process.env.ALIYUN_SMS_SCHEME_NAME ?? "Tally",
+      verifyCode: code,
+    });
+    const resp = await client.checkSmsVerifyCodeWithOptions(req, new RuntimeOptions({}));
+    const body = resp?.body;
+    const pass = body?.success === true && body?.model?.verifyResult === "PASS";
+    console.log("[sms] 校验验证码:", JSON.stringify(body ?? {}));
+    return { supported: true, ok: pass };
+  } catch (e: any) {
+    console.error("[sms] 校验失败，回退本地校验:", e?.message ?? e);
+    return { supported: false };
   }
 }

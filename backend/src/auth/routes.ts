@@ -9,7 +9,7 @@ import { createDefaultLedger } from "../lib/ledger.js";
 import { badRequest, tooManyRequests, unauthorized } from "../lib/errors.js";
 import type { createRateLimiter } from "../lib/rateLimit.js";
 import type { OtpStore } from "../lib/otp.js";
-import { sendVerifyCode } from "../lib/sms.js";
+import { checkVerifyCode, sendVerifyCode } from "../lib/sms.js";
 
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
@@ -117,13 +117,20 @@ export function registerAuthRoutes(
     enforceLimiter(deps.authLimiter, req);
     const body = loginCodeSchema.parse(req.body);
     const key = body.email.trim().toLowerCase();
-    const res = deps.otp.verify(key, body.code);
-    if (!res.ok) {
+
+    // 校验验证码：优先用短信认证服务端校验；若服务端未通过（如发送失败/降级），再回退本地校验
+    const svc = await checkVerifyCode(key, body.code);
+    const local = deps.otp.verify(key, body.code);
+    const svcPass = svc.supported && svc.ok === true;
+    // 无论是否启用短信服务，本地校验都必须通过（未启用时仅本地；启用时也允许本地兜底）
+    const localPass = local.ok;
+    if (!svcPass && !localPass) {
       throw badRequest(
-        res.reason === "expired" ? "CODE_EXPIRED" : res.reason === "exhausted" ? "CODE_EXHAUSTED" : "INVALID_CODE",
-        res.reason === "expired" ? "验证码已过期，请重新获取" : res.reason === "exhausted" ? "验证码错误次数过多，请重新获取" : "验证码错误",
+        local.reason === "expired" ? "CODE_EXPIRED" : local.reason === "exhausted" ? "CODE_EXHAUSTED" : "INVALID_CODE",
+        local.reason === "expired" ? "验证码已过期，请重新获取" : local.reason === "exhausted" ? "验证码错误次数过多，请重新获取" : "验证码错误",
       );
     }
+
     const result = await service.loginPhone(key);
     if (result.created) {
       const ledgerId = createDefaultLedger(deps.db, result.user.id);
