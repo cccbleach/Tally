@@ -1,16 +1,8 @@
 import SwiftUI
 
-enum LoginMode: String, CaseIterable, Identifiable {
-    case password = "密码登录"
-    case code = "验证码登录"
-    var id: String { rawValue }
-}
-
 struct LoginView: View {
     @Environment(AppState.self) private var appState
-    @State private var mode: LoginMode = .password
-    @State private var email = ""
-    @State private var password = ""
+    @State private var phone = ""
     @State private var code = ""
     @State private var isSubmitting = false
     @State private var isRequesting = false
@@ -18,10 +10,9 @@ struct LoginView: View {
     @State private var cooldownLeft = 0
     @State private var cooldownTask: Task<Void, Never>?
     @State private var errorMessage: String?
-    @State private var showRegister = false
 
     private var phoneDigits: String {
-        email.replacingOccurrences(of: " ", with: "").filter { $0.isNumber }
+        phone.replacingOccurrences(of: " ", with: "").filter { $0.isNumber }
     }
     private var phoneValid: Bool {
         phoneDigits.count == 11 && phoneDigits.hasPrefix("1")
@@ -38,103 +29,60 @@ struct LoginView: View {
                 Text("简单记账，清楚生活").font(.subheadline).foregroundColor(.secondary)
                 Spacer()
 
-                Picker("登录方式", selection: $mode) {
-                    ForEach(LoginMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
+                TextField("手机号", text: $phone)
+                    .textContentType(.telephoneNumber)
+                    .keyboardType(.phonePad)
+                    .textFieldStyle(.roundedBorder)
 
-                if mode == .password {
-                    passwordSection
-                } else {
-                    codeSection
+                HStack {
+                    TextField("验证码", text: $code)
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.roundedBorder)
+                    if cooldownLeft > 0 {
+                        Text("\(cooldownLeft)s 后可重发")
+                            .font(.footnote).foregroundColor(.secondary)
+                            .frame(minWidth: 90)
+                    } else {
+                        Button(lastCodeSent ? "重新获取" : "获取验证码") {
+                            Task { await requestCode() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isRequesting)
+                    }
                 }
 
-                if mode == .password {
-                    Button("还没有账号？注册") { showRegister = true }
-                        .font(.subheadline)
+                Button {
+                    Task { await submit() }
+                } label: {
+                    if isSubmitting {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text("登录").frame(maxWidth: .infinity)
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmitting || code.isEmpty)
+
+                Text("未注册的手机号将自动创建账号").font(.caption).foregroundColor(.secondary)
 
                 Spacer()
             }
             .padding()
-            .navigationDestination(isPresented: $showRegister) { RegisterView() }
             .errorAlert($errorMessage)
             .onDisappear { cooldownTask?.cancel() }
         }
     }
 
-    @ViewBuilder
-    private var passwordSection: some View {
-        TextField("手机号 / 邮箱", text: $email)
-            .textContentType(.username)
-            .keyboardType(.default)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .textFieldStyle(.roundedBorder)
-
-        SecureField("密码", text: $password)
-            .textContentType(.password)
-            .textFieldStyle(.roundedBorder)
-
-        Button {
-            Task { await submitPassword() }
-        } label: {
-            if isSubmitting {
-                ProgressView().frame(maxWidth: .infinity)
-            } else {
-                Text("登录").frame(maxWidth: .infinity)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(isSubmitting || email.isEmpty || password.isEmpty)
-    }
-
-    @ViewBuilder
-    private var codeSection: some View {
-        HStack {
-            TextField("手机号", text: $email)
-                .textContentType(.telephoneNumber)
-                .keyboardType(.phonePad)
-                .textFieldStyle(.roundedBorder)
-            if cooldownLeft > 0 {
-                Text("\(cooldownLeft)s 后可重发")
-                    .font(.footnote).foregroundColor(.secondary)
-                    .frame(minWidth: 96)
-            } else {
-                Button(lastCodeSent ? "重新获取" : "获取验证码") {
-                    Task { await requestCode() }
-                }
-                .buttonStyle(.bordered)
-                .disabled(!phoneValid || isRequesting)
-            }
-        }
-
-        if !email.isEmpty && !phoneValid {
-            Text("请输入 11 位手机号").font(.footnote).foregroundColor(.red)
-        }
-
-        TextField("验证码", text: $code)
-            .keyboardType(.numberPad)
-            .textFieldStyle(.roundedBorder)
-
-        Button {
-            Task { await submitCode() }
-        } label: {
-            if isSubmitting {
-                ProgressView().frame(maxWidth: .infinity)
-            } else {
-                Text("登录").frame(maxWidth: .infinity)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(isSubmitting || !phoneValid || code.isEmpty)
-    }
-
+    // 只在点击“获取验证码”时校验手机号；不合法就提示，不发请求
     private func requestCode() async {
+        if !phoneValid {
+            errorMessage = "请输入 11 位手机号"
+            return
+        }
         isRequesting = true
         defer { isRequesting = false }
         do {
-            _ = try await APIService.shared.requestLoginCode(phone: email)
+            _ = try await APIService.shared.requestLoginCode(phone: phone)
             lastCodeSent = true
             errorMessage = nil
             startCooldown()
@@ -156,21 +104,15 @@ struct LoginView: View {
         }
     }
 
-    private func submitPassword() async {
-        isSubmitting = true
-        defer { isSubmitting = false }
-        do {
-            try await appState.login(email: email, password: password)
-        } catch {
-            errorMessage = error.localizedDescription
+    private func submit() async {
+        guard phoneValid else {
+            errorMessage = "请输入 11 位手机号"
+            return
         }
-    }
-
-    private func submitCode() async {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await appState.loginWithCode(phone: email, code: code)
+            try await appState.loginWithCode(phone: phone, code: code)
         } catch {
             errorMessage = error.localizedDescription
         }

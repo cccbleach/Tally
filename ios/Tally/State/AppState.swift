@@ -23,14 +23,23 @@ final class AppState {
     }
 
     func bootstrap() async {
+        // 登录成功后视图重建可能再次触发 bootstrap，不要在已登录状态上反复拉取/清空
+        if isAuthenticated { isLoading = false; return }
         if KeychainStore.loadToken() != nil {
             do {
                 user = try await APIService.shared.me()
                 isAuthenticated = true
             } catch {
-                KeychainStore.deleteToken()
-                user = nil
-                isAuthenticated = false
+                guard let api = error as? APIError else {
+                    // 网络类错误不登出（保留已有会话），避免“刚登录就被踢回登录页”
+                    isLoading = false
+                    return
+                }
+                if case .unauthorized = api {
+                    KeychainStore.deleteTokens()
+                    user = nil
+                    isAuthenticated = false
+                }
             }
         }
         isLoading = false
