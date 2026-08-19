@@ -138,9 +138,9 @@ struct APIService {
         return try await client.request("POST", "/api/v1/auth/refresh", body: Body(refreshToken: refresh))
     }
 
-    func requestLoginCode(phone: String) async throws -> String {
+    func requestLoginCode(phone: String) async throws -> String? {
         struct Body: Encodable { let email: String }
-        struct CodeResponse: Decodable { let ok: Bool; let code: String }
+        struct CodeResponse: Decodable { let ok: Bool; let code: String? }
         let res: CodeResponse = try await client.request("POST", "/api/v1/auth/request-code", body: Body(email: phone))
         return res.code
     }

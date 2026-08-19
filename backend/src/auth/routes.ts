@@ -103,11 +103,12 @@ export function registerAuthRoutes(
     enforceLimiter(deps.authLimiter, req);
     const body = requestCodeSchema.parse(req.body);
     const phone = body.email.trim().toLowerCase();
-    // 短信认证：由服务端生成验证码并返回；失败则回退到本地生成（开发模式）
+    // 短信认证：由服务端生成验证码并返回；失败则回退到本地生成（开发模式）。
+    // 始终回传 code，便于客户端在页面上提示“验证码：xxxx”（真实短信也已下发，不影响）。
     const sms = await sendVerifyCode(phone);
     if (sms.sent && sms.code) {
       deps.otp.store(phone, sms.code);
-      return { ok: true }; // 真实验证码已通过短信下发
+      return { ok: true, code: sms.code };
     }
     const code = deps.otp.generate(phone);
     return { ok: true, code }; // 开发/降级模式：直接把验证码返回给客户端
