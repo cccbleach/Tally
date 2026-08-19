@@ -15,8 +15,17 @@ struct LoginView: View {
     @State private var isSubmitting = false
     @State private var isRequesting = false
     @State private var lastCodeSent = false
+    @State private var cooldownLeft = 0
+    @State private var cooldownTask: Task<Void, Never>?
     @State private var errorMessage: String?
     @State private var showRegister = false
+
+    private var phoneDigits: String {
+        email.replacingOccurrences(of: " ", with: "").filter { $0.isNumber }
+    }
+    private var phoneValid: Bool {
+        phoneDigits.count == 11 && phoneDigits.hasPrefix("1")
+    }
 
     var body: some View {
         NavigationStack {
@@ -50,6 +59,7 @@ struct LoginView: View {
             .padding()
             .navigationDestination(isPresented: $showRegister) { RegisterView() }
             .errorAlert($errorMessage)
+            .onDisappear { cooldownTask?.cancel() }
         }
     }
 
@@ -86,11 +96,21 @@ struct LoginView: View {
                 .textContentType(.telephoneNumber)
                 .keyboardType(.phonePad)
                 .textFieldStyle(.roundedBorder)
-            Button(lastCodeSent ? "重新获取" : "获取验证码") {
-                Task { await requestCode() }
+            if cooldownLeft > 0 {
+                Text("\(cooldownLeft)s 后可重发")
+                    .font(.footnote).foregroundColor(.secondary)
+                    .frame(minWidth: 96)
+            } else {
+                Button(lastCodeSent ? "重新获取" : "获取验证码") {
+                    Task { await requestCode() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!phoneValid || isRequesting)
             }
-            .buttonStyle(.bordered)
-            .disabled(email.isEmpty || isRequesting)
+        }
+
+        if !email.isEmpty && !phoneValid {
+            Text("请输入 11 位手机号").font(.footnote).foregroundColor(.red)
         }
 
         TextField("验证码", text: $code)
@@ -107,7 +127,7 @@ struct LoginView: View {
             }
         }
         .buttonStyle(.borderedProminent)
-        .disabled(isSubmitting || email.isEmpty || code.isEmpty)
+        .disabled(isSubmitting || !phoneValid || code.isEmpty)
     }
 
     private func requestCode() async {
@@ -117,8 +137,22 @@ struct LoginView: View {
             _ = try await APIService.shared.requestLoginCode(phone: email)
             lastCodeSent = true
             errorMessage = nil
+            startCooldown()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    // 60 秒重发间隔
+    private func startCooldown() {
+        cooldownTask?.cancel()
+        cooldownLeft = 60
+        cooldownTask = Task { @MainActor in
+            while cooldownLeft > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                cooldownLeft -= 1
+            }
         }
     }
 
