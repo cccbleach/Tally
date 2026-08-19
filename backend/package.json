@@ -15,6 +15,11 @@
     "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
+    "@alicloud/credentials": "^2.4.5",
+    "@alicloud/dypnsapi20170525": "^2.0.0",
+    "@alicloud/openapi-client": "^0.4.15",
+    "@alicloud/tea-typescript": "^1.8.0",
+    "@alicloud/tea-util": "^1.4.11",
     "@fastify/cors": "^10.0.1",
     "better-sqlite3": "^12.2.0",
     "drizzle-orm": "^0.38.3",

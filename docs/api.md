@@ -22,13 +22,13 @@
 | POST | /auth/register | 注册，入参 `{account, password(≥8), displayName?}`，账号可为邮箱或手机号；成功自动播种默认分类，返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
 | POST | /auth/login | 登录，入参 `{account, password}`，账号可为邮箱或手机号；返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
 | POST | /auth/refresh | 刷新，入参 `{refreshToken}`，返回 `{token, refreshToken}` |
-| POST | /auth/request-code | 请求验证码，入参 `{account}`（手机号/邮箱），返回 `{ok, code}`（开发阶段直接回传验证码） |
+| POST | /auth/request-code | 请求验证码，入参 `{account}`（手机号）。已配置阿里云短信时发送短信并返回 `{ok}`；未配置时返回 `{ok, code}`（开发/降级模式） |
 | POST | /auth/login-code | 验证码登录，入参 `{account, code}`；未注册的手机号自动注册并投产默认分类，返回 `{user, token, refreshToken}` |
 | GET | /auth/me | 当前用户，返回 `{user}` |
 
 - `token` 为短期访问令牌（HS256，默认 15 分钟）；`refreshToken` 为刷新令牌（默认 30 天）。
 - 访问令牌过期后，客户端用 `refreshToken` 调用 /auth/refresh 换新；刷新令牌不能用作访问令牌（受保护接口返回 401）。
-- 验证码为 6 位、5 分钟有效、最多错 3 次；开发阶段直接回传 `code`，接短信服务后仅返回 `{ok:true}`。
+- 验证码为 6 位、5 分钟有效、最多错 3 次；未配置短信服务时直接回传 `code`（开发模式），配置阿里云短信后发送短信并仅返回 `{ok:true}`。
 - 验证码登录未注册时自动创建账号（密码置空），可后续通过忘记密码设置密码。
 
 ## 账户 Accounts

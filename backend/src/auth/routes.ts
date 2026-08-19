@@ -9,6 +9,7 @@ import { createDefaultLedger } from "../lib/ledger.js";
 import { badRequest, tooManyRequests, unauthorized } from "../lib/errors.js";
 import type { createRateLimiter } from "../lib/rateLimit.js";
 import type { OtpStore } from "../lib/otp.js";
+import { sendVerifyCode } from "../lib/sms.js";
 
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
@@ -101,8 +102,11 @@ export function registerAuthRoutes(
   app.post("/api/v1/auth/request-code", async (req) => {
     enforceLimiter(deps.authLimiter, req);
     const body = requestCodeSchema.parse(req.body);
-    const code = deps.otp.generate(body.email.trim().toLowerCase());
-    // 开发阶段直接回传验证码；接短信服务后改为“已发送”
+    const phone = body.email.trim().toLowerCase();
+    const code = deps.otp.generate(phone);
+    const sms = await sendVerifyCode(phone, code);
+    // 已配置并成功发送短信 → 不回传验证码；否则降级为开发/兜底模式，直接返回验证码
+    if (sms.sent) return { ok: true };
     return { ok: true, code };
   });
 
