@@ -8,6 +8,9 @@ import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getLedgerId } from "../lib/ledger.js";
 import { loadRelationMaps, type RelationMaps } from "../services/transactionService.js";
+import { listAccountsForUser } from "../repositories/accountRepository.js";
+import { listCategoriesForUser } from "../repositories/categoryRepository.js";
+import { parseAlipay, parseWechat, type ParsedBill } from "../lib/billParser.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -35,6 +38,29 @@ const updateSchema = z.object({
   // 乐观锁：可选。若提供且与服务端当前 updatedAt 不一致则返回 409。
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
+
+const billImportSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("raw"),
+    source: z.enum(["wechat", "alipay"]),
+    content: z.string().min(1, "账单内容不能为空"),
+  }),
+  z.object({
+    mode: z.literal("items"),
+    items: z
+      .array(
+        z.object({
+          date: z.string().regex(dateRe, "日期格式应为 YYYY-MM-DD"),
+          amount: z.number().int().positive(),
+          type: z.enum(["income", "expense"]),
+          note: z.string().max(500).nullable().optional(),
+          externalId: z.string().max(100).optional(),
+        }),
+      )
+      .min(1, "无账单条目")
+      .max(5000, "单次最多导入 5000 条"),
+  }),
+]);
 
 type TransactionRow = typeof transactions.$inferSelect;
 
@@ -240,5 +266,67 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
       .run();
     return { ok: true };
+  });
+
+  app.post("/api/v1/transactions/import", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const ledgerId = getLedgerId(db, userId);
+    const body = billImportSchema.parse(req.body);
+
+    let items: ParsedBill[];
+    if (body.mode === "raw") {
+      items = body.source === "wechat" ? parseWechat(body.content) : parseAlipay(body.content);
+    } else {
+      items = body.items.map((i) => ({
+        date: i.date,
+        amount: i.amount,
+        type: i.type,
+        note: i.note ?? null,
+        externalId: i.externalId ?? null,
+      }));
+    }
+    if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
+
+    const accts = listAccountsForUser(db, userId, ledgerId);
+    const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
+    if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
+
+    const cats = listCategoriesForUser(db, userId, ledgerId);
+    const incomeCat = cats.find((c) => c.type === "income");
+    const expenseCat = cats.find((c) => c.type === "expense");
+
+    const now = new Date().toISOString();
+    let imported = 0;
+    for (const it of items) {
+      const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
+      const row = {
+        id: randomUUID(),
+        userId,
+        ledgerId,
+        accountId: defaultAccount.id,
+        categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
+        type: it.type,
+        amount: it.amount,
+        currency: "CNY",
+        note: it.note,
+        date: it.date,
+        transferToAccountId: null,
+        recurringId: null,
+        externalId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        const r = db
+          .insert(transactions)
+          .values(row)
+          .onConflictDoNothing({ target: [transactions.userId, transactions.externalId] })
+          .run();
+        if (r.changes > 0) imported++;
+      } catch {
+        // 单条失败不中断整体导入
+      }
+    }
+    return { imported, skipped: items.length - imported, total: items.length };
   });
 }

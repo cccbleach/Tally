@@ -221,6 +221,12 @@ struct APIService {
         let _: OKResponse = try await client.request("DELETE", "/api/v1/transactions/\(id)")
     }
 
+    // 账单导入（微信/支付宝导出的 txt/csv，后端解析并去重入库）
+    func importBill(source: String, content: String) async throws -> ImportResult {
+        struct Body: Encodable { let mode: String; let source: String; let content: String }
+        return try await client.request("POST", "/api/v1/transactions/import", body: Body(mode: "raw", source: source, content: content))
+    }
+
     // 统计
     func summary(year: Int, month: Int) async throws -> StatsSummary {
         let query = [URLQueryItem(name: "year", value: String(year)), URLQueryItem(name: "month", value: String(month))]

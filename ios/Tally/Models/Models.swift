@@ -199,6 +199,12 @@ struct OKResponse: Codable {
     let ok: Bool
 }
 
+struct ImportResult: Codable {
+    let imported: Int
+    let skipped: Int
+    let total: Int
+}
+
 struct APIErrorResponse: Codable {
     let error: APIErrorBody
 }

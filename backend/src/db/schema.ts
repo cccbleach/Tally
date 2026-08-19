@@ -73,6 +73,7 @@ export const transactions = sqliteTable(
     date: text("date").notNull(), // YYYY-MM-DD
     transferToAccountId: text("transfer_to_account_id"),
     recurringId: text("recurring_id"), // 周期账单生成关联，用于幂等
+    externalId: text("external_id"), // 账单导入来源唯一号，用于去重
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -81,6 +82,7 @@ export const transactions = sqliteTable(
     index("idx_tx_user_account").on(t.userId, t.accountId),
     index("idx_tx_ledger").on(t.ledgerId),
     uniqueIndex("uniq_recurring_tx").on(t.recurringId, t.date), // 幂等唯一（NULL 互不冲突）
+    uniqueIndex("uniq_tx_external").on(t.userId, t.externalId), // 账单导入去重（NULL 互不冲突）
   ],
 );
 

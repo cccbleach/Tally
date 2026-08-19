@@ -66,6 +66,15 @@
 | GET | /transactions/:id | 详情 |
 | PATCH | /transactions/:id | 更新 `{amount?, date?, note?, accountId?, categoryId?, expectedUpdatedAt?}`（支持乐观锁） |
 | DELETE | /transactions/:id | 删除 |
+| POST | /transactions/import | 账单导入，见下 |
+
+**账单导入（微信/支付宝等）**
+- 方式一（原始文件，推荐客户端上传）：
+  `{mode:"raw", source:"wechat"|"alipay", content:"<文件内容>"}` —— 后端按常见导出格式解析（微信 txt / 支付宝 csv）
+- 方式二（客户端已解析）：
+  `{mode:"items", items:[{date, amount, type, note?, externalId?}]}`
+- 返回 `{imported, skipped, total}`；按 `(user_id, external_id)` 唯一去重，重复导入自动跳过。
+- 导入流水的账户/分类取当前账本默认（首个非归档账户 + 匹配收支类型的分类），后续可扩展为逐条指定。
 
 新建入参按 `type` 区分：
 

@@ -624,3 +624,29 @@ test("手机号验证码登录（自动注册 + 校验码校验）", async () =>
   assert.ok(ok.json().token);
   assert.equal(ok.json().user.email, "13700002222");
 });
+
+test("账单导入按 external_id 去重（重复导入不重复入账）", async () => {
+  const payload = {
+    mode: "items",
+    items: [
+      { date: todayStr(), amount: 1500, type: "expense", note: "导入测试", externalId: "ext-001" },
+      { date: todayStr(), amount: 2000, type: "income", note: "导入测试", externalId: "ext-002" },
+    ],
+  };
+  const first = await req("POST", "/api/v1/transactions/import", payload);
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().imported, 2);
+  assert.equal(first.json().skipped, 0);
+
+  // 重复导入：全部跳过
+  const second = await req("POST", "/api/v1/transactions/import", payload);
+  assert.equal(second.statusCode, 200, second.body);
+  assert.equal(second.json().imported, 0);
+  assert.equal(second.json().skipped, 2);
+
+  // 确实只有 2 条
+  const tx = await req("GET", "/api/v1/transactions?from=" + todayStr() + "&to=" + todayStr());
+  assert.equal(tx.statusCode, 200, tx.body);
+  const withExternal = (tx.json().items as Array<{ note: string | null }>).filter((t) => t.note === "导入测试");
+  assert.equal(withExternal.length, 2);
+});
