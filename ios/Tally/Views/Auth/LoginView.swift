@@ -15,7 +15,6 @@ struct LoginView: View {
     @State private var isSubmitting = false
     @State private var isRequesting = false
     @State private var lastCodeSent = false
-    @State private var sentCodeHint: String?
     @State private var errorMessage: String?
     @State private var showRegister = false
 
@@ -94,10 +93,6 @@ struct LoginView: View {
             .disabled(email.isEmpty || isRequesting)
         }
 
-        if let hint = sentCodeHint, lastCodeSent {
-            Text("验证码：\(hint)").font(.footnote).foregroundColor(.secondary)
-        }
-
         TextField("验证码", text: $code)
             .keyboardType(.numberPad)
             .textFieldStyle(.roundedBorder)
@@ -119,7 +114,7 @@ struct LoginView: View {
         isRequesting = true
         defer { isRequesting = false }
         do {
-            sentCodeHint = try await APIService.shared.requestLoginCode(phone: email)
+            _ = try await APIService.shared.requestLoginCode(phone: email)
             lastCodeSent = true
             errorMessage = nil
         } catch {
