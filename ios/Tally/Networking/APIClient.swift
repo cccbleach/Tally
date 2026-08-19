@@ -36,8 +36,7 @@ struct APIClient {
     }
 
     var baseURL: String {
-        (UserDefaults.standard.string(forKey: "baseURL") ?? "http://127.0.0.1:8080")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        "http://120.26.23.15:8080"
     }
 
     var token: String? {

@@ -42,7 +42,7 @@ final class DataStore {
             case .unauthorized:
                 return (false, "登录已过期，请重新登录")
             case .invalidURL:
-                return (false, "服务器地址无效，请在设置中检查")
+                return (false, "服务器配置异常，请稍后重试")
             case .invalidResponse:
                 return (false, "服务器响应异常")
             case .http:
@@ -52,7 +52,7 @@ final class DataStore {
             }
         }
         if error is URLError {
-            return (true, "无法连接服务器，请检查服务器地址或网络")
+            return (true, "无法连接服务器，请检查网络")
         }
         return (false, error.localizedDescription)
     }
