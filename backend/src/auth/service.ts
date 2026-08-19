@@ -74,6 +74,37 @@ export function makeAuthService(db: DB, jwt: Jwt) {
       };
     },
 
+    // 验证码登录：已注册则直接登录；未注册则自动创建账号（默认昵称「用户」）。
+    async loginPhone(phone: string) {
+      const normalized = normalizeAccount(phone);
+      const existing = db.select().from(users).where(eq(users.email, normalized)).get();
+      if (existing) {
+        return {
+          user: toDto(existing),
+          created: false,
+          token: await jwt.signAccess(existing.id),
+          refreshToken: await jwt.signRefresh(existing.id),
+        };
+      }
+      const now = new Date().toISOString();
+      const user = {
+        id: randomUUID(),
+        email: normalized,
+        passwordHash: "", // 无密码登录，后续可用“忘记密码”设密码
+        displayName: "用户",
+        defaultLedgerId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      db.insert(users).values(user).run();
+      return {
+        user: toDto(user),
+        created: true,
+        token: await jwt.signAccess(user.id),
+        refreshToken: await jwt.signRefresh(user.id),
+      };
+    },
+
     async requestReset(account: string) {
       const normalized = normalizeAccount(account);
       const user = db.select().from(users).where(eq(users.email, normalized)).get();

@@ -6,8 +6,9 @@ import { makeAuthService } from "./service.js";
 import { makeAuth, getUserId } from "../middleware/auth.js";
 import { seedDefaultCategories } from "../db/seed.js";
 import { createDefaultLedger } from "../lib/ledger.js";
-import { tooManyRequests, unauthorized } from "../lib/errors.js";
+import { badRequest, tooManyRequests, unauthorized } from "../lib/errors.js";
 import type { createRateLimiter } from "../lib/rateLimit.js";
+import type { OtpStore } from "../lib/otp.js";
 
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
@@ -58,9 +59,18 @@ const resetSchema = z.object({
   newPassword: z.string().min(8, "密码至少 8 位").max(128, "密码过长"),
 });
 
+const requestCodeSchema = z.object({
+  email: accountValidator,
+});
+
+const loginCodeSchema = z.object({
+  email: accountValidator,
+  code: z.string().min(4, "验证码长度为 4-8 位").max(8, "验证码长度为 4-8 位"),
+});
+
 export function registerAuthRoutes(
   app: FastifyInstance,
-  deps: { db: AppDb["db"]; jwt: Jwt; authLimiter: AuthLimiter },
+  deps: { db: AppDb["db"]; jwt: Jwt; authLimiter: AuthLimiter; otp: OtpStore },
 ) {
   const service = makeAuthService(deps.db, deps.jwt);
   const auth = makeAuth(deps.jwt);
@@ -86,6 +96,33 @@ export function registerAuthRoutes(
     const payload = await deps.jwt.verify(body.refreshToken);
     if (payload.type !== "refresh") throw unauthorized("INVALID_REFRESH_TOKEN", "刷新令牌无效");
     return await service.refresh(payload.sub);
+  });
+
+  app.post("/api/v1/auth/request-code", async (req) => {
+    enforceLimiter(deps.authLimiter, req);
+    const body = requestCodeSchema.parse(req.body);
+    const code = deps.otp.generate(body.email.trim().toLowerCase());
+    // 开发阶段直接回传验证码；接短信服务后改为“已发送”
+    return { ok: true, code };
+  });
+
+  app.post("/api/v1/auth/login-code", async (req) => {
+    enforceLimiter(deps.authLimiter, req);
+    const body = loginCodeSchema.parse(req.body);
+    const key = body.email.trim().toLowerCase();
+    const res = deps.otp.verify(key, body.code);
+    if (!res.ok) {
+      throw badRequest(
+        res.reason === "expired" ? "CODE_EXPIRED" : res.reason === "exhausted" ? "CODE_EXHAUSTED" : "INVALID_CODE",
+        res.reason === "expired" ? "验证码已过期，请重新获取" : res.reason === "exhausted" ? "验证码错误次数过多，请重新获取" : "验证码错误",
+      );
+    }
+    const result = await service.loginPhone(key);
+    if (result.created) {
+      const ledgerId = createDefaultLedger(deps.db, result.user.id);
+      seedDefaultCategories(deps.db, result.user.id, ledgerId);
+    }
+    return { user: result.user, token: result.token, refreshToken: result.refreshToken };
   });
 
   app.post("/api/v1/auth/forgot-password", async (req) => {

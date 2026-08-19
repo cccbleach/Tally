@@ -13,6 +13,7 @@ import { registerBudgetRoutes } from "./modules/budgets.js";
 import { registerRecurringRoutes } from "./modules/recurring.js";
 import { registerStatsRoutes } from "./modules/stats.js";
 import { createRateLimiter } from "./lib/rateLimit.js";
+import { createOtpStore } from "./lib/otp.js";
 
 export interface Deps {
   db: AppDb["db"];
@@ -47,7 +48,8 @@ export async function buildApp(deps: Deps) {
     windowMs: deps.rateLimit?.windowMs ?? 60_000,
     max: deps.rateLimit?.max ?? 60,
   });
-  const shared = { db: deps.db, jwt, authLimiter };
+  const otp = createOtpStore();
+  const shared = { db: deps.db, jwt, authLimiter, otp };
 
   app.get("/health", async () => {
     deps.db.all(sql`SELECT 1`); // 校验 DB 可达

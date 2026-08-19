@@ -602,3 +602,20 @@ test("支持手机号注册与登录", async () => {
   });
   assert.equal(login.statusCode, 200, login.body);
 });
+
+test("手机号验证码登录（自动注册 + 校验码校验）", async () => {
+  const codeReq = await req("POST", "/api/v1/auth/request-code", { email: "13700002222" });
+  assert.equal(codeReq.statusCode, 200, codeReq.body);
+  const code = codeReq.json().code as string;
+  assert.match(code, /^\d{6}$/, "应返回 6 位验证码");
+
+  // 错误验证码 → 400
+  const wrong = await req("POST", "/api/v1/auth/login-code", { email: "13700002222", code: "000000" });
+  assert.equal(wrong.statusCode, 400);
+
+  // 正确验证码 → 登录成功且自动注册
+  const ok = await req("POST", "/api/v1/auth/login-code", { email: "13700002222", code });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.ok(ok.json().token);
+  assert.equal(ok.json().user.email, "13700002222");
+});

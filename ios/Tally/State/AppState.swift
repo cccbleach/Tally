@@ -50,6 +50,13 @@ final class AppState {
         isAuthenticated = true
     }
 
+    func loginWithCode(phone: String, code: String) async throws {
+        let res = try await APIService.shared.loginWithCode(phone: phone, code: code)
+        KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
+        user = res.user
+        isAuthenticated = true
+    }
+
     func logout() {
         KeychainStore.deleteTokens()
         user = nil
