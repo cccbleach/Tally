@@ -35,6 +35,28 @@ final class DataStore {
         }
     }
 
+    // 错误分类：真断网→离线；登录过期→明确提示；地址/服务器→各自的提示
+    private func classify(_ error: Error) -> (offline: Bool, message: String) {
+        if let api = error as? APIError {
+            switch api {
+            case .unauthorized:
+                return (false, "登录已过期，请重新登录")
+            case .invalidURL:
+                return (false, "服务器地址无效，请在设置中检查")
+            case .invalidResponse:
+                return (false, "服务器响应异常")
+            case .http:
+                return (false, "服务器暂时不可用，请稍后重试")
+            case .server(_, let message):
+                return (false, message)
+            }
+        }
+        if error is URLError {
+            return (true, "无法连接服务器，请检查服务器地址或网络")
+        }
+        return (false, error.localizedDescription)
+    }
+
     // 先读本地缓存（离线可用），再尝试网络；成功则刷新缓存，失败则保留缓存并标记离线
     func loadAll() async {
         isLoading = true
@@ -74,8 +96,9 @@ final class DataStore {
             isOffline = false
             errorMessage = nil
         } catch {
-            isOffline = true
-            errorMessage = "网络不可用，当前展示上次同步的缓存数据"
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -87,8 +110,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: [Account] = LocalCache.load([Account].self, forKey: "accounts") { accounts = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -100,8 +124,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: [Category] = LocalCache.load([Category].self, forKey: "categories") { categories = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -114,8 +139,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: [Transaction] = LocalCache.load([Transaction].self, forKey: "transactions") { transactions = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -127,8 +153,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: StatsSummary = LocalCache.load(StatsSummary.self, forKey: "summary") { summary = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -140,8 +167,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: BudgetOverview = LocalCache.load(BudgetOverview.self, forKey: "budgetOverview") { budgetOverview = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -153,8 +181,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: [RecurringBill] = LocalCache.load([RecurringBill].self, forKey: "recurring") { recurring = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 
@@ -166,8 +195,9 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: [TrendPoint] = LocalCache.load([TrendPoint].self, forKey: "trend") { trend = value }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            let r = classify(error)
+            isOffline = r.offline
+            errorMessage = r.message
         }
     }
 }
