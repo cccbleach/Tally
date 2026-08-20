@@ -770,6 +770,14 @@ test("贷款创建、还款生成转账与负债统计", async () => {
   const loan = (liabilities.json().loans as Array<{ id: string; remainingPrincipal: number }>).find((l) => l.id === loanId);
   assert.ok(loan, "负债列表应包含贷款");
   assert.ok(loan.remainingPrincipal < 1_000_000, "还款后剩余本金应减少");
+
+  // 审计日志应记录本次还款
+  const audit = await req("GET", "/api/v1/audit-logs?entityType=loan&entityId=" + loanId);
+  assert.equal(audit.statusCode, 200, audit.body);
+  const payAudit = (audit.json().items as Array<{ action: string; after: { transactionId: string } }>).find((a) => a.action === "loan_pay");
+  assert.ok(payAudit, "审计日志应包含 loan_pay 记录");
+  assert.equal(payAudit!.after.transactionId, paymentTx!.id, "审计里的转账 id 应与流水一致");
+
 });
 
 test("导入 force=true 可强制保留重复项", async () => {

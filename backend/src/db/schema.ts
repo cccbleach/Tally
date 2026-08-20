@@ -226,6 +226,26 @@ export const exchangeRates = sqliteTable(
   ],
 );
 
+export const auditLogs = sqliteTable(
+  "audit_logs",
+  {
+    id: text("id").primaryKey(),
+    ledgerId: text("ledger_id"),
+    actorUserId: text("actor_user_id").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    action: text("action").notNull(),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_audit_ledger").on(t.ledgerId),
+    index("idx_audit_entity").on(t.entityType, t.entityId),
+    index("idx_audit_actor").on(t.actorUserId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type LedgerRow = typeof ledgers.$inferSelect;
 export type FamilyRow = typeof families.$inferSelect;

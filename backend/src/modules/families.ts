@@ -7,6 +7,7 @@ import { families, familyMembers, ledgers, users } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, forbidden, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { writeAudit } from "../lib/audit.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createFamilySchema = z.object({
@@ -121,6 +122,14 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
         .values({ id: randomUUID(), familyId: id, userId: target.id, role: "member", isActive: true, joinedAt: now })
         .run();
     }
+    writeAudit(db, {
+      ledgerId: null,
+      actorUserId: userId,
+      entityType: "family",
+      entityId: id,
+      action: "member_add",
+      afterJson: { memberUserId: target.id, role: "member" },
+    });
     return { ok: true };
   });
 
@@ -153,6 +162,14 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .set({ isActive: false })
       .where(and(eq(familyMembers.familyId, id), eq(familyMembers.userId, memberUserId)))
       .run();
+    writeAudit(db, {
+      ledgerId: null,
+      actorUserId: userId,
+      entityType: "family",
+      entityId: id,
+      action: "member_remove",
+      afterJson: { memberUserId },
+    });
     return { ok: true };
   });
 

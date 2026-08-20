@@ -3,13 +3,14 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts, creditCardBills, loanPayments, loans, transactions } from "../db/schema.js";
+import { accounts, auditLogs, creditCardBills, loanPayments, loans, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { amortizationSchedule, monthlyPayment } from "../lib/loan.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
 import { todayStr } from "../lib/date.js";
+import { writeAudit } from "../lib/audit.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createLoanSchema = z.object({
@@ -202,6 +203,14 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
         })
         .where(eq(loans.id, id))
         .run();
+      writeAudit(tx, {
+        ledgerId,
+        actorUserId: userId,
+        entityType: "loan",
+        entityId: id,
+        action: "loan_pay",
+        afterJson: { transactionId: transferId, amount: next.total, installment: next.scheduledDate },
+      });
     });
 
     return { ok: true, paidDate: date };
@@ -287,6 +296,23 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     return { item: { id, accountId, period: body.period, statementBalance: body.statementBalance, minimumPayment: body.minimumPayment ?? 0, dueDate: body.dueDate ?? null, paid: false } };
   });
 
+  // 审计日志查询（账本内可见）
+  app.get("/api/v1/audit-logs", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+    const conds = [eq(auditLogs.ledgerId, ledgerId)];
+    if (q.entityType) conds.push(eq(auditLogs.entityType, q.entityType));
+    if (q.entityId) conds.push(eq(auditLogs.entityId, q.entityId));
+    const rows = db
+      .select()
+      .from(auditLogs)
+      .where(and(...conds))
+      .orderBy(asc(auditLogs.createdAt))
+      .all();
+    return { items: rows.map((r) => ({ id: r.id, entityType: r.entityType, entityId: r.entityId, action: r.action, actorUserId: r.actorUserId, before: r.beforeJson ? JSON.parse(r.beforeJson) : null, after: r.afterJson ? JSON.parse(r.afterJson) : null, createdAt: r.createdAt })) };
+  });
+
   app.get("/api/v1/credit-card-bills", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
@@ -357,6 +383,14 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       };
       tx.insert(transactions).values(row).run();
       tx.update(creditCardBills).set({ paid: true }).where(eq(creditCardBills.id, id)).run();
+      writeAudit(tx, {
+        ledgerId,
+        actorUserId: userId,
+        entityType: "credit_card_bill",
+        entityId: id,
+        action: "credit_card_pay",
+        afterJson: { transactionId: transferId, amount: bill.statementBalance, period: bill.period },
+      });
     });
 
     return { ok: true, transactionId: transferId };
