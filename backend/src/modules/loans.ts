@@ -199,11 +199,15 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       monthlyPayment: l.monthlyPayment,
       nextPaymentDate: l.nextPaymentDate,
     }));
-    const creditBills = db
-      .select()
-      .from(creditCardBills)
-      .where(eq(creditCardBills.paid, false))
-      .all();
+    const creditBillAccounts = creditAccounts.map((a) => a.id);
+    const creditBills =
+      creditBillAccounts.length > 0
+        ? db
+            .select()
+            .from(creditCardBills)
+            .where(and(inArray(creditCardBills.accountId, creditBillAccounts), eq(creditCardBills.paid, false)))
+            .all()
+        : [];
     const totalDebt = creditCards.reduce((s, c) => s + c.debt, 0) + loansOut.reduce((s, l) => s + l.remainingPrincipal, 0);
     return { totalDebt, creditCards, loans: loansOut, creditCardBills: creditBills };
   });

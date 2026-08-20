@@ -784,3 +784,52 @@ test("信用卡账单创建、列表与标记已还", async () => {
   const mark = await req("PATCH", `/api/v1/credit-card-bills/${bill!.id}`, { paid: true });
   assert.equal(mark.statusCode, 200, mark.body);
 });
+
+test("越权防护：B 看不到 A 账本的信用卡账单", async () => {
+  const regA = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/register",
+    headers: { "content-type": "application/json" },
+    payload: JSON.stringify({ email: "cc-a@test.com", password: "password123" }),
+  });
+  assert.equal(regA.statusCode, 200, regA.body);
+  const hA = { authorization: "Bearer " + regA.json().token };
+
+  const regB = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/register",
+    headers: { "content-type": "application/json" },
+    payload: JSON.stringify({ email: "cc-b@test.com", password: "password123" }),
+  });
+  assert.equal(regB.statusCode, 200, regB.body);
+  const hB = { authorization: "Bearer " + regB.json().token };
+
+  const acc = await app.inject({
+    method: "POST",
+    url: "/api/v1/accounts",
+    headers: hA,
+    payload: { name: "A的信用卡", type: "credit", currency: "CNY", initialBalance: 0 },
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+  const accountId = acc.json().item.id as string;
+
+  const bill = await app.inject({
+    method: "POST",
+    url: `/api/v1/credit-cards/${accountId}/bills`,
+    headers: hA,
+    payload: { period: "2026-09", statementBalance: 88800, minimumPayment: 8880, dueDate: "2026-09-25" },
+  });
+  assert.equal(bill.statusCode, 200, bill.body);
+
+  const liabB = await app.inject({ method: "GET", url: "/api/v1/liabilities", headers: hB });
+  assert.equal(liabB.statusCode, 200, liabB.body);
+  const billsFromLiab = liabB.json().creditCardBills ?? [];
+  assert.equal(billsFromLiab.length, 0, "B 的负债中心不应出现任何他人的信用卡账单");
+
+  const listB = await app.inject({ method: "GET", url: "/api/v1/credit-card-bills", headers: hB });
+  assert.equal(listB.statusCode, 200, listB.body);
+  const itemsB = listB.json().items ?? [];
+  assert.equal(itemsB.length, 0, "B 的账单列表不应包含 A 的账单");
+  assert.ok(!itemsB.some((x) => x.accountId === accountId), "B 不应看到 A 的账户账单");
+});
+
