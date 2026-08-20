@@ -942,3 +942,49 @@ test("信用卡账单：同一账户同一期不可重复创建（409）", async
   assert.equal(dup.json().error.code, "BILL_PERIOD_EXISTS");
 });
 
+test("导入暂存流程：建任务→预览→提交，不静默丢弃", async () => {
+  // 确保有默认账户
+  const acc = await req("POST", "/api/v1/accounts", {
+    name: "导入暂存账户",
+    type: "bank",
+    currency: "CNY",
+    initialBalance: 0,
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+
+  // 创建暂存任务（2 条）
+  const create = await req("POST", "/api/v1/imports/jobs", {
+    mode: "items",
+    items: [
+      { date: todayStr(), amount: 1111, type: "expense", note: "暂存A", externalId: "stage-a" },
+      { date: todayStr(), amount: 2222, type: "expense", note: "暂存B", externalId: "stage-b" },
+    ],
+  });
+  assert.equal(create.statusCode, 200, create.body);
+  const jobId = create.json().item.id as string;
+  assert.equal(create.json().item.status, "staged");
+  assert.equal(create.json().counts.total, 2);
+
+  // 查看明细（2 条都是 new 且默认 accept）
+  const detail = await req("GET", "/api/v1/imports/jobs/" + jobId);
+  assert.equal(detail.statusCode, 200, detail.body);
+  const items = detail.json().items as Array<{ id: string; duplicateStatus: string; decision: string }>;
+  assert.equal(items.length, 2);
+  assert.ok(items.every((i) => i.duplicateStatus === "new"));
+
+  // 跳过其中一条，另一条提交
+  const skip = await req("PATCH", `/api/v1/imports/items/${items[0]!.id}`, { decision: "skip" });
+  assert.equal(skip.statusCode, 200, skip.body);
+
+  const commit = await req("POST", `/api/v1/imports/jobs/${jobId}/commit`);
+  assert.equal(commit.statusCode, 200, commit.body);
+  assert.equal(commit.json().imported, 1, "只导入 accept 的一条");
+  assert.equal(commit.json().skipped, 1, "skip 的计入 skipped（不含重复跳过）");
+
+  // 正式流水里应能查到被导入的那条
+  const txs = await req("GET", "/api/v1/transactions");
+  const names = (txs.json().items as Array<{ note: string | null }>).map((t) => t.note);
+  assert.ok(names.includes("暂存B"), "提交的明细进入正式流水");
+  assert.ok(!names.includes("暂存A"), "被 skip 的明细不进入正式流水");
+});
+

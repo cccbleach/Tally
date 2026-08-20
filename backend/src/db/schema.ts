@@ -246,6 +246,45 @@ export const auditLogs = sqliteTable(
   ],
 );
 
+export const importJobs = sqliteTable(
+  "import_jobs",
+  {
+    id: text("id").primaryKey(),
+    ledgerId: text("ledger_id").notNull(),
+    userId: text("user_id").notNull(),
+    source: text("source").notNull(),
+    filename: text("filename"),
+    fileHash: text("file_hash"),
+    status: text("status").notNull().default("staged"),
+    totalCount: integer("total_count").notNull().default(0),
+    importedCount: integer("imported_count").notNull().default(0),
+    skippedCount: integer("skipped_count").notNull().default(0),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("idx_import_jobs_ledger").on(t.ledgerId)],
+);
+
+export const importItems = sqliteTable(
+  "import_items",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    externalId: text("external_id"),
+    occurredAt: text("occurred_at").notNull(),
+    type: text("type").notNull(),
+    amount: integer("amount").notNull(),
+    currency: text("currency").notNull().default("CNY"),
+    merchant: text("merchant"),
+    rawDescription: text("raw_description"),
+    duplicateStatus: text("duplicate_status").notNull().default("new"),
+    matchedTransactionId: text("matched_transaction_id"),
+    decision: text("decision").notNull().default("accept"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("idx_import_items_job").on(t.jobId)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type LedgerRow = typeof ledgers.$inferSelect;
 export type FamilyRow = typeof families.$inferSelect;

@@ -14,6 +14,7 @@ import { registerRecurringRoutes } from "./modules/recurring.js";
 import { registerStatsRoutes } from "./modules/stats.js";
 import { registerFamilyRoutes } from "./modules/families.js";
 import { registerLoanRoutes } from "./modules/loans.js";
+import { registerImportRoutes } from "./modules/imports.js";
 import { createRateLimiter } from "./lib/rateLimit.js";
 import { createOtpStore } from "./lib/otp.js";
 
@@ -78,6 +79,7 @@ export async function buildApp(deps: Deps) {
   registerStatsRoutes(app, shared);
   registerFamilyRoutes(app, shared);
   registerLoanRoutes(app, shared);
+  registerImportRoutes(app, shared);
 
   return app;
 }
