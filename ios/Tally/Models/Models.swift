@@ -279,11 +279,11 @@ struct LoanItem: Codable, Identifiable, Hashable {
 }
 
 struct CreditCardBillItem: Codable, Identifiable, Hashable {
+    let id: String
     let accountId: String
     let period: String
     let statementBalance: Int
     let minimumPayment: Int
     let dueDate: String?
     let paid: Bool
-    var id: String { accountId + "|" + period }
 }
