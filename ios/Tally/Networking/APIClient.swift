@@ -22,9 +22,21 @@ enum APIError: LocalizedError {
     }
 }
 
-struct APIClient {
+actor APIClient {
     static let shared = APIClient()
     private static var didNotifySessionExpired = false
+
+    // 单飞刷新：同一时刻只允许一个刷新任务，其余并发请求等待同一个结果，
+    // 避免首页多个请求同时遇到 401 时并发刷新 token。
+    private var refreshTask: Task<Void, Error>?
+
+    nonisolated var baseURL: String {
+        "http://120.26.23.15:8080"
+    }
+
+    nonisolated var token: String? {
+        KeychainStore.loadToken()
+    }
 
     // 认证彻底失效：清理令牌并广播一次，让 AppState 统一登出
     private static func expireSession() {
@@ -33,14 +45,6 @@ struct APIClient {
             didNotifySessionExpired = true
             NotificationCenter.default.post(name: .tallySessionExpired, object: nil)
         }
-    }
-
-    var baseURL: String {
-        "http://120.26.23.15:8080"
-    }
-
-    var token: String? {
-        KeychainStore.loadToken()
     }
 
     // 无请求体
@@ -53,8 +57,17 @@ struct APIClient {
         try await perform(method, path, bodyData: try JSONEncoder().encode(body), query: query)
     }
 
-    // 用 refreshToken 换取一组新令牌并落库（独立低级请求，避免递归）。
-    func refreshTokens() async throws {
+    @discardableResult
+    private func refreshTokens() async throws {
+        if let refreshTask { return try await refreshTask.value }
+        let task = Task { try await self.performRefresh() }
+        refreshTask = task
+        defer { refreshTask = nil }
+        return try await task.value
+    }
+
+    // 真正的刷新逻辑：换一组新令牌并落库；失败则清理会话。
+    private func performRefresh() async throws {
         guard let refresh = KeychainStore.loadRefreshToken() else {
             APIClient.expireSession()
             throw APIError.unauthorized
@@ -97,7 +110,7 @@ struct APIClient {
         if (200..<300).contains(code) {
             return try JSONDecoder().decode(T.self, from: data)
         }
-        // 401 时自动用 refreshToken 刷新后重试一次
+        // 401 时单飞刷新后重试一次
         if code == 401 {
             try await refreshTokens()
             let retry = try await execute(makeRequest(method, path, bodyData: bodyData, query: query))

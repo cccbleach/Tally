@@ -58,6 +58,17 @@ export async function buildApp(deps: Deps) {
     return { status: "ok", time: new Date().toISOString() };
   });
 
+  // 存活探针：仅表示进程在运行，不依赖外部资源
+  app.get("/health/live", async () => ({ status: "ok", time: new Date().toISOString() }));
+
+  // 就绪探针：校验数据库可达且迁移已应用
+  app.get("/health/ready", async () => {
+    deps.db.all(sql`SELECT 1`);
+    const applied = (deps.db.all(sql`SELECT COUNT(*) AS n FROM schema_migrations`) as Array<{ n: number }>)[0]?.n ?? 0;
+    if (applied <= 0) throw new Error("数据库尚未执行迁移");
+    return { status: "ok", migrationsApplied: applied, time: new Date().toISOString() };
+  });
+
   registerAuthRoutes(app, shared);
   registerAccountRoutes(app, shared);
   registerCategoryRoutes(app, shared);

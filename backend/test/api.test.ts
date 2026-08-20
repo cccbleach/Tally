@@ -833,3 +833,13 @@ test("越权防护：B 看不到 A 账本的信用卡账单", async () => {
   assert.ok(!itemsB.some((x) => x.accountId === accountId), "B 不应看到 A 的账户账单");
 });
 
+test("健康检查：live 只探活，ready 校验数据库与迁移", async () => {
+  const live = await app.inject({ method: "GET", url: "/health/live" });
+  assert.equal(live.statusCode, 200, live.body);
+  assert.equal(live.json().status, "ok");
+
+  const ready = await app.inject({ method: "GET", url: "/health/ready" });
+  assert.equal(ready.statusCode, 200, ready.body);
+  assert.ok(ready.json().migrationsApplied >= 1, "应报告已应用的迁移数量");
+});
+
