@@ -111,6 +111,8 @@ struct BillImportView: View {
 }
 
 struct FamilyLedgerView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(DataStore.self) private var dataStore
     @State private var families: [Family] = []
     @State private var ledgers: [LedgerInfo] = []
     @State private var newFamilyName = ""
@@ -220,8 +222,11 @@ struct FamilyLedgerView: View {
     private func switchLedger(_ id: String) async {
         do {
             try await APIService.shared.switchLedger(id: id)
+            // 切换上下文：清空内存并切换缓存分区，再重新拉取新账本数据
+            dataStore.setContext(userId: appState.user?.id, ledgerId: id)
             message = "已切换账本"
             await load()
+            await dataStore.loadAll()
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -1,8 +1,25 @@
 import Foundation
 
 // 简单文件缓存：把最近一次拉取的数据落盘，供离线时读取。
-// 注意：MVP 单用户语义，键不区分用户；多用户场景建议键前缀带 userId。
+// 缓存按用户（+账本）分区：命名空间不同不会读到彼此的缓存，杜绝换账号/换账本串数据。
 enum LocalCache {
+    private static var namespace = "anon"
+
+    // 切换命名空间（登录用户 / 切换账本 / 退出登录时调用）
+    static func setNamespace(_ ns: String) {
+        let safe = ns.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
+        namespace = safe.isEmpty ? "anon" : safe
+    }
+
+    // 清空当前用户命名空间下的全部缓存（退出登录/被移出家庭时调用）
+    static func clearAll() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        let prefix = namespace + "_"
+        for f in files where f.lastPathComponent.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: f)
+        }
+    }
+
     private static var dir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let d = base.appendingPathComponent("TallyCache", isDirectory: true)
@@ -13,7 +30,7 @@ enum LocalCache {
     }
 
     private static func url(forKey key: String) -> URL {
-        dir.appendingPathComponent(key + ".json")
+        dir.appendingPathComponent(namespace + "_" + key + ".json")
     }
 
     static func save<T: Encodable>(_ value: T, forKey key: String) {

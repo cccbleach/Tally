@@ -18,10 +18,36 @@ final class DataStore {
     var selectedYear: Int
     var selectedMonth: Int
 
+    // 当前上下文（用于缓存分区）：登录用户 + 当前账本
+    private(set) var userId: String?
+    private(set) var ledgerId: String?
+
     init() {
         let c = Calendar.current
         selectedYear = c.component(.year, from: Date())
         selectedMonth = c.component(.month, from: Date())
+        clearState()
+    }
+
+    /// 切换上下文（登录/换账号/切账本/退出时调用）：
+    /// 先清空内存数据，避免把上一个用户/账本的数据带进新界面，再切换缓存命名空间。
+    func setContext(userId: String?, ledgerId: String?) {
+        self.userId = userId
+        self.ledgerId = ledgerId
+        let u = userId ?? "anon"
+        let l = ledgerId ?? (userId == nil ? "anon" : "default")
+        LocalCache.setNamespace("u-\(u)-l-\(l)")
+        clearState()
+    }
+
+    private func clearState() {
+        accounts = []
+        categories = []
+        transactions = []
+        summary = nil
+        trend = []
+        budgetOverview = nil
+        recurring = []
     }
 
     func moveMonth(by delta: Int) {
