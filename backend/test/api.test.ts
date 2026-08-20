@@ -843,3 +843,27 @@ test("健康检查：live 只探活，ready 校验数据库与迁移", async () 
   assert.ok(ready.json().migrationsApplied >= 1, "应报告已应用的迁移数量");
 });
 
+test("信用卡账单：同一账户同一期不可重复创建（409）", async () => {
+  const acc = await req("POST", "/api/v1/accounts", {
+    name: "信用卡去重测试",
+    type: "credit",
+    currency: "CNY",
+    initialBalance: 0,
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+  const accountId = acc.json().item.id as string;
+
+  const first = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
+    period: "2026-10",
+    statementBalance: 5000,
+  });
+  assert.equal(first.statusCode, 200, first.body);
+
+  const dup = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
+    period: "2026-10",
+    statementBalance: 6000,
+  });
+  assert.equal(dup.statusCode, 409, "同一期重复创建应返回 409");
+  assert.equal(dup.json().error.code, "BILL_PERIOD_EXISTS");
+});
+

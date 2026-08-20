@@ -5,7 +5,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
 import { accounts, creditCardBills, loanPayments, loans } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { amortizationSchedule, monthlyPayment } from "../lib/loan.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
@@ -231,6 +231,12 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .where(and(eq(accounts.id, accountId), eq(accounts.ledgerId, ledgerId), eq(accounts.type, "credit")))
       .get();
     if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "信用卡账户不存在");
+    const existing = db
+      .select()
+      .from(creditCardBills)
+      .where(and(eq(creditCardBills.accountId, accountId), eq(creditCardBills.period, body.period)))
+      .get();
+    if (existing) throw conflict("BILL_PERIOD_EXISTS", "该期账单已存在");
     const id = randomUUID();
     db.insert(creditCardBills)
       .values({
