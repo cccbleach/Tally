@@ -234,6 +234,7 @@ struct FamilyLedgerView: View {
 }
 
 struct LiabilitiesView: View {
+    @Environment(DataStore.self) private var store
     @State private var summary: LiabilitySummary?
     @State private var errorMessage: String?
     @State private var showAddBill = false
@@ -332,8 +333,16 @@ struct LiabilitiesView: View {
     }
 
     private func markPaid(_ id: String) async {
+        // 还款需要生成「还款账户 → 信用卡」的转账，不能只改状态。
+        // 自动选择账本下第一张非信用卡账户作为还款来源。
+        let payFrom = store.accounts.first(where: { $0.type != "credit" })
+        guard let payFrom else {
+            errorMessage = "请先创建一张银行卡/现金账户用于还款"
+            return
+        }
         do {
-            try await APIService.shared.markCreditCardBillPaid(id: id, paid: true)
+            try await APIService.shared.payCreditCardBill(id: id, payFromAccountId: payFrom.id, payDate: nil)
+            await store.loadAll()
             await load()
         } catch {
             errorMessage = error.localizedDescription

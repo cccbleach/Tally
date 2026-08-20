@@ -758,15 +758,24 @@ test("导入 force=true 可强制保留重复项", async () => {
   assert.equal(dup.json().imported, 1, "force=true 应强制新增");
 });
 
-test("信用卡账单创建、列表与标记已还", async () => {
-  const acc = await req("POST", "/api/v1/accounts", {
+test("信用卡账单创建、还款生成转账并标记已还", async () => {
+  const credit = await req("POST", "/api/v1/accounts", {
     name: "信用卡账单测试",
     type: "credit",
     currency: "CNY",
     initialBalance: 0,
   });
-  assert.equal(acc.statusCode, 200, acc.body);
-  const accountId = acc.json().item.id as string;
+  assert.equal(credit.statusCode, 200, credit.body);
+  const accountId = credit.json().item.id as string;
+
+  const bank = await req("POST", "/api/v1/accounts", {
+    name: "还款银行卡",
+    type: "bank",
+    currency: "CNY",
+    initialBalance: 100000,
+  });
+  assert.equal(bank.statusCode, 200, bank.body);
+  const bankId = bank.json().item.id as string;
 
   const create = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
     period: "2026-08",
@@ -781,8 +790,38 @@ test("信用卡账单创建、列表与标记已还", async () => {
   const bill = (bills.json().items as Array<{ id: string; accountId: string }>).find((b) => b.accountId === accountId);
   assert.ok(bill, "应能查到新账单");
 
-  const mark = await req("PATCH", `/api/v1/credit-card-bills/${bill!.id}`, { paid: true });
-  assert.equal(mark.statusCode, 200, mark.body);
+  // 直接 PATCH paid=true 必须被拒绝（不能只改已还状态）
+  const reject = await req("PATCH", `/api/v1/credit-card-bills/${bill!.id}`, { paid: true });
+  assert.equal(reject.statusCode, 400, "直接标记已还应被拒绝");
+
+  // 走还款接口：生成还款账户→信用卡的转账
+  const pay = await req("POST", `/api/v1/credit-card-bills/${bill!.id}/pay`, {
+    payFromAccountId: bankId,
+    payDate: "2026-08-26",
+  });
+  assert.equal(pay.statusCode, 200, pay.body);
+  assert.ok(pay.json().transactionId, "应返回生成的转账流水 id");
+
+  // 流水中应有该笔转账（转出为银行卡）
+  const txs = await req("GET", "/api/v1/transactions");
+  assert.equal(txs.statusCode, 200, txs.body);
+  const transfer = (txs.json().items as Array<{ id: string; type: string; accountId: string; transferToAccountId: string; amount: number }>).find(
+    (t) => t.id === pay.json().transactionId,
+  );
+  assert.ok(transfer, "应能查到还款转账");
+  assert.equal(transfer!.type, "transfer");
+  assert.equal(transfer!.accountId, bankId);
+  assert.equal(transfer!.transferToAccountId, accountId);
+  assert.equal(transfer!.amount, 10000);
+
+  // 账单已标记为已还
+  const after = await req("GET", "/api/v1/credit-card-bills");
+  const paidBill = (after.json().items as Array<{ id: string; paid: boolean }>).find((b) => b.id === bill!.id);
+  assert.equal(paidBill!.paid, true, "还款后账单应为已还");
+
+  // 再次还款应 409
+  const again = await req("POST", `/api/v1/credit-card-bills/${bill!.id}/pay`, { payFromAccountId: bankId });
+  assert.equal(again.statusCode, 409, "已还账单不能重复还款");
 });
 
 test("越权防护：B 看不到 A 账本的信用卡账单", async () => {

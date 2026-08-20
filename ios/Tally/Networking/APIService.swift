@@ -354,8 +354,16 @@ struct APIService {
         )
     }
 
-    func markCreditCardBillPaid(id: String, paid: Bool) async throws {
-        struct Body: Encodable { let paid: Bool }
-        let _: OKResponse = try await client.request("PATCH", "/api/v1/credit-card-bills/\(id)", body: Body(paid: paid))
+    func payCreditCardBill(id: String, payFromAccountId: String, payDate: String?) async throws {
+        struct Body: Encodable {
+            let payFromAccountId: String
+            let payDate: String?
+        }
+        let _: PayResponse = try await client.request("POST", "/api/v1/credit-card-bills/\(id)/pay", body: Body(payFromAccountId: payFromAccountId, payDate: payDate))
     }
+}
+
+struct PayResponse: Decodable {
+    let ok: Bool
+    let transactionId: String?
 }

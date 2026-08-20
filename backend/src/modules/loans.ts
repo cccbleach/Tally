@@ -3,12 +3,13 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts, creditCardBills, loanPayments, loans } from "../db/schema.js";
+import { accounts, creditCardBills, loanPayments, loans, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { amortizationSchedule, monthlyPayment } from "../lib/loan.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
+import { todayStr } from "../lib/date.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createLoanSchema = z.object({
@@ -266,6 +267,67 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     return { items: bills };
   });
 
+  // 还款：必须生成一条「还款账户 → 信用卡账户」的转账流水，再标记已还。
+  // 不允许只把 paid 改成 true（否则余额与流水无法追溯）。
+  app.post("/api/v1/credit-card-bills/:id/pay", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const body = z
+      .object({
+        payFromAccountId: z.string().min(1, "还款账户不能为空"),
+        payDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        ledgerId: z.string().optional(),
+      })
+      .parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
+
+    const bill = db.select().from(creditCardBills).where(eq(creditCardBills.id, id)).get();
+    if (!bill) throw notFound("BILL_NOT_FOUND", "账单不存在");
+    const creditAcct = db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.id, bill.accountId), eq(accounts.ledgerId, ledgerId)))
+      .get();
+    if (!creditAcct) throw notFound("BILL_NOT_FOUND", "账单不存在");
+    if (bill.paid) throw conflict("BILL_ALREADY_PAID", "该期账单已还");
+
+    const payFrom = db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.id, body.payFromAccountId), eq(accounts.ledgerId, ledgerId)))
+      .get();
+    if (!payFrom) throw badRequest("ACCOUNT_NOT_FOUND", "还款账户不存在");
+    if (payFrom.id === bill.accountId) throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是同一张信用卡");
+    if (payFrom.type === "credit") throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是信用卡");
+
+    const now = new Date().toISOString();
+    const transferId = randomUUID();
+    const payDate = body.payDate ?? todayStr();
+
+    db.transaction((tx) => {
+      const row = {
+        id: transferId,
+        userId,
+        ledgerId,
+        accountId: payFrom.id,
+        categoryId: null,
+        type: "transfer" as const,
+        amount: bill.statementBalance,
+        currency: payFrom.currency || creditAcct.currency || "CNY",
+        note: `信用卡还款 ${bill.period}`,
+        date: payDate,
+        transferToAccountId: bill.accountId,
+        sourceType: "credit-payment",
+        createdAt: now,
+        updatedAt: now,
+      };
+      tx.insert(transactions).values(row).run();
+      tx.update(creditCardBills).set({ paid: true }).where(eq(creditCardBills.id, id)).run();
+    });
+
+    return { ok: true, transactionId: transferId };
+  });
+
   app.patch("/api/v1/credit-card-bills/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
     const body = z
@@ -285,6 +347,10 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .where(and(eq(accounts.id, bill.accountId), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!acct) throw notFound("BILL_NOT_FOUND", "账单不存在");
+    if (body.paid === true) {
+      // 标记已还必须走 /pay 生成转账，不能只改 paid
+      throw badRequest("PAY_REQUIRED", "请使用还款接口生成转账后再标记已还");
+    }
     const patch: Partial<typeof creditCardBills.$inferInsert> = {};
     if (body.paid !== undefined) patch.paid = body.paid;
     db.update(creditCardBills).set(patch).where(eq(creditCardBills.id, id)).run();
