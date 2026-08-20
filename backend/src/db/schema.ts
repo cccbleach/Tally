@@ -6,6 +6,7 @@ export const users = sqliteTable("users", {
   passwordHash: text("password_hash").notNull(),
   displayName: text("display_name").notNull(),
   defaultLedgerId: text("default_ledger_id"),
+  currentLedgerId: text("current_ledger_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -15,13 +16,39 @@ export const ledgers = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
+    familyId: text("family_id"), // NULL=个人账本；非空=家庭共享账本
     name: text("name").notNull(),
     currency: text("currency").notNull().default("CNY"),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (t) => [index("idx_ledgers_user").on(t.userId)],
+  (t) => [index("idx_ledgers_user").on(t.userId), index("idx_ledgers_family").on(t.familyId)],
+);
+
+export const families = sqliteTable(
+  "families",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("idx_families_owner").on(t.ownerUserId)],
+);
+
+export const familyMembers = sqliteTable(
+  "family_members",
+  {
+    id: text("id").primaryKey(),
+    familyId: text("family_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull().default("member"), // owner | admin | member
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    joinedAt: text("joined_at").notNull(),
+  },
+  (t) => [uniqueIndex("uniq_family_member").on(t.familyId, t.userId)],
 );
 
 export const accounts = sqliteTable(
@@ -37,9 +64,62 @@ export const accounts = sqliteTable(
     icon: text("icon"),
     color: text("color"),
     isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
+    creditLimit: integer("credit_limit"),       // 信用卡额度（分）
+    billingDay: integer("billing_day"),         // 账单日 1-28
+    repaymentDay: integer("repayment_day"),     // 还款日 1-28
     createdAt: text("created_at").notNull(),
   },
   (t) => [index("idx_accounts_user").on(t.userId), index("idx_accounts_ledger").on(t.ledgerId)],
+);
+
+export const loans = sqliteTable(
+  "loans",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    ledgerId: text("ledger_id"),
+    name: text("name").notNull(),
+    type: text("type").notNull().default("other"), // car | mortgage | other
+    principal: integer("principal").notNull(),      // 分
+    annualRate: real("annual_rate").notNull().default(0),
+    termMonths: integer("term_months").notNull(),
+    startDate: text("start_date").notNull(),
+    monthlyPayment: integer("monthly_payment").notNull().default(0),
+    remainingPrincipal: integer("remaining_principal").notNull(),
+    accountId: text("account_id"),
+    nextPaymentDate: text("next_payment_date"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("idx_loans_ledger").on(t.ledgerId)],
+);
+
+export const loanPayments = sqliteTable(
+  "loan_payments",
+  {
+    id: text("id").primaryKey(),
+    loanId: text("loan_id").notNull(),
+    scheduledDate: text("scheduled_date").notNull(),
+    principalPart: integer("principal_part").notNull(),
+    interestPart: integer("interest_part").notNull(),
+    total: integer("total").notNull(),
+    paid: integer("paid", { mode: "boolean" }).notNull().default(false),
+  },
+  (t) => [index("idx_loan_payments_loan").on(t.loanId)],
+);
+
+export const creditCardBills = sqliteTable(
+  "credit_card_bills",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    period: text("period").notNull(), // YYYY-MM
+    statementBalance: integer("statement_balance").notNull(),
+    minimumPayment: integer("minimum_payment").notNull().default(0),
+    dueDate: text("due_date"),
+    paid: integer("paid", { mode: "boolean" }).notNull().default(false),
+  },
+  (t) => [index("idx_cc_bills_account").on(t.accountId)],
 );
 
 export const categories = sqliteTable(
@@ -74,6 +154,9 @@ export const transactions = sqliteTable(
     transferToAccountId: text("transfer_to_account_id"),
     recurringId: text("recurring_id"), // 周期账单生成关联，用于幂等
     externalId: text("external_id"), // 账单导入来源唯一号，用于去重
+    sourceType: text("source_type"), // manual | wechat | alipay | bank | import
+    dedupKey: text("dedup_key"), // 跨来源指纹（日期+金额+币种+规范化商家）
+    linkedTransactionId: text("linked_transaction_id"), // 人工关联的目标流水
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -82,7 +165,8 @@ export const transactions = sqliteTable(
     index("idx_tx_user_account").on(t.userId, t.accountId),
     index("idx_tx_ledger").on(t.ledgerId),
     uniqueIndex("uniq_recurring_tx").on(t.recurringId, t.date), // 幂等唯一（NULL 互不冲突）
-    uniqueIndex("uniq_tx_external").on(t.userId, t.externalId), // 账单导入去重（NULL 互不冲突）
+    uniqueIndex("uniq_tx_external").on(t.userId, t.externalId), // 账单导入来源内去重（NULL 互不冲突）
+    uniqueIndex("uniq_tx_dedup").on(t.ledgerId, t.dedupKey), // 跨来源去重（NULL 互不冲突）
   ],
 );
 
@@ -144,6 +228,11 @@ export const exchangeRates = sqliteTable(
 
 export type UserRow = typeof users.$inferSelect;
 export type LedgerRow = typeof ledgers.$inferSelect;
+export type FamilyRow = typeof families.$inferSelect;
+export type FamilyMemberRow = typeof familyMembers.$inferSelect;
+export type LoanRow = typeof loans.$inferSelect;
+export type LoanPaymentRow = typeof loanPayments.$inferSelect;
+export type CreditCardBillRow = typeof creditCardBills.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type CategoryRow = typeof categories.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;

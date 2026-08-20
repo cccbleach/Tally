@@ -12,7 +12,8 @@ export function makeAuth(jwt: Jwt) {
     }
     try {
       const payload = await jwt.verify(header.slice(7));
-      if (payload.type === "refresh") {
+      // 严格类型：仅 access token 可访问业务接口，refresh/reset/无类型一律拒绝
+      if (payload.type !== "access") {
         throw unauthorized("UNAUTHORIZED", "请使用访问令牌");
       }
       (request as unknown as { [USER_ID_KEY]: string })[USER_ID_KEY] = payload.sub;

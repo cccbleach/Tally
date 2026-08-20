@@ -41,6 +41,7 @@ export function makeAuthService(db: DB, jwt: Jwt) {
         passwordHash,
         displayName: displayName.trim() || (normalized.includes("@") ? (normalized.split("@")[0] ?? "用户") : "用户"),
         defaultLedgerId: null, // 注册后由 createDefaultLedger 填充
+        currentLedgerId: null,
         createdAt: now,
         updatedAt: now,
       };
@@ -93,6 +94,7 @@ export function makeAuthService(db: DB, jwt: Jwt) {
         passwordHash: "", // 无密码登录，后续可用“忘记密码”设密码
         displayName: "用户",
         defaultLedgerId: null,
+        currentLedgerId: null,
         createdAt: now,
         updatedAt: now,
       };

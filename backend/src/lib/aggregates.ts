@@ -1,6 +1,6 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { DB } from "../db/client.js";
-import { accounts, categories, transactions } from "../db/schema.js";
+import { accounts, categories, loans, transactions } from "../db/schema.js";
 import { currentYearMonth, daysInMonth, todayStr } from "./date.js";
 import { convert } from "./currency.js";
 import { config } from "../config.js";
@@ -9,7 +9,7 @@ export interface BalanceRow { accountId: string; balance: number; }
 
 // 账户余额（账户本币口径）= 初始余额 + 收入 - 支出 + 转入 - 转出（转账不计入收支）。
 // 每个账户按其自身币种核算，不做跨币种换算。
-export function computeAccountBalances(db: DB, userId: string, ledgerId: string): Map<string, number> {
+export function computeAccountBalances(db: DB, _userId: string, ledgerId: string): Map<string, number> {
   const rows = db.all(sql`
     SELECT a.id AS accountId,
       a.initial_balance
@@ -18,7 +18,7 @@ export function computeAccountBalances(db: DB, userId: string, ledgerId: string)
         + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.transfer_to_account_id = a.id AND t.type = 'transfer'), 0)
         - COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.account_id = a.id AND t.type = 'transfer'), 0) AS balance
     FROM accounts a
-    WHERE a.user_id = ${userId} AND a.ledger_id = ${ledgerId}
+    WHERE a.ledger_id = ${ledgerId}
   `) as BalanceRow[];
   const map = new Map<string, number>();
   for (const r of rows) map.set(r.accountId, r.balance);
@@ -34,7 +34,7 @@ export function assetDebtSummary(db: DB, userId: string, ledgerId: string): Asse
   const accts = db
     .select()
     .from(accounts)
-    .where(and(eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId), eq(accounts.isArchived, false)))
+    .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.isArchived, false)))
     .all();
   let net = 0;
   let assets = 0;
@@ -50,7 +50,10 @@ export function assetDebtSummary(db: DB, userId: string, ledgerId: string): Asse
       assets += base;
     }
   }
-  return { assets, debts, net: assets - debts };
+  // 贷款剩余本金计入负债
+  const loanRows = db.select().from(loans).where(eq(loans.ledgerId, ledgerId)).all();
+  const loanDebt = loanRows.reduce((s, l) => s + l.remainingPrincipal, 0);
+  return { assets, debts: debts + loanDebt, net: assets - debts - loanDebt };
 }
 
 export function monthRange(year: number, month: number): { from: string; to: string } {
@@ -82,7 +85,7 @@ export function expenseByCategory(db: DB, userId: string, ledgerId: string, year
   const cats = db
     .select()
     .from(categories)
-    .where(and(eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+    .where(eq(categories.ledgerId, ledgerId))
     .all();
   const catInfo = new Map(cats.map((c) => [c.id, c]));
 
@@ -108,7 +111,7 @@ export function expenseByAccount(db: DB, userId: string, ledgerId: string, year:
   const accts = db
     .select()
     .from(accounts)
-    .where(and(eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+    .where(eq(accounts.ledgerId, ledgerId))
     .all();
   const nameMap = new Map(accts.map((a) => [a.id, a.name]));
   const acc = new Map<string, AccountAgg>();
@@ -171,13 +174,12 @@ function startIndexToDateStr(index: number): string {
   return y + "-" + String(m).padStart(2, "0") + "-01";
 }
 
-function txRowsInRange(db: DB, userId: string, ledgerId: string, from: string, to: string) {
+function txRowsInRange(db: DB, _userId: string, ledgerId: string, from: string, to: string) {
   return db
     .select()
     .from(transactions)
     .where(
       and(
-        eq(transactions.userId, userId),
         eq(transactions.ledgerId, ledgerId),
         gte(transactions.date, from),
         lte(transactions.date, to),

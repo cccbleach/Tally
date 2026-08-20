@@ -6,10 +6,11 @@ import { makeAuthService } from "./service.js";
 import { makeAuth, getUserId } from "../middleware/auth.js";
 import { seedDefaultCategories } from "../db/seed.js";
 import { createDefaultLedger } from "../lib/ledger.js";
-import { badRequest, tooManyRequests, unauthorized } from "../lib/errors.js";
+import { AppError, badRequest, tooManyRequests, unauthorized } from "../lib/errors.js";
 import type { createRateLimiter } from "../lib/rateLimit.js";
 import type { OtpStore } from "../lib/otp.js";
 import { checkVerifyCode, sendVerifyCode } from "../lib/sms.js";
+import { config } from "../config.js";
 
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
@@ -103,15 +104,20 @@ export function registerAuthRoutes(
     enforceLimiter(deps.authLimiter, req);
     const body = requestCodeSchema.parse(req.body);
     const phone = body.email.trim().toLowerCase();
-    // 短信认证：由服务端生成验证码并返回；失败则回退到本地生成（开发模式）。
-    // 始终回传 code，便于客户端在页面上提示“验证码：xxxx”（真实短信也已下发，不影响）。
+    const production = config.authMode === "production";
+
+    // 生产模式：验证码永不回传、发送失败不降级为明文，只返回通用提示。
+    // 开发模式：短信异常时可回退本地生成并回传验证码便于联调。
     const sms = await sendVerifyCode(phone);
     if (sms.sent && sms.code) {
       deps.otp.store(phone, sms.code);
-      return { ok: true, code: sms.code };
+      return { ok: true, ...(production ? {} : { code: sms.code }) };
+    }
+    if (production) {
+      throw new AppError(503, "SMS_SEND_FAILED", "短信发送失败，请稍后重试");
     }
     const code = deps.otp.generate(phone);
-    return { ok: true, code }; // 开发/降级模式：直接把验证码返回给客户端
+    return { ok: true, code };
   });
 
   app.post("/api/v1/auth/login-code", async (req) => {

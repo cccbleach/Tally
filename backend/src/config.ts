@@ -21,6 +21,7 @@ export interface Config {
   accessTokenTtl: string;
   refreshTokenTtl: string;
   logLevel: string;
+  authMode: "production" | "development";
 }
 
 export const DEFAULT_TIMEZONE = "Asia/Shanghai";
@@ -55,4 +56,6 @@ export const config: Config = {
   refreshTokenTtl: process.env.REFRESH_TOKEN_TTL ?? "30d",
   // 日志级别：可配置 info/debug/warn/error；off 表示关闭 Fastify logger
   logLevel: process.env.LOG_LEVEL ?? "warn",
+  // 认证模式：生产模式下验证码永不回传、不写日志、失败不降级为明文；开发模式才允许固定/回传验证码
+  authMode: (process.env.AUTH_MODE as Config["authMode"] | undefined) ?? (isProduction ? "production" : "development"),
 };

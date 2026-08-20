@@ -7,7 +7,7 @@ import { budgets, categories } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { expenseByCategory, monthlyTotals } from "../lib/aggregates.js";
-import { getLedgerId } from "../lib/ledger.js";
+import { getAccessibleLedger } from "../lib/access.js";
 import { currentYearMonth } from "../lib/date.js";
 import type { Jwt } from "../auth/jwt.js";
 
@@ -16,10 +16,12 @@ const createSchema = z.object({
   month: z.number().int().min(1, "月份无效").max(12),
   categoryId: z.string().min(1).nullable().optional(),
   amount: z.number().int().min(0, "预算金额不能为负"),
+  ledgerId: z.string().optional(),
 });
 
 const updateSchema = z.object({
   amount: z.number().int().min(0, "预算金额不能为负"),
+  ledgerId: z.string().optional(),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
@@ -54,8 +56,8 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
 
   app.get("/api/v1/budgets", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const cur = currentYearMonth();
     const year = Number(q.year ?? cur.year) || cur.year;
     const month = Number(q.month ?? cur.month) || cur.month;
@@ -84,8 +86,8 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
 
   app.post("/api/v1/budgets", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = createSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     if (body.categoryId) {
       const cat = db
         .select()
@@ -137,13 +139,13 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
 
   app.patch("/api/v1/budgets/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
-    const { id } = req.params as { id: string };
     const body = updateSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(budgets)
-      .where(and(eq(budgets.id, id), eq(budgets.userId, userId), eq(budgets.ledgerId, ledgerId)))
+      .where(and(eq(budgets.id, id), eq(budgets.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("BUDGET_NOT_FOUND", "预算不存在");
     if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
@@ -151,31 +153,32 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     }
     db.update(budgets)
       .set({ amount: body.amount, updatedAt: new Date().toISOString() })
-      .where(and(eq(budgets.id, id), eq(budgets.userId, userId), eq(budgets.ledgerId, ledgerId)))
+      .where(and(eq(budgets.id, id), eq(budgets.ledgerId, ledgerId)))
       .run();
     return { item: budgetItem(db, userId, ledgerId, { ...existing, amount: body.amount }) };
   });
 
   app.delete("/api/v1/budgets/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(budgets)
-      .where(and(eq(budgets.id, id), eq(budgets.userId, userId), eq(budgets.ledgerId, ledgerId)))
+      .where(and(eq(budgets.id, id), eq(budgets.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("BUDGET_NOT_FOUND", "预算不存在");
     db.delete(budgets)
-      .where(and(eq(budgets.id, id), eq(budgets.userId, userId), eq(budgets.ledgerId, ledgerId)))
+      .where(and(eq(budgets.id, id), eq(budgets.ledgerId, ledgerId)))
       .run();
     return { ok: true };
   });
 
   app.get("/api/v1/budgets/overview", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const cur = currentYearMonth();
     const year = Number(q.year ?? cur.year) || cur.year;
     const month = Number(q.month ?? cur.month) || cur.month;

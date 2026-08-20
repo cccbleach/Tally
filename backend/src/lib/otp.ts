@@ -1,9 +1,16 @@
 // 进程内一次性验证码（OTP）存储。单实例部署足够；多实例需换共享存储/Redis。
+// 验证码以 SHA-256 哈希保存，内存中不存明文。
+
+import { createHash } from "node:crypto";
 
 export interface OtpOptions {
   ttlMs: number;
   length: number;
   maxAttempts: number;
+}
+
+function hash(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
 }
 
 interface Entry {
@@ -30,21 +37,21 @@ export function createOtpStore(opts: Partial<OtpOptions> = {}) {
       const now = Date.now();
       cleanup(now);
       const code = String(Math.floor(Math.random() * 10 ** length)).padStart(length, "0");
-      store.set(key, { code, expiresAt: now + ttlMs, attempts: 0 });
+      store.set(key, { code: hash(code), expiresAt: now + ttlMs, attempts: 0 });
       return code;
     },
     // 存入外部（如短信服务）生成的验证码，仍沿用本地的过期/尝试次数校验
     store(key: string, code: string): void {
       const now = Date.now();
       cleanup(now);
-      store.set(key, { code, expiresAt: now + ttlMs, attempts: 0 });
+      store.set(key, { code: hash(code), expiresAt: now + ttlMs, attempts: 0 });
     },
     verify(key: string, input: string): { ok: boolean; reason?: "expired" | "invalid" | "exhausted" } {
       const now = Date.now();
       const e = store.get(key);
       if (!e || now > e.expiresAt) return { ok: false, reason: "expired" };
       if (e.attempts >= maxAttempts) return { ok: false, reason: "exhausted" };
-      if (e.code !== input) {
+      if (e.code !== hash(input)) {
         e.attempts += 1;
         if (e.attempts >= maxAttempts) store.delete(key);
         return { ok: false, reason: "invalid" };

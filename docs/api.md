@@ -125,6 +125,47 @@
 - 汇率：优先用户级 → 全局 → 内置兜底；未知币种按 1:1 兜底。内置常见币种（USD/EUR/GBP/JPY/HKD/KRW/SGD/AUD/CAD）为人民币视角的近似参考值。
 - `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
 
+## 家庭 / 账本（共享）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /families | 创建家庭，自动创建家庭共享账本并切换为当前 |
+| GET | /families | 我加入的家庭列表 |
+| GET | /families/:id | 家庭详情（成员 + 账本） |
+| POST | /families/:id/members | 添加成员 `{userId}` |
+| PATCH | /families/:id | 修改家庭名称 |
+| DELETE | /families/:id/members/:memberUserId | 移除成员 |
+| GET | /ledgers | 我可见的账本（个人 + 家庭） |
+| POST | /ledgers/switch | 切换当前账本 `{ledgerId}` |
+
+- 账户/分类/流水/预算/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定家庭共享账本
+- 访问控制：个人账本仅创建者；家庭账本仅活跃成员；越权返回 403
+
+## 贷款 / 负债
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /loans | 创建贷款（车贷/房贷/其他），自动生成等额本息还款计划 |
+| GET | /loans | 当前账本贷款列表 |
+| GET | /loans/:id | 贷款详情 + 还款计划 |
+| PATCH | /loans/:id | 更新贷款（名称/利率/扣款账户） |
+| DELETE | /loans/:id | 删除贷款 |
+| POST | /loans/:id/pay | 标记一期已还，自动更新剩余本金 |
+| GET | /liabilities | 负债总览（信用卡欠款 + 贷款剩余 + 信用卡账单） |
+| POST | /credit-cards/:accountId/bills | 创建信用卡账单 |
+| GET | /credit-card-bills | 当前账本信用卡账单列表 |
+| PATCH | /credit-card-bills/:id | 标记账单已还 `{paid}` |
+
+- 净资产 = 资产 −（信用卡欠款 + 贷款剩余本金）
+- 账户接口的信用卡支持 `creditLimit/billingDay/repaymentDay`
+
+## 账单导入去重
+
+- 导入时生成跨来源指纹 `dedup_key`（日期+金额+币种+规范化商家）
+- 默认遇到同账本相同指纹自动跳过，并返回 `suspectedDuplicates`
+- `force:true` 可强制新增重复项（清空 `dedup_key` 并记录 `linked_transaction_id`）
+- `POST /transactions/link` 可手动将疑似重复流水关联到已有流水
+
 ## 健康检查
 
 | 方法 | 路径 | 说明 |

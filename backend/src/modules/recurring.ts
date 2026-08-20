@@ -6,7 +6,7 @@ import type { AppDb } from "../db/client.js";
 import { accounts, categories, recurring } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
-import { getLedgerId } from "../lib/ledger.js";
+import { getAccessibleLedger } from "../lib/access.js";
 import { accountNameMap } from "../repositories/accountRepository.js";
 import { categoryNameMap } from "../repositories/categoryRepository.js";
 import type { Jwt } from "../auth/jwt.js";
@@ -23,6 +23,7 @@ const createSchema = z.object({
   frequency: z.enum(FREQUENCIES),
   interval: z.number().int().min(1, "间隔至少为 1").max(365).default(1),
   startDate: z.string().regex(dateRe, "开始日期格式应为 YYYY-MM-DD"),
+  ledgerId: z.string().optional(),
   endDate: z.string().regex(dateRe, "结束日期格式应为 YYYY-MM-DD").nullable().optional(),
 });
 
@@ -36,6 +37,7 @@ const updateSchema = z.object({
   startDate: z.string().regex(dateRe).optional(),
   endDate: z.string().regex(dateRe).nullable().optional(),
   isActive: z.boolean().optional(),
+  ledgerId: z.string().optional(),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
@@ -68,11 +70,12 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
 
   app.get("/api/v1/recurring", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const rows = db
       .select()
       .from(recurring)
-      .where(and(eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(eq(recurring.ledgerId, ledgerId))
       .orderBy(asc(recurring.nextRunDate))
       .all();
     const am = accountNameMap(db, userId, ledgerId);
@@ -82,8 +85,8 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
 
   app.post("/api/v1/recurring", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = createSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     const account = db
       .select()
       .from(accounts)
@@ -127,13 +130,13 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
 
   app.patch("/api/v1/recurring/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
-    const { id } = req.params as { id: string };
     const body = updateSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(recurring)
-      .where(and(eq(recurring.id, id), eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("RECURRING_NOT_FOUND", "周期账单不存在");
     if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
@@ -145,7 +148,7 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       const acct = db
         .select()
         .from(accounts)
-        .where(and(eq(accounts.id, body.accountId), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+        .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
       patch.accountId = body.accountId;
@@ -154,7 +157,7 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       const cat = db
         .select()
         .from(categories)
-        .where(and(eq(categories.id, body.categoryId), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+        .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
         .get();
       if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
       if (cat.type !== existing.type) throw badRequest("CATEGORY_TYPE_MISMATCH", "分类类型与收支类型不匹配");
@@ -176,12 +179,12 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     patch.updatedAt = new Date().toISOString();
     db.update(recurring)
       .set(patch)
-      .where(and(eq(recurring.id, id), eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .run();
     const updated = db
       .select()
       .from(recurring)
-      .where(and(eq(recurring.id, id), eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .get();
     const am = accountNameMap(db, userId, ledgerId);
     const cm = categoryNameMap(db, userId, ledgerId);
@@ -190,16 +193,17 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
 
   app.delete("/api/v1/recurring/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(recurring)
-      .where(and(eq(recurring.id, id), eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("RECURRING_NOT_FOUND", "周期账单不存在");
     db.delete(recurring)
-      .where(and(eq(recurring.id, id), eq(recurring.userId, userId), eq(recurring.ledgerId, ledgerId)))
+      .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .run();
     return { ok: true };
   });

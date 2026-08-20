@@ -6,7 +6,7 @@ import type { AppDb } from "../db/client.js";
 import { categories } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
-import { getLedgerId } from "../lib/ledger.js";
+import { getAccessibleLedger } from "../lib/access.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createSchema = z.object({
@@ -15,6 +15,7 @@ const createSchema = z.object({
   icon: z.string().max(100).optional(),
   color: z.string().max(20).optional(),
   sortOrder: z.number().int().optional(),
+  ledgerId: z.string().optional(),
 });
 
 const updateSchema = z.object({
@@ -22,6 +23,7 @@ const updateSchema = z.object({
   icon: z.string().max(100).nullable().optional(),
   color: z.string().max(20).nullable().optional(),
   sortOrder: z.number().int().optional(),
+  ledgerId: z.string().optional(),
 });
 
 type CategoryRow = typeof categories.$inferSelect;
@@ -43,11 +45,12 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
 
   app.get("/api/v1/categories", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const rows = db
       .select()
       .from(categories)
-      .where(and(eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(eq(categories.ledgerId, ledgerId))
       .orderBy(asc(categories.sortOrder), asc(categories.createdAt))
       .all();
     return { items: rows.map(toDto) };
@@ -55,8 +58,8 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
 
   app.post("/api/v1/categories", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = createSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     const row = {
       id: randomUUID(),
       userId,
@@ -74,13 +77,13 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
 
   app.patch("/api/v1/categories/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
-    const { id } = req.params as { id: string };
     const body = updateSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(categories)
-      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
     const patch: Partial<typeof categories.$inferInsert> = {};
@@ -90,28 +93,29 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
     if (body.sortOrder !== undefined) patch.sortOrder = body.sortOrder;
     db.update(categories)
       .set(patch)
-      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .run();
     const updated = db
       .select()
       .from(categories)
-      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .get();
     return { item: toDto(updated as CategoryRow) };
   });
 
   app.delete("/api/v1/categories/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(categories)
-      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
     db.delete(categories)
-      .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .run();
     return { ok: true };
   });

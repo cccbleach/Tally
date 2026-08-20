@@ -650,3 +650,137 @@ test("账单导入按 external_id 去重（重复导入不重复入账）", asyn
   const withExternal = (tx.json().items as Array<{ note: string | null }>).filter((t) => t.note === "导入测试");
   assert.equal(withExternal.length, 2);
 });
+
+test("家庭共享账本：成员可读共享数据，非成员不可访问个人账本", async () => {
+  const regA = await req("POST", "/api/v1/auth/register", { email: "family-a@test.com", password: "password123" });
+  assert.equal(regA.statusCode, 200, regA.body);
+  const hA = { authorization: "Bearer " + regA.json().token };
+  const idA = regA.json().user.id as string;
+
+  const regB = await req("POST", "/api/v1/auth/register", { email: "family-b@test.com", password: "password123" });
+  assert.equal(regB.statusCode, 200, regB.body);
+  const hB = { authorization: "Bearer " + regB.json().token };
+  const idB = regB.json().user.id as string;
+
+  // A 创建家庭（自动创建家庭共享账本并切换为当前）
+  const fam = await app.inject({ method: "POST", url: "/api/v1/families", headers: hA, payload: { name: "测试家庭" } });
+  assert.equal(fam.statusCode, 200, fam.body);
+  const familyId = fam.json().item.id as string;
+  const familyLedger = fam.json().item.ledgerId as string;
+
+  // A 在家庭账本建账户
+  const acc = await app.inject({
+    method: "POST",
+    url: "/api/v1/accounts",
+    headers: hA,
+    payload: { name: "家庭账户", type: "bank", initialBalance: 0, ledgerId: familyLedger },
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+
+  // B 加入家庭
+  const add = await app.inject({
+    method: "POST",
+    url: `/api/v1/families/${familyId}/members`,
+    headers: hA,
+    payload: { userId: idB },
+  });
+  assert.equal(add.statusCode, 200, add.body);
+
+  // B 能看到家庭账本里的账户
+  const listB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + familyLedger, headers: hB });
+  assert.equal(listB.statusCode, 200, listB.body);
+  assert.equal(listB.json().items.length, 1, "家庭成员应能看到共享账本账户");
+
+  // A 的个人默认账本
+  const ledgersA = await app.inject({ method: "GET", url: "/api/v1/ledgers", headers: hA });
+  const personalA = (ledgersA.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null)!;
+  const forbiddenB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + personalA.id, headers: hB });
+  assert.equal(forbiddenB.statusCode, 403, "非成员访问个人账本应 403");
+});
+
+test("跨来源去重：同一笔在不同来源（不同 externalId）导入只入账一次", async () => {
+  const first = await req("POST", "/api/v1/transactions/import", {
+    mode: "items",
+    items: [{ date: todayStr(), amount: 6666, type: "expense", note: "美团外卖", externalId: "wechat-001" }],
+  });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().imported, 1);
+
+  // 来自银行/支付宝的同一天同金额同商家（写法略不同）应被判定为疑似重复并跳过
+  const second = await req("POST", "/api/v1/transactions/import", {
+    mode: "items",
+    items: [{ date: todayStr(), amount: 6666, type: "expense", note: "美团外卖（特约）", externalId: "bank-001" }],
+  });
+  assert.equal(second.statusCode, 200, second.body);
+  assert.equal(second.json().imported, 0, "跨来源重复应被跳过");
+  assert.equal(second.json().skipped, 1);
+  assert.ok(second.json().suspectedDuplicates.length >= 1, "应返回疑似重复信息");
+});
+
+test("贷款创建、还款与负债统计", async () => {
+  const created = await req("POST", "/api/v1/loans", {
+    name: "房贷",
+    type: "mortgage",
+    principal: 1_000_000, // 1万元
+    annualRate: 4.9,
+    termMonths: 12,
+    startDate: "2026-01-01",
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const loanId = created.json().item.id as string;
+  assert.ok(created.json().item.monthlyPayment > 0);
+
+  const detail = await req("GET", "/api/v1/loans/" + loanId);
+  assert.equal(detail.statusCode, 200, detail.body);
+  assert.equal(detail.json().schedule.length, 12);
+
+  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", {});
+  assert.equal(pay.statusCode, 200, pay.body);
+
+  const liabilities = await req("GET", "/api/v1/liabilities");
+  assert.equal(liabilities.statusCode, 200, liabilities.body);
+  const loan = (liabilities.json().loans as Array<{ id: string; remainingPrincipal: number }>).find((l) => l.id === loanId);
+  assert.ok(loan, "负债列表应包含贷款");
+  assert.ok(loan.remainingPrincipal < 1_000_000, "还款后剩余本金应减少");
+});
+
+test("导入 force=true 可强制保留重复项", async () => {
+  const item = { date: todayStr(), amount: 321, type: "expense", note: "重复保留测试", externalId: "force-001" };
+  const first = await req("POST", "/api/v1/transactions/import", { mode: "items", items: [item] });
+  assert.equal(first.json().imported, 1);
+
+  const dup = await req("POST", "/api/v1/transactions/import", {
+    mode: "items",
+    items: [{ ...item, externalId: "force-002", note: "重复保留测试（特约）" }],
+    force: true,
+  });
+  assert.equal(dup.statusCode, 200, dup.body);
+  assert.equal(dup.json().imported, 1, "force=true 应强制新增");
+});
+
+test("信用卡账单创建、列表与标记已还", async () => {
+  const acc = await req("POST", "/api/v1/accounts", {
+    name: "信用卡账单测试",
+    type: "credit",
+    currency: "CNY",
+    initialBalance: 0,
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+  const accountId = acc.json().item.id as string;
+
+  const create = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
+    period: "2026-08",
+    statementBalance: 10000,
+    minimumPayment: 1000,
+    dueDate: "2026-08-25",
+  });
+  assert.equal(create.statusCode, 200, create.body);
+
+  const bills = await req("GET", "/api/v1/credit-card-bills");
+  assert.equal(bills.statusCode, 200, bills.body);
+  const bill = (bills.json().items as Array<{ id: string; accountId: string }>).find((b) => b.accountId === accountId);
+  assert.ok(bill, "应能查到新账单");
+
+  const mark = await req("PATCH", `/api/v1/credit-card-bills/${bill!.id}`, { paid: true });
+  assert.equal(mark.statusCode, 200, mark.body);
+});

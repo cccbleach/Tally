@@ -64,3 +64,27 @@ test("登录接口超出阈值返回 429", async () => {
   assert.equal(attempts[3]!.statusCode, 429, "第 4 次应触发限流");
   assert.equal(attempts[3]!.json().error.code, "RATE_LIMITED");
 });
+
+test("reset token 与 refresh token 不能访问业务接口，仅 access token 可访问", async () => {
+  const { makeJwt } = await import("../src/auth/jwt.js");
+  const jwt = makeJwt("test-secret");
+  const access = await jwt.signAccess("user-a");
+  const refresh = await jwt.signRefresh("user-a");
+  const reset = await jwt.signReset("user-a");
+
+  const call = (token: string) =>
+    app.inject({
+      method: "GET",
+      url: "/api/v1/transactions",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+  assert.equal((await call(refresh)).statusCode, 401, "refresh token 不能访问业务接口");
+  assert.equal((await call(reset)).statusCode, 401, "reset token 不能访问业务接口");
+  const ok = await app.inject({
+    method: "GET",
+    url: "/api/v1/transactions",
+    headers: { authorization: `Bearer ${access}` },
+  });
+  assert.notEqual(ok.statusCode, 401, "access token 应可访问业务接口");
+});

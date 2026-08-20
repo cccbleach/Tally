@@ -62,10 +62,10 @@ export async function sendVerifyCode(phone: string): Promise<SmsResult> {
       console.error("[sms] 阿里云返回发送失败:", JSON.stringify(body ?? {}));
       return { sent: false };
     }
-    console.log("[sms] 阿里云短信发送成功, verifyCode:", sentCode);
+    console.log("[sms] 阿里云短信发送成功（敏感信息不落日志）");
     return { sent: true, code: sentCode };
   } catch (e: any) {
-    console.error("[sms] 发送失败，降级为开发模式回传验证码:", e?.message ?? e);
+    console.error("[sms] 短信发送失败:", e?.message ?? e);
     return { sent: false };
   }
 }

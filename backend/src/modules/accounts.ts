@@ -7,7 +7,7 @@ import { accounts } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
-import { getLedgerId } from "../lib/ledger.js";
+import { getAccessibleLedger } from "../lib/access.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const ACCOUNT_TYPES = ["cash", "bank", "e-wallet", "credit", "other"] as const;
@@ -19,6 +19,7 @@ const createSchema = z.object({
   initialBalance: z.number().int("初始余额必须为整数（分）").default(0),
   icon: z.string().max(100).optional(),
   color: z.string().max(20).optional(),
+  ledgerId: z.string().optional(), // 家庭共享账本时指定；不传用当前账本
 });
 
 const updateSchema = z.object({
@@ -29,6 +30,10 @@ const updateSchema = z.object({
   icon: z.string().max(100).nullable().optional(),
   color: z.string().max(20).nullable().optional(),
   isArchived: z.boolean().optional(),
+  creditLimit: z.number().int().min(0).nullable().optional(),
+  billingDay: z.number().int().min(1).max(28).nullable().optional(),
+  repaymentDay: z.number().int().min(1).max(28).nullable().optional(),
+  ledgerId: z.string().optional(),
 });
 
 type AccountRow = typeof accounts.$inferSelect;
@@ -48,6 +53,9 @@ function toDto(row: AccountRow, balance: number) {
     isLiability: row.type === "credit",
     balance,
     debt: row.type === "credit" ? Math.max(0, -balance) : 0,
+    creditLimit: row.creditLimit ?? null,
+    billingDay: row.billingDay ?? null,
+    repaymentDay: row.repaymentDay ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -58,11 +66,12 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
 
   app.get("/api/v1/accounts", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const rows = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(eq(accounts.ledgerId, ledgerId))
       .all();
     const balances = computeAccountBalances(db, userId, ledgerId);
     return { items: rows.map((r) => toDto(r, balances.get(r.id) ?? r.initialBalance)) };
@@ -70,8 +79,8 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
 
   app.post("/api/v1/accounts", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = createSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     const row = {
       id: randomUUID(),
       userId,
@@ -83,6 +92,9 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       icon: body.icon ?? null,
       color: body.color ?? null,
       isArchived: false,
+      creditLimit: null,
+      billingDay: null,
+      repaymentDay: null,
       createdAt: new Date().toISOString(),
     };
     db.insert(accounts).values(row).run();
@@ -91,12 +103,13 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
 
   app.get("/api/v1/accounts/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const row = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!row) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
     const balances = computeAccountBalances(db, userId, ledgerId);
@@ -105,13 +118,13 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
 
   app.patch("/api/v1/accounts/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
-    const { id } = req.params as { id: string };
     const body = updateSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
     const patch: Partial<typeof accounts.$inferInsert> = {};
@@ -122,14 +135,17 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     if (body.icon !== undefined) patch.icon = body.icon;
     if (body.color !== undefined) patch.color = body.color;
     if (body.isArchived !== undefined) patch.isArchived = body.isArchived;
+    if (body.creditLimit !== undefined) patch.creditLimit = body.creditLimit;
+    if (body.billingDay !== undefined) patch.billingDay = body.billingDay;
+    if (body.repaymentDay !== undefined) patch.repaymentDay = body.repaymentDay;
     db.update(accounts)
       .set(patch)
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .run();
     const updated = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     const balances = computeAccountBalances(db, userId, ledgerId);
     return { item: toDto(updated as AccountRow, balances.get(id) ?? (updated as AccountRow).initialBalance) };
@@ -138,17 +154,18 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
   // 删除 = 归档（软删除），保留流水关联
   app.delete("/api/v1/accounts/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
     db.update(accounts)
       .set({ isArchived: true })
-      .where(and(eq(accounts.id, id), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .run();
     return { ok: true, item: toDto({ ...existing, isArchived: true } as AccountRow, existing.initialBalance) };
   });

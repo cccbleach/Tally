@@ -2,12 +2,12 @@ import { and, asc, eq } from "drizzle-orm";
 import type { DB } from "../db/client.js";
 import { categories, type CategoryRow } from "../db/schema.js";
 
-// 分类数据访问层：按 用户 + 账本 隔离。
-export function listCategoriesForUser(db: DB, userId: string, ledgerId: string): CategoryRow[] {
+// 分类数据访问层：按账本访问（访问控制已在路由层校验）。
+export function listCategoriesForUser(db: DB, _userId: string, ledgerId: string): CategoryRow[] {
   return db
     .select()
     .from(categories)
-    .where(and(eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+    .where(eq(categories.ledgerId, ledgerId))
     .orderBy(asc(categories.sortOrder), asc(categories.createdAt))
     .all();
 }
@@ -20,10 +20,10 @@ export function categoryNameMap(db: DB, userId: string, ledgerId: string): Map<s
   return new Map(listCategoriesForUser(db, userId, ledgerId).map((c) => [c.id, c.name]));
 }
 
-export function categoryById(db: DB, userId: string, ledgerId: string, id: string): CategoryRow | undefined {
+export function categoryById(db: DB, _userId: string, ledgerId: string, id: string): CategoryRow | undefined {
   return db
     .select()
     .from(categories)
-    .where(and(eq(categories.id, id), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+    .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
     .get();
 }

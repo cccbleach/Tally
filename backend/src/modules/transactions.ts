@@ -6,7 +6,7 @@ import type { AppDb } from "../db/client.js";
 import { accounts, categories, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
-import { getLedgerId } from "../lib/ledger.js";
+import { getAccessibleLedger } from "../lib/access.js";
 import { loadRelationMaps, type RelationMaps } from "../services/transactionService.js";
 import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
@@ -18,6 +18,7 @@ import {
   parseWechatXlsx,
   type ParsedBill,
 } from "../lib/billParser.js";
+import { buildDedupKey } from "../lib/dedup.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -27,6 +28,7 @@ const commonFields = {
   date: z.string().regex(dateRe, "日期格式应为 YYYY-MM-DD"),
   note: z.string().max(500, "备注过长").optional(),
   currency: z.string().default("CNY"),
+  ledgerId: z.string().optional(),
   accountId: z.string().min(1, "账户不能为空"),
 };
 
@@ -42,6 +44,7 @@ const updateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
   accountId: z.string().min(1).optional(),
   categoryId: z.string().min(1).nullable().optional(),
+  ledgerId: z.string().optional(),
   // 乐观锁：可选。若提供且与服务端当前 updatedAt 不一致则返回 409。
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
@@ -52,6 +55,8 @@ const billImportSchema = z
     source: z.enum(["wechat", "alipay", "bank"]).optional(),
     content: z.string().optional(),
     contentBase64: z.string().optional(),
+    ledgerId: z.string().optional(),
+    force: z.boolean().optional(),
     items: z
       .array(
         z.object({
@@ -101,13 +106,13 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
   app.get("/api/v1/transactions", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const page = Math.max(1, Number(q.page ?? 1) || 1);
     const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
     const offset = (page - 1) * limit;
 
-    const conds: SQL[] = [eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)];
+    const conds: SQL[] = [eq(transactions.ledgerId, ledgerId)];
     if (q.from) conds.push(gte(transactions.date, q.from));
     if (q.to) conds.push(lte(transactions.date, q.to));
     if (q.accountId) {
@@ -135,8 +140,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
   app.post("/api/v1/transactions", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = createSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
 
     const account = db
       .select()
@@ -183,6 +188,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       note: body.note ?? null,
       date: body.date,
       transferToAccountId,
+      sourceType: "manual",
       createdAt: now,
       updatedAt: now,
     };
@@ -193,12 +199,13 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
   app.get("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const row = db
       .select()
       .from(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!row) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
@@ -207,13 +214,13 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
   app.patch("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
-    const { id } = req.params as { id: string };
     const body = updateSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
     if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
@@ -228,7 +235,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       const acct = db
         .select()
         .from(accounts)
-        .where(and(eq(accounts.id, body.accountId), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+        .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
       patch.accountId = body.accountId;
@@ -240,7 +247,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         const cat = db
           .select()
           .from(categories)
-          .where(and(eq(categories.id, body.categoryId), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+          .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
           .get();
         if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
         if (cat.type !== existing.type) throw badRequest("CATEGORY_TYPE_MISMATCH", "分类类型与收支类型不匹配");
@@ -250,12 +257,12 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     patch.updatedAt = new Date().toISOString();
     db.update(transactions)
       .set(patch)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .run();
     const updated = db
       .select()
       .from(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
     return { item: toDto(updated as TransactionRow, am, cm) };
@@ -263,24 +270,25 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
 
   app.delete("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
+    const q = req.query as Record<string, string | undefined>;
+    const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const { id } = req.params as { id: string };
     const existing = db
       .select()
       .from(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
     db.delete(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.userId, userId), eq(transactions.ledgerId, ledgerId)))
+      .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .run();
     return { ok: true };
   });
 
   app.post("/api/v1/transactions/import", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
-    const ledgerId = getLedgerId(db, userId);
     const body = billImportSchema.parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
 
     let items: ParsedBill[];
     if (body.mode === "raw") {
@@ -315,9 +323,23 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const expenseCat = cats.find((c) => c.type === "expense");
 
     const now = new Date().toISOString();
+    const sourceType = body.mode === "raw" ? body.source! : "import";
     let imported = 0;
+    const suspectedDuplicates: Array<{ dedupKey: string; existingId: string }> = [];
     for (const it of items) {
       const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
+      const dedupKey = buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note);
+      const existing = db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.dedupKey, dedupKey)))
+        .get();
+      if (existing && !body.force) {
+        suspectedDuplicates.push({ dedupKey, existingId: existing.id });
+        continue; // 默认跳过跨来源疑似重复
+      }
+      // force=true 时仍新增，但清空 dedup_key 避免唯一索引拦截
+      const effectiveDedupKey = existing ? null : dedupKey;
       const row = {
         id: randomUUID(),
         userId,
@@ -332,6 +354,9 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         transferToAccountId: null,
         recurringId: null,
         externalId,
+        sourceType,
+        dedupKey: effectiveDedupKey,
+        linkedTransactionId: existing?.id ?? null,
         createdAt: now,
         updatedAt: now,
       };
@@ -339,13 +364,39 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         const r = db
           .insert(transactions)
           .values(row)
-          .onConflictDoNothing({ target: [transactions.userId, transactions.externalId] })
+          .onConflictDoNothing({ target: [transactions.ledgerId, transactions.dedupKey] })
           .run();
         if (r.changes > 0) imported++;
       } catch {
         // 单条失败不中断整体导入
       }
     }
-    return { imported, skipped: items.length - imported, total: items.length };
+    const skipped = items.length - imported;
+    return { imported, skipped, total: items.length, suspectedDuplicates };
+  });
+
+  app.post("/api/v1/transactions/link", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const body = z
+      .object({ sourceId: z.string().min(1), targetId: z.string().min(1), ledgerId: z.string().optional() })
+      .parse(req.body);
+    const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    const source = db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.id, body.sourceId), eq(transactions.ledgerId, ledgerId)))
+      .get();
+    const target = db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.id, body.targetId), eq(transactions.ledgerId, ledgerId)))
+      .get();
+    if (!source || !target) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
+    if (source.id === target.id) throw badRequest("INVALID_LINK", "不能关联自身");
+    db.update(transactions)
+      .set({ linkedTransactionId: target.id, updatedAt: new Date().toISOString() })
+      .where(eq(transactions.id, source.id))
+      .run();
+    return { ok: true };
   });
 }
