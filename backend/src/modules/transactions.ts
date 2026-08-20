@@ -89,6 +89,7 @@ function toDto(tx: TransactionRow, am: RelationMaps["am"], cm: RelationMaps["cm"
     currency: tx.currency,
     note: tx.note,
     date: tx.date,
+    sourceType: tx.sourceType ?? null,
     transferToAccountId: tx.transferToAccountId,
     createdAt: tx.createdAt,
     updatedAt: tx.updatedAt,

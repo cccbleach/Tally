@@ -32,6 +32,7 @@ const updateLoanSchema = z.object({
 
 const payLoanSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  payFromAccountId: z.string().optional(),
   ledgerId: z.string().optional(),
 });
 
@@ -154,22 +155,55 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .orderBy(asc(loanPayments.scheduledDate))
       .get();
     if (!next) throw badRequest("LOAN_PAID_OFF", "贷款已还清");
+
+    // 还款来源账户：优先显式指定，其次贷款绑定的账户；必须是账本内非信用卡账户。
+    const payFromId = body.payFromAccountId ?? loan.accountId;
+    const payFrom = payFromId
+      ? db.select().from(accounts).where(and(eq(accounts.id, payFromId), eq(accounts.ledgerId, ledgerId))).get()
+      : undefined;
+    if (!payFrom) throw badRequest("ACCOUNT_NOT_FOUND", "请先为贷款绑定或指定还款账户（银行卡/现金）");
+    if (payFrom.type === "credit") throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是信用卡");
+
     const date = body.date ?? next.scheduledDate;
-    db.update(loanPayments)
-      .set({ paid: true })
-      .where(eq(loanPayments.id, next.id))
-      .run();
-    const all = db.select().from(loanPayments).where(eq(loanPayments.loanId, id)).orderBy(asc(loanPayments.scheduledDate)).all();
-    const nextUnpaid = all.find((p) => !p.paid);
-    const unpaidPrincipal = all.filter((p) => !p.paid).reduce((sum, p) => sum + p.principalPart, 0);
-    db.update(loans)
-      .set({
-        remainingPrincipal: unpaidPrincipal,
-        nextPaymentDate: nextUnpaid?.scheduledDate ?? null,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(loans.id, id))
-      .run();
+    const now = new Date().toISOString();
+
+    // 全部在同一事务内完成：生成还款转账流水 + 标记期次已还 + 更新贷款余额，失败整体回滚
+    db.transaction((tx) => {
+      const transferId = randomUUID();
+      tx.insert(transactions)
+        .values({
+          id: transferId,
+          userId,
+          ledgerId,
+          accountId: payFrom.id,
+          categoryId: null,
+          type: "transfer",
+          amount: next.total,
+          currency: payFrom.currency || "CNY",
+          note: `贷款还款 ${loan.name} 第${next.scheduledDate}期`,
+          date,
+          transferToAccountId: loan.accountId ?? null,
+          sourceType: "loan-payment",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+
+      tx.update(loanPayments).set({ paid: true }).where(eq(loanPayments.id, next.id)).run();
+
+      const all = tx.select().from(loanPayments).where(eq(loanPayments.loanId, id)).orderBy(asc(loanPayments.scheduledDate)).all();
+      const nextUnpaid = all.find((p) => !p.paid);
+      const unpaidPrincipal = all.filter((p) => !p.paid).reduce((sum, p) => sum + p.principalPart, 0);
+      tx.update(loans)
+        .set({
+          remainingPrincipal: unpaidPrincipal,
+          nextPaymentDate: nextUnpaid?.scheduledDate ?? null,
+          updatedAt: now,
+        })
+        .where(eq(loans.id, id))
+        .run();
+    });
+
     return { ok: true, paidDate: date };
   });
 

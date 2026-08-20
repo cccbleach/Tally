@@ -717,7 +717,25 @@ test("跨来源去重：同一笔在不同来源（不同 externalId）导入只
   assert.ok(second.json().suspectedDuplicates.length >= 1, "应返回疑似重复信息");
 });
 
-test("贷款创建、还款与负债统计", async () => {
+test("贷款创建、还款生成转账与负债统计", async () => {
+  const bank = await req("POST", "/api/v1/accounts", {
+    name: "还款卡",
+    type: "bank",
+    currency: "CNY",
+    initialBalance: 5000000,
+  });
+  assert.equal(bank.statusCode, 200, bank.body);
+  const bankId = bank.json().item.id as string;
+
+  const loanAccount = await req("POST", "/api/v1/accounts", {
+    name: "贷款账户",
+    type: "other",
+    currency: "CNY",
+    initialBalance: 0,
+  });
+  assert.equal(loanAccount.statusCode, 200, loanAccount.body);
+  const loanAccountId = loanAccount.json().item.id as string;
+
   const created = await req("POST", "/api/v1/loans", {
     name: "房贷",
     type: "mortgage",
@@ -725,6 +743,7 @@ test("贷款创建、还款与负债统计", async () => {
     annualRate: 4.9,
     termMonths: 12,
     startDate: "2026-01-01",
+    accountId: loanAccountId,
   });
   assert.equal(created.statusCode, 200, created.body);
   const loanId = created.json().item.id as string;
@@ -734,8 +753,17 @@ test("贷款创建、还款与负债统计", async () => {
   assert.equal(detail.statusCode, 200, detail.body);
   assert.equal(detail.json().schedule.length, 12);
 
-  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", {});
+  // 显式指定还款来源为银行卡，并用当天日期（首页流水按当月查询，能命中）
+  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, payDate: todayStr() });
   assert.equal(pay.statusCode, 200, pay.body);
+
+  // 还款应生成一条从银行卡到贷款账户的转账流水
+  const txs = await req("GET", "/api/v1/transactions");
+  const paymentTx = (txs.json().items as Array<{ accountId: string; transferToAccountId: string | null; type: string; sourceType: string }>).find(
+    (t) => t.accountId === bankId && t.type === "transfer" && t.sourceType === "loan-payment",
+  );
+  assert.ok(paymentTx, "还款应生成转账流水");
+  assert.equal(paymentTx!.transferToAccountId, loanAccountId, "转账目标为贷款绑定的账户");
 
   const liabilities = await req("GET", "/api/v1/liabilities");
   assert.equal(liabilities.statusCode, 200, liabilities.body);
