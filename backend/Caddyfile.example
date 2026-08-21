@@ -1,0 +1,20 @@
+# Caddy 自动 HTTPS 反向代理示例
+# 用法：把你的域名替换成 tally.example.com，然后：
+#   docker compose -f docker-compose.caddy.yml up -d
+# 首次会通过 Let's Encrypt 自动签发证书；需把域名 A 记录指向服务器公网 IP，并确保 80/443 放行。
+# 启用后 App 服务器地址改为 https://你的域名，并在 project.yml/Info.plist 收紧 ATS。
+
+tally.example.com {
+	# 仅允许内网访问后端，避免公网直接命中 8080
+	reverse_proxy tally-backend:8080
+
+	encode gzip
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+}
