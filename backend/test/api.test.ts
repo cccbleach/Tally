@@ -988,3 +988,37 @@ test("导入暂存流程：建任务→预览→提交，不静默丢弃", async
   assert.ok(!names.includes("暂存A"), "被 skip 的明细不进入正式流水");
 });
 
+test("导入 multipart 文件上传：解析建任务且记 SHA-256", async () => {
+  const acc = await req("POST", "/api/v1/accounts", {
+    name: "multipart导入账户",
+    type: "bank",
+    currency: "CNY",
+    initialBalance: 0,
+  });
+  assert.equal(acc.statusCode, 200, acc.body);
+
+  const content = `微信支付账单明细
+交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+2026-08-20 12:00:00,商户消费,某店,外卖,支出,¥12.00,零钱,支付成功,100001,200001,测试`;
+
+  const boundary = "----TallyTestBoundary1234";
+  const parts = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="source"\r\n\r\nwechat\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="wechat.txt"\r\nContent-Type: text/plain\r\n\r\n${content}\r\n`,
+    `--${boundary}--\r\n`,
+  ];
+  const body = parts.join("");
+
+  const up = await app.inject({
+    method: "POST",
+    url: "/api/v1/imports/jobs/upload",
+    headers: { ...headers, "content-type": `multipart/form-data; boundary=${boundary}` },
+    payload: body,
+  });
+  assert.equal(up.statusCode, 200, up.body);
+  assert.equal(up.json().item.source, "wechat");
+  assert.equal(up.json().counts.total, 1, "应解析出 1 条明细");
+  assert.ok(up.json().item.fileHash, "应记录 file SHA-256");
+  assert.match(up.json().item.fileHash, /^[a-f0-9]{64}$/, "SHA-256 应为 64 位 hex");
+});
+

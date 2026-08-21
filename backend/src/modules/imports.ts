@@ -50,6 +50,70 @@ function fileHashOf(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
+async function createStagedJob(
+  db: AppDb["db"],
+  opts: { userId: string; ledgerId: string; items: ParsedBill[]; source: string; filename: string | null; fileHash: string | null },
+) {
+  const { userId, ledgerId, items, source, filename, fileHash } = opts;
+  if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
+  if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
+
+  const accts = listAccountsForUser(db, userId, ledgerId);
+  const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
+  if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
+  const cats = listCategoriesForUser(db, userId, ledgerId);
+  const incomeCat = cats.find((c) => c.type === "income");
+  const expenseCat = cats.find((c) => c.type === "expense");
+
+  const now = new Date().toISOString();
+  const jobId = randomUUID();
+  db.insert(importJobs)
+    .values({
+      id: jobId,
+      ledgerId,
+      userId,
+      source,
+      filename,
+      fileHash,
+      status: "staged",
+      totalCount: items.length,
+      importedCount: 0,
+      skippedCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .run();
+
+  for (const it of items) {
+    const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
+    const dedupKey = buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note);
+    const existing = db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.dedupKey, dedupKey)))
+      .get();
+    const status = existing ? "duplicate" : "new";
+    db.insert(importItems)
+      .values({
+        id: randomUUID(),
+        jobId,
+        externalId,
+        occurredAt: it.date,
+        type: it.type,
+        amount: it.amount,
+        currency: it.currency ?? "CNY",
+        merchant: it.note ? buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note).slice(0, 64) : null,
+        rawDescription: it.note,
+        duplicateStatus: status,
+        matchedTransactionId: existing?.id ?? null,
+        decision: status === "duplicate" ? "skip" : "accept",
+        createdAt: now,
+      })
+      .run();
+  }
+  return summarize(db, jobId);
+}
+
 export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db"]; jwt: Jwt }) {
   const { db } = deps;
   const auth = makeAuth(deps.jwt);
@@ -88,62 +152,56 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     }
     if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
     if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
+    const counts = await createStagedJob(db, {
+      userId,
+      ledgerId,
+      items,
+      source,
+      filename: body.filename ?? null,
+      fileHash: rawBuffer ? fileHashOf(rawBuffer) : null,
+    });
+    return { item: counts.job, counts: counts.counts };
+  });
 
-    const accts = listAccountsForUser(db, userId, ledgerId);
-    const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
-    if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
-    const cats = listCategoriesForUser(db, userId, ledgerId);
-    const incomeCat = cats.find((c) => c.type === "income");
-    const expenseCat = cats.find((c) => c.type === "expense");
+  // multipart 文件上传：真正的文件上传（非 JSON base64），含大小/扩展名校验与 SHA-256
+  app.post("/api/v1/imports/jobs/upload", { preHandler: auth }, async (req) => {
+    const userId = getUserId(req);
+    const data = await req.file();
+    if (!data) throw badRequest("FILE_REQUIRED", "请上传账单文件");
+    const buf = await data.toBuffer();
+    const MAX_SIZE = 20 * 1024 * 1024;
+    if (buf.length > MAX_SIZE) throw badRequest("FILE_TOO_LARGE", "文件不能超过 20MB");
+    if (buf.length === 0) throw badRequest("FILE_EMPTY", "文件为空");
 
-    const now = new Date().toISOString();
-    const jobId = randomUUID();
-    db.insert(importJobs)
-      .values({
-        id: jobId,
-        ledgerId,
-        userId,
-        source,
-        filename: body.filename ?? null,
-        fileHash: rawBuffer ? fileHashOf(rawBuffer) : null,
-        status: "staged",
-        totalCount: items.length,
-        importedCount: 0,
-        skippedCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    const filename = (data.filename ?? "").toLowerCase();
+    if (!/\.(txt|csv|xlsx|pdf)$/.test(filename)) throw badRequest("FILE_EXT_NOT_ALLOWED", "仅支持 txt/csv/xlsx/pdf 文件");
 
-    for (const it of items) {
-      const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
-      const dedupKey = buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note);
-      const existing = db
-        .select()
-        .from(transactions)
-        .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.dedupKey, dedupKey)))
-        .get();
-      const status = existing ? "duplicate" : "new";
-      db.insert(importItems)
-        .values({
-          id: randomUUID(),
-          jobId,
-          externalId,
-          occurredAt: it.date,
-          type: it.type,
-          amount: it.amount,
-          currency: it.currency ?? "CNY",
-          merchant: it.note ? buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note).slice(0, 64) : null,
-          rawDescription: it.note,
-          duplicateStatus: status,
-          matchedTransactionId: existing?.id ?? null,
-          decision: status === "duplicate" ? "skip" : "accept",
-          createdAt: now,
-        })
-        .run();
+    const fieldSource = (data.fields?.source as { value?: string } | undefined)?.value;
+    const source = fieldSource || (req.query as Record<string, string | undefined>).source;
+    const src = source === "wechat" || source === "alipay" || source === "bank" ? source : "items";
+    if (src === "items") throw badRequest("SOURCE_REQUIRED", "请指定账单来源");
+
+    const ledgerId = getAccessibleLedger(db, userId, (req.query as Record<string, string | undefined>).ledgerId).id;
+
+    let items: ParsedBill[];
+    if (src === "bank") {
+      items = await parseBankPdf(buf);
+    } else if (src === "wechat") {
+      items = buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? parseWechatXlsx(buf) : parseWechat(decodeBillBuffer(buf));
+    } else {
+      items = parseAlipay(decodeBillBuffer(buf));
     }
+    if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单");
+    if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
 
-    const counts = await summarize(db, jobId);
+    const counts = await createStagedJob(db, {
+      userId,
+      ledgerId,
+      items,
+      source: src,
+      filename: data.filename ?? null,
+      fileHash: fileHashOf(buf),
+    });
     return { item: counts.job, counts: counts.counts };
   });
 

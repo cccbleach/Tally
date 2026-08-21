@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { sql } from "drizzle-orm";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { errorHandler } from "./lib/errors.js";
 import type { AppDb } from "./db/client.js";
 import { config } from "./config.js";
@@ -43,6 +44,9 @@ export async function buildApp(deps: Deps) {
             else cb(new Error("CORS_NOT_ALLOWED"), false);
           }
         : true,
+  });
+  await app.register(multipart, {
+    limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 10 },
   });
   app.setErrorHandler(errorHandler);
 
