@@ -30,10 +30,12 @@
 		EADA31B4C874E3C20A19F2FA /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54782358AF5CE7F3BAD98E06 /* AccountsView.swift */; };
 		EAF917C9C1E68B4E119288DB /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE08867B8DEAB77A713CFF6E /* Models.swift */; };
 		FF6C3E328548A7270D83C745 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0438430608549D75B2F651AE /* SettingsView.swift */; };
+		A11111111111111111111111 /* StagedImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22222222222222222222222 /* StagedImportView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0438430608549D75B2F651AE /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B22222222222222222222222 /* StagedImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagedImportView.swift; sourceTree = "<group>"; };
 		06310F711F4FEFBA429E1B31 /* RecurringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecurringView.swift; sourceTree = "<group>"; };
 		0A3BDDFEFD9B920B999E61B5 /* DateUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateUtils.swift; sourceTree = "<group>"; };
 		21204D627D4C8710391424BA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
@@ -164,6 +166,7 @@
 			isa = PBXGroup;
 			children = (
 				0438430608549D75B2F651AE /* SettingsView.swift */,
+				B22222222222222222222222 /* StagedImportView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -318,6 +321,7 @@
 				3DE06B0A5E9B176349ABBA60 /* RegisterView.swift in Sources */,
 				1BF848C159AE44A46303C475 /* RootView.swift in Sources */,
 				FF6C3E328548A7270D83C745 /* SettingsView.swift in Sources */,
+				A11111111111111111111111 /* StagedImportView.swift in Sources */,
 				27BE98AAECA230D90785FBD3 /* StatsView.swift in Sources */,
 				D2D47FE492168B5BD5332232 /* TallyApp.swift in Sources */,
 			);

@@ -437,7 +437,8 @@ struct SettingsView: View {
                 Section("管理") {
                     NavigationLink("分类管理") { CategoryListView() }
                     NavigationLink("周期账单") { RecurringView() }
-                    NavigationLink("导入账单") { BillImportView() }
+                    NavigationLink("转入账单（预览确认）") { StagedImportView() }
+                    NavigationLink("导入账单（旧）") { BillImportView() }
                     NavigationLink("家庭与账本") { FamilyLedgerView() }
                     NavigationLink("负债中心") { LiabilitiesView() }
                 }

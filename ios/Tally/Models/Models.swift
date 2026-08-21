@@ -287,3 +287,41 @@ struct CreditCardBillItem: Codable, Identifiable, Hashable {
     let dueDate: String?
     let paid: Bool
 }
+
+struct ImportJob: Codable, Identifiable, Hashable {
+    let id: String
+    let source: String
+    let filename: String?
+    let fileHash: String?
+    let status: String
+    let totalCount: Int
+    let importedCount: Int
+    let skippedCount: Int
+}
+
+struct ImportItem: Codable, Identifiable, Hashable {
+    let id: String
+    let jobId: String
+    let externalId: String?
+    let occurredAt: String
+    let type: String
+    let amount: Int
+    let currency: String
+    let merchant: String?
+    let rawDescription: String?
+    let duplicateStatus: String
+    let matchedTransactionId: String?
+    let decision: String
+}
+
+struct ImportJobDetail: Codable {
+    let job: ImportJob
+    let items: [ImportItem]
+}
+
+struct ImportCommitResult: Codable {
+    let ok: Bool
+    let imported: Int
+    let skipped: Int
+    let total: Int
+}
