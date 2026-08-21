@@ -2,7 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/runner.js";
@@ -1021,5 +1021,36 @@ test("导入 multipart 文件上传：解析建任务且记 SHA-256", async () =
   assert.equal(up.json().counts.total, 1, "应解析出 1 条明细");
   assert.ok(up.json().item.fileHash, "应记录 file SHA-256");
   assert.match(up.json().item.fileHash, /^[a-f0-9]{64}$/, "SHA-256 应为 64 位 hex");
+});
+
+test("OpenAPI 契约覆盖已注册的关键路由", async () => {
+  const openapi = readFileSync(resolve("../docs/openapi.yaml"), "utf8");
+
+  const endpoints: Array<{ path: string; method: "GET" | "POST" | "PATCH" | "DELETE" }> = [
+    { path: "/api/v1/auth/register", method: "POST" },
+    { path: "/api/v1/auth/login-code", method: "POST" },
+    { path: "/api/v1/accounts", method: "GET" },
+    { path: "/api/v1/transactions", method: "GET" },
+    { path: "/api/v1/imports/jobs", method: "POST" },
+    { path: "/api/v1/imports/jobs/upload", method: "POST" },
+    { path: "/api/v1/imports/jobs/{id}", method: "GET" },
+    { path: "/api/v1/imports/jobs/{id}/commit", method: "POST" },
+    { path: "/api/v1/imports/items/{itemId}", method: "PATCH" },
+    { path: "/api/v1/ledgers", method: "GET" },
+    { path: "/api/v1/families", method: "GET" },
+    { path: "/api/v1/liabilities", method: "GET" },
+    { path: "/api/v1/loans/{id}/pay", method: "POST" },
+    { path: "/api/v1/credit-card-bills/{id}/pay", method: "POST" },
+    { path: "/api/v1/audit-logs", method: "GET" },
+  ];
+
+  for (const ep of endpoints) {
+    // 证明路由已注册：发空请求不应得到 Fastify 的“路由不存在”404
+    const res = await app.inject({ method: ep.method, url: ep.path.replace(/\{[^}]+\}/g, "x") });
+    assert.ok(!res.body.includes("not found"), `路由应已注册: ${ep.method} ${ep.path}`);
+
+    // 证明契约文档覆盖该端点
+    assert.ok(openapi.includes(ep.path), `OpenAPI 应包含: ${ep.path}`);
+  }
 });
 
