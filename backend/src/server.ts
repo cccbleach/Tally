@@ -50,6 +50,11 @@ export async function buildApp(deps: Deps) {
   });
   app.setErrorHandler(errorHandler);
 
+  // 统一请求 ID：每个请求响应都带 x-request-id，便于追踪与对账
+  app.addHook("onSend", async (request, reply) => {
+    void reply.header("x-request-id", request.id ?? "unknown");
+  });
+
   const jwt = makeJwt(deps.jwtSecret);
   const authLimiter = createRateLimiter({
     windowMs: deps.rateLimit?.windowMs ?? 60_000,

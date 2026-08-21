@@ -1,0 +1,504 @@
+openapi: 3.0.3
+info:
+  title: Tally API
+  version: 0.1.0
+  description: 家庭记账后端契约。金额统一为整数（分），日期为 YYYY-MM-DD，时间为 ISO-8601。
+servers:
+  - url: http://120.26.23.15:8080
+    description: 生产（开发期 HTTP，正式应切换 HTTPS）
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: accounts
+  - name: categories
+  - name: transactions
+  - name: budgets
+  - name: recurring
+  - name: stats
+  - name: families
+  - name: loans
+  - name: imports
+  - name: audit
+paths:
+  /health:
+    get:
+      tags: [audit]
+      summary: 基础健康检查
+      operationId: health
+      responses:
+        "200":
+          description: OK
+          headers:
+            x-request-id:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /health/live:
+    get:
+      tags: [audit]
+      summary: 存活探针（仅进程）
+      operationId: healthLive
+      responses:
+        "200": { description: OK }
+  /health/ready:
+    get:
+      tags: [audit]
+      summary: 就绪探针（数据库+迁移）
+      operationId: healthReady
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  migrationsApplied: { type: integer }
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: 注册成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: 新令牌
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+  /api/v1/auth/request-code:
+    post:
+      tags: [auth]
+      operationId: requestCode
+      summary: 发送短信验证码（开发模式回传 code，生产不返回）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+      responses:
+        "200":
+          description: 已发送
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  code: { type: string, nullable: true }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/login-code:
+    post:
+      tags: [auth]
+      operationId: loginWithCode
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email: { type: string }
+                code: { type: string }
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+  /api/v1/accounts:
+    get:
+      tags: [accounts]
+      operationId: listAccounts
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 账户列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+    post:
+      tags: [accounts]
+      operationId: createAccount
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type, currency, initialBalance]
+              properties:
+                name: { type: string }
+                type: { type: string, enum: [cash, bank, wallet, investment, credit_card, credit, loan, other] }
+                currency: { type: string }
+                initialBalance: { type: integer }
+                ledgerId: { type: string }
+      responses:
+        "200":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/Account" }
+  /api/v1/categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 分类列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Category" }
+  /api/v1/transactions:
+    get:
+      tags: [transactions]
+      operationId: listTransactions
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date }, required: false }
+        - { name: to, in: query, schema: { type: string, format: date }, required: false }
+        - { name: accountId, in: query, schema: { type: string }, required: false }
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 流水列表（含 total/page/limit）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Transaction" }
+    post:
+      tags: [transactions]
+      operationId: createTransaction
+      description: 收入/支出/转账（transfer 需 transferToAccountId）
+  /api/v1/transactions/import:
+    post:
+      tags: [imports]
+      operationId: importTransactionsLegacy
+      deprecated: true
+      description: 旧直接导入（建议改用 /imports/jobs）
+  /api/v1/imports/jobs:
+    post:
+      tags: [imports]
+      operationId: createImportJob
+      description: 暂存导入：解析+去重判定，不直接写流水
+      responses:
+        "200":
+          description: 已创建暂存任务
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/ImportJob" }
+    get:
+      tags: [imports]
+      operationId: listImportJobs
+      responses:
+        "200":
+          description: 任务列表
+  /api/v1/imports/jobs/upload:
+    post:
+      tags: [imports]
+      operationId: uploadImportFile
+      summary: multipart 上传账单文件（txt/csv/xlsx/pdf，≤20MB）
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [source, file]
+              properties:
+                source: { type: string, enum: [wechat, alipay, bank] }
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: 已创建暂存任务 }
+  /api/v1/imports/jobs/{id}:
+    get:
+      tags: [imports]
+      operationId: getImportJob
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 任务详情+明细
+  /api/v1/imports/items/{itemId}:
+    patch:
+      tags: [imports]
+      operationId: decideImportItem
+      summary: 逐条 accept/skip
+      parameters:
+        - { name: itemId, in: path, required: true, schema: { type: string } }
+  /api/v1/imports/jobs/{id}/commit:
+    post:
+      tags: [imports]
+      operationId: commitImportJob
+      summary: 批量提交 accept 明细为正式流水（事务化）
+      responses:
+        "200":
+          description: 提交成功
+  /api/v1/ledgers:
+    get:
+      tags: [families]
+      operationId: listLedgers
+  /api/v1/ledgers/switch:
+    post:
+      tags: [families]
+      operationId: switchLedger
+  /api/v1/families:
+    get:
+      tags: [families]
+      operationId: listFamilies
+    post:
+      tags: [families]
+      operationId: createFamily
+  /api/v1/families/{id}/members:
+    post:
+      tags: [families]
+      operationId: addFamilyMember
+  /api/v1/families/{id}/members/{memberUserId}:
+    delete:
+      tags: [families]
+      operationId: removeFamilyMember
+  /api/v1/liabilities:
+    get:
+      tags: [loans]
+      operationId: getLiabilities
+  /api/v1/loans:
+    get:
+      tags: [loans]
+      operationId: listLoans
+    post:
+      tags: [loans]
+      operationId: createLoan
+  /api/v1/loans/{id}:
+    get:
+      tags: [loans]
+      operationId: getLoan
+  /api/v1/loans/{id}/pay:
+    post:
+      tags: [loans]
+      operationId: payLoan
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payFromAccountId: { type: string }
+                payDate: { type: string, format: date }
+                ledgerId: { type: string }
+  /api/v1/credit-cards/{accountId}/bills:
+    post:
+      tags: [loans]
+      operationId: createCreditCardBill
+  /api/v1/credit-card-bills:
+    get:
+      tags: [loans]
+      operationId: listCreditCardBills
+  /api/v1/credit-card-bills/{id}:
+    patch:
+      tags: [loans]
+      operationId: markCreditCardBill
+  /api/v1/credit-card-bills/{id}/pay:
+    post:
+      tags: [loans]
+      operationId: payCreditCardBill
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payFromAccountId]
+              properties:
+                payFromAccountId: { type: string }
+                payDate: { type: string, format: date }
+                ledgerId: { type: string }
+      responses:
+        "200":
+          description: 还款成功并生成转账
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  transactionId: { type: string }
+  /api/v1/audit-logs:
+    get:
+      tags: [audit]
+      operationId: listAuditLogs
+      summary: 账本内审计日志（可按 entityType/entityId 过滤）
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+        - { name: entityType, in: query, schema: { type: string }, required: false }
+        - { name: entityId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 审计记录列表
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: 统一错误
+      headers:
+        x-request-id:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+        time: { type: string, format: date-time }
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AuthResponse:
+      type: object
+      required: [user, token, refreshToken]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        token: { type: string }
+        refreshToken: { type: string }
+    User:
+      type: object
+      required: [id, email, displayName, createdAt]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        displayName: { type: string }
+        createdAt: { type: string }
+    RegisterRequest:
+      type: object
+      required: [email, password, displayName]
+      properties:
+        email: { type: string }
+        password: { type: string }
+        displayName: { type: string }
+    Account:
+      type: object
+      required: [id, name, type, currency]
+      properties:
+        id: { type: string }
+        ledgerId: { type: string, nullable: true }
+        name: { type: string }
+        type: { type: string }
+        currency: { type: string }
+        balance: { type: integer }
+    Category:
+      type: object
+      required: [id, name, type]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [income, expense] }
+        icon: { type: string, nullable: true }
+        color: { type: string, nullable: true }
+    Transaction:
+      type: object
+      required: [id, accountId, type, amount, currency, date]
+      properties:
+        id: { type: string }
+        ledgerId: { type: string, nullable: true }
+        accountId: { type: string }
+        type: { type: string, enum: [income, expense, transfer] }
+        amount: { type: integer }
+        currency: { type: string }
+        note: { type: string, nullable: true }
+        date: { type: string, format: date }
+        sourceType: { type: string, nullable: true }
+        transferToAccountId: { type: string, nullable: true }
+    ImportJob:
+      type: object
+      required: [id, ledgerId, source, status]
+      properties:
+        id: { type: string }
+        ledgerId: { type: string }
+        source: { type: string }
+        filename: { type: string, nullable: true }
+        fileHash: { type: string, nullable: true }
+        status: { type: string, enum: [staged, committed, failed] }
+        totalCount: { type: integer }
+        importedCount: { type: integer }
+        skippedCount: { type: integer }

@@ -54,6 +54,7 @@ test("health", async () => {
   const res = await app.inject({ method: "GET", url: "/health" });
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().status, "ok");
+  assert.ok(res.headers["x-request-id"], "响应应带 x-request-id");
 });
 
 test("register 后自动播种默认分类", async () => {
