@@ -92,7 +92,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
       const cat = db
         .select()
         .from(categories)
-        .where(and(eq(categories.id, body.categoryId), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+        .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
         .get();
       if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
       if (cat.type !== "expense") throw badRequest("CATEGORY_TYPE_MISMATCH", "预算仅支持支出分类");
@@ -212,7 +212,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const cats = db
       .select()
       .from(categories)
-      .where(and(eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+      .where(and(eq(categories.ledgerId, ledgerId)))
       .all();
     const catName = new Map(cats.map((c) => [c.id, c.name]));
     const byCat = expenseByCategory(db, userId, ledgerId, year, month);

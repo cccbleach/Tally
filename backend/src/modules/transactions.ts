@@ -147,7 +147,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const account = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, body.accountId), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+      .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!account) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
 
@@ -161,7 +161,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       const toAccount = db
         .select()
         .from(accounts)
-        .where(and(eq(accounts.id, body.transferToAccountId), eq(accounts.userId, userId), eq(accounts.ledgerId, ledgerId)))
+        .where(and(eq(accounts.id, body.transferToAccountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!toAccount) throw badRequest("ACCOUNT_NOT_FOUND", "转入账户不存在");
       transferToAccountId = body.transferToAccountId;
@@ -169,7 +169,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       const cat = db
         .select()
         .from(categories)
-        .where(and(eq(categories.id, body.categoryId), eq(categories.userId, userId), eq(categories.ledgerId, ledgerId)))
+        .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
         .get();
       if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
       if (cat.type !== body.type) throw badRequest("CATEGORY_TYPE_MISMATCH", "分类类型与收支类型不匹配");

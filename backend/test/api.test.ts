@@ -697,6 +697,35 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   const personalA = (ledgersA.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null)!;
   const forbiddenB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + personalA.id, headers: hB });
   assert.equal(forbiddenB.statusCode, 403, "非成员访问个人账本应 403");
+
+  // B 用 A 的共享账户 + 家庭分类记账（家庭共享写入）
+  const catsB = await app.inject({ method: "GET", url: "/api/v1/categories?ledgerId=" + familyLedger, headers: hB });
+  assert.equal(catsB.statusCode, 200, catsB.body);
+  const catB = (catsB.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
+  assert.ok(catB, "家庭成员应能读到家庭分类");
+
+  const accountIdB = (listB.json().items as Array<{ id: string }>)[0]!.id;
+  const createByB = await app.inject({
+    method: "POST",
+    url: "/api/v1/transactions?ledgerId=" + familyLedger,
+    headers: hB,
+    payload: {
+      accountId: accountIdB,
+      categoryId: catB!.id,
+      type: "expense",
+      amount: 3456,
+      currency: "CNY",
+      date: todayStr(),
+      note: "B 在家庭账本记账",
+      ledgerId: familyLedger,
+    },
+  });
+  assert.equal(createByB.statusCode, 200, createByB.body);
+
+  const txA = await app.inject({ method: "GET", url: "/api/v1/transactions?ledgerId=" + familyLedger, headers: hA });
+  assert.equal(txA.statusCode, 200, txA.body);
+  const notes = (txA.json().items as Array<{ note: string | null }>).map((t) => t.note);
+  assert.ok(notes.includes("B 在家庭账本记账"), "A 应能看到 B 记的家庭流水");
 });
 
 test("跨来源去重：同一笔在不同来源（不同 externalId）导入只入账一次", async () => {

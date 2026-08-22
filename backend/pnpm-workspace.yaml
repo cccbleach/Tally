@@ -1,4 +1,4 @@
 allowBuilds:
-  '@alicloud/openapi-core': true
+  '@alicloud/openapi-core': false
   better-sqlite3: true
   esbuild: true

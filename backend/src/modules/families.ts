@@ -8,6 +8,7 @@ import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, forbidden, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { writeAudit } from "../lib/audit.js";
+import { seedDefaultCategories } from "../db/seed.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createFamilySchema = z.object({
@@ -66,6 +67,8 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .values({ id: ledgerId, userId, familyId, name: body.name + "账本", currency: "CNY", isDefault: false, createdAt: now, updatedAt: now })
       .run();
     db.update(users).set({ currentLedgerId: ledgerId, updatedAt: now }).where(eq(users.id, userId)).run();
+    // 家庭账本也播种默认分类，成员才能直接记账
+    seedDefaultCategories(db, userId, ledgerId);
     return { item: { ...familyDto({ id: familyId, name: body.name, ownerUserId: userId, createdAt: now, updatedAt: now }), ledgerId } };
   });
 
