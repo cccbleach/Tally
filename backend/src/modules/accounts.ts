@@ -8,9 +8,10 @@ import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { requireLedgerPermission } from "../lib/authorization.js";
 import type { Jwt } from "../auth/jwt.js";
 
-const ACCOUNT_TYPES = ["cash", "bank", "e-wallet", "credit", "other"] as const;
+const ACCOUNT_TYPES = ["cash", "bank", "e-wallet", "credit", "loan", "other"] as const;
 
 const createSchema = z.object({
   name: z.string().min(1, "账户名不能为空").max(40, "账户名过长"),
@@ -50,9 +51,9 @@ function toDto(row: AccountRow, balance: number) {
     icon: row.icon,
     color: row.color,
     isArchived: row.isArchived,
-    isLiability: row.type === "credit",
+    isLiability: row.type === "credit" || row.type === "loan",
     balance,
-    debt: row.type === "credit" ? Math.max(0, -balance) : 0,
+    debt: row.type === "credit" || row.type === "loan" ? Math.max(0, -balance) : 0,
     creditLimit: row.creditLimit ?? null,
     billingDay: row.billingDay ?? null,
     repaymentDay: row.repaymentDay ?? null,
@@ -81,6 +82,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     const userId = getUserId(req);
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "account:manage");
     const row = {
       id: randomUUID(),
       userId,
@@ -120,6 +122,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     const userId = getUserId(req);
     const body = updateSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+      requireLedgerPermission(db, userId, ledgerId, "account:manage");
     const { id } = req.params as { id: string };
     const existing = db
       .select()
@@ -156,6 +159,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+      requireLedgerPermission(db, userId, ledgerId, "account:manage");
     const { id } = req.params as { id: string };
     const existing = db
       .select()

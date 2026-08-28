@@ -30,8 +30,25 @@ actor APIClient {
     // 避免首页多个请求同时遇到 401 时并发刷新 token。
     private var refreshTask: Task<Void, Error>?
 
+    // API 地址由构建配置（TALLY_API_BASE_URL → Info.plist 的 TallyAPIBaseURL）注入，
+    // 源码不写死任何地址。Debug 允许本地 HTTP 联调；Release 强制 HTTPS，否则直接拒绝启动。
     nonisolated var baseURL: String {
-        "http://120.26.23.15:8080"
+        let resolved: String
+        if let configured = Bundle.main.object(forInfoDictionaryKey: "TallyAPIBaseURL") as? String,
+           !configured.isEmpty {
+            resolved = configured
+        } else {
+            resolved = "https://api.example.com"
+        }
+        #if DEBUG
+        return resolved
+        #else
+        // Release 构建必须使用 HTTPS，杜绝明文生产流量
+        if !resolved.hasPrefix("https://") {
+            fatalError("Release 构建必须使用 HTTPS API 地址（当前: \(resolved)）。请在构建配置 TALLY_API_BASE_URL 中设置 https:// 地址。")
+        }
+        return resolved
+        #endif
     }
 
     nonisolated var token: String? {
@@ -45,6 +62,11 @@ actor APIClient {
             didNotifySessionExpired = true
             NotificationCenter.default.post(name: .tallySessionExpired, object: nil)
         }
+    }
+
+    // 新登录时重置“已通知会话过期”状态，避免旧会话的过期通知影响新会话
+    nonisolated static func resetSessionExpiredState() {
+        didNotifySessionExpired = false
     }
 
     // 无请求体
@@ -97,7 +119,11 @@ actor APIClient {
 
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 仅当存在 body 时才设置 JSON Content-Type；
+        // 无 body 的 POST（如 /auth/logout /ledgers/switch 等）不发送空 JSON 头，避免服务端按空 body 解析。
+        if bodyData != nil {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         if let token {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

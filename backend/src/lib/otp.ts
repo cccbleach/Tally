@@ -1,7 +1,7 @@
 // 进程内一次性验证码（OTP）存储。单实例部署足够；多实例需换共享存储/Redis。
 // 验证码以 SHA-256 哈希保存，内存中不存明文。
 
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 
 export interface OtpOptions {
   ttlMs: number;
@@ -36,7 +36,7 @@ export function createOtpStore(opts: Partial<OtpOptions> = {}) {
     generate(key: string): string {
       const now = Date.now();
       cleanup(now);
-      const code = String(Math.floor(Math.random() * 10 ** length)).padStart(length, "0");
+      const code = String(randomInt(0, 10 ** length)).padStart(length, "0"); // 密码学安全随机数，避免 Math.random()
       store.set(key, { code: hash(code), expiresAt: now + ttlMs, attempts: 0 });
       return code;
     },

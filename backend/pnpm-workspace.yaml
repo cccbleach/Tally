@@ -2,3 +2,5 @@ allowBuilds:
   '@alicloud/openapi-core': false
   better-sqlite3: true
   esbuild: true
+overrides:
+  uuid: ^11.1.1

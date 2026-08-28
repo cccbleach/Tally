@@ -333,6 +333,21 @@ struct APIService {
         return res.items
     }
 
+    // 贷款还款：数据库级幂等。
+    // - 偿还下一期（installmentId == nil）必须传 idempotencyKey，服务端 400 否则；
+    // - 显式还款应传 installmentId（避免不同 key 双击连续偿还下一期）；
+    // - 同一 key + 相同请求重放返回完全相同结果（replayed=true）。
+    func payLoan(id: String, payFromAccountId: String, ledgerId: String, installmentId: String?, idempotencyKey: String?, date: String?) async throws -> LoanPayResponse {
+        struct Body: Encodable {
+            let payFromAccountId: String
+            let ledgerId: String
+            let installmentId: String?
+            let idempotencyKey: String?
+            let date: String?
+        }
+        return try await client.request("POST", "/api/v1/loans/\(id)/pay", body: Body(payFromAccountId: payFromAccountId, ledgerId: ledgerId, installmentId: installmentId, idempotencyKey: idempotencyKey, date: date))
+    }
+
     // 信用卡账单
     func creditCardBills() async throws -> [CreditCardBillItem] {
         struct Res: Decodable { let items: [CreditCardBillItem] }
@@ -418,4 +433,15 @@ struct APIService {
 struct PayResponse: Decodable {
     let ok: Bool
     let transactionId: String?
+}
+
+struct LoanPayResponse: Decodable {
+    let ok: Bool
+    let replayed: Bool
+    let paidDate: String
+    let installment: Int
+    let installmentId: String
+    let principalTransactionId: String
+    let interestTransactionId: String
+    let paymentGroupId: String
 }

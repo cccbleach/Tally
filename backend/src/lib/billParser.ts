@@ -105,13 +105,112 @@ export function parseWechat(text: string): ParsedBill[] {
   return parseWechatRows(rows);
 }
 
+// xlsx 解析：在独立 worker 线程中以受限内存/超时解析（改用安全解析器 exceljs，
+// 替代有高危漏洞且 npm 无修复版本的 SheetJS/xlsx）。
+// 这样恶意/畸形 xlsx 即使尝试解压超大或过度构造内容，也不会耗尽服务主线程资源。
+// 注意：worker 线程不是进程级硬隔离（见 xlsxWorker.cts 头部说明）。
+const XLSX_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB（上传层另有 20MB 总量限制）
+const XLSX_WORKER_TIMEOUT_MS = 20_000;      // worker 超时上限
+const XLSX_MAX_CONCURRENCY = 4;             // 同时最多允许的解析 worker 数（并发数量限制）
+
+// 并发信号量：防止大量并发上传同时各起一个 worker，把 CPU/内存瞬时打满。
+// 采用原子“槽位移交”模型：有等待者时，释放方直接把当前槽位交给队首等待者（next()），
+// 而不是先 xlsxActive-- 再由等待者 xlsxActive++ —— 后者两步之间会出现瞬时空闲
+// （active 少 1），可能让新请求误以为有空位而超额并发。槽位移交保持 active 计数不变，
+// 只有无等待者时才真正回收槽位。
+let xlsxActive = 0;
+const xlsxQueue: Array<() => void> = [];
+async function acquireXlsxSlot(): Promise<void> {
+  if (xlsxActive < XLSX_MAX_CONCURRENCY) {
+    xlsxActive++;
+    return;
+  }
+  await new Promise<void>((resolve) => xlsxQueue.push(resolve));
+  // 被唤醒即代表已持有槽位：active 计数由释放方在移交时保持不变，无需再增减。
+}
+function releaseXlsxSlot(): void {
+  const next = xlsxQueue.shift();
+  if (next) {
+    next(); // 直接把当前槽位移交给队首等待者，active 计数保持不变（避免瞬时超额）
+  } else {
+    xlsxActive--;
+  }
+}
+
+// 在信号量槽位内执行异步工作（parseWechatXlsx 与并发测试共用同一套槽位逻辑）。
+export async function withXlsxSlot<T>(work: () => Promise<T>): Promise<T> {
+  await acquireXlsxSlot();
+  try {
+    return await work();
+  } finally {
+    releaseXlsxSlot();
+  }
+}
+
+// 仅供测试观测并发队列状态，不做任何业务逻辑。
+export function getXlsxQueueState(): { active: number; queued: number } {
+  return { active: xlsxActive, queued: xlsxQueue.length };
+}
+
 // 微信支付明细 xlsx（微信“导出账单”实际生成的是 xlsx）
-export function parseWechatXlsx(buf: Uint8Array): ParsedBill[] {
-  const XLSX: any = require("xlsx");
-  const wb = XLSX.read(buf, { type: "buffer" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false }) as unknown[][];
-  return parseWechatRows(rows.map((r) => r.map((c) => String(c ?? ""))));
+export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
+  if (buf.byteLength > XLSX_MAX_FILE_SIZE) {
+    throw new Error("XLSX_TOO_LARGE: 微信 xlsx 账单超过 5MB 上限");
+  }
+  return withXlsxSlot(async () => {
+    const { Worker } = await import("node:worker_threads");
+    const worker = new Worker(new URL("./xlsxWorker.cjs", import.meta.url), {
+      workerData: { buf },
+      // 内存限制：限制 worker 旧代堆到 64MB、新生代到 16MB（非进程级硬隔离）
+      resourceLimits: { maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 16 },
+    });
+
+    return await new Promise<ParsedBill[]>((resolve, reject) => {
+      let settled = false;
+      const fail = (msg: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(msg));
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        void worker.terminate();
+        reject(new Error("XLSX_TIMEOUT: xlsx 解析超时"));
+      }, XLSX_WORKER_TIMEOUT_MS);
+
+      worker.once("message", (msg: { ok: boolean; rows?: string[][]; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // 成功路径不强制 terminate：worker 在 postMessage 后事件循环自然清空即自行退出
+        // （已实测）。强行 terminate 会在快速 生成/销毁 并发 worker 时与 Node 内部
+        // MessagePort 拆除竞态，触发 uv_async_send → SIGABRT（macOS 并行测试崩源）。
+        if (msg.ok) {
+          try {
+            resolve(parseWechatRows((msg.rows ?? []).map((r) => r ?? [])));
+          } catch (e) {
+            reject(e);
+          }
+        } else {
+          reject(new Error(`${msg.error ?? "XLSX_PARSE_FAILED"}: 无法解析该 Excel 文件，请确认是微信导出格式`));
+        }
+      });
+      worker.once("error", (e: Error) => {
+        fail("XLSX_PARSE_FAILED: 无法解析该 Excel 文件，请确认是微信导出格式");
+      });
+      worker.once("exit", (code: number) => {
+        // 若在收到 message/error 之前 worker 就退出（无论退出码 0/非 0），
+        // 都必须 reject，绝不留下永不完成的 Promise。
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error("XLSX_PARSE_FAILED: 无法解析该 Excel 文件，请确认是微信导出格式"));
+        }
+      });
+    });
+  });
 }
 
 // 支付宝交易明细 csv

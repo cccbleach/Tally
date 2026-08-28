@@ -1,12 +1,12 @@
 # HTTPS 部署（上线前必须）
 
-开发期 App 直接连 `http://120.26.23.15:8080`。上 HTTPS 后可收紧 ATS、
-消灭明文传输，并让 App 商店审核与真实用户可用。
+开发期 App 直连本地/局域网 HTTP（ATS 仅放行本地网络）。上 HTTPS 后生产客户端
+只允许 HTTPS 域名，消灭明文传输，并让 App 商店审核与真实用户可用。
 
 ## 前置
 - 需要一个**域名**（Let's Encrypt 不给纯 IP 签证书）。
-- 域名 A 记录指向服务器公网 IP（本机 `120.26.23.15`）。
-- 阿里云安全组放行 `80` 和 `443`。
+- 域名 A 记录指向服务器公网 IP（部署方按实际情况填写）。
+- 云厂商安全组放行 `80` 和 `443`。
 
 ## 方案一：Caddy（推荐，自动证书/续期）
 仓库已带模板 `backend/Caddyfile.example`：
@@ -64,14 +64,16 @@ server {
 
 ## 上线后 App 端收尾
 1. **关闭公网直连 8080**：安全组仅保留 22/80/443。
-2. 把 `ios/project.yml` 与 `Tally/Support/Info.plist` 的 ATS 收紧：
-   - `NSAllowsArbitraryLoads` 改回 `false`
-   - `NSAllowsLocalNetworking` 按需保留
-3. 把 `APIClient.baseURL` 改为 `https://你的域名`（并清理旧设置）。
-4. 重新构建/安装 App。
+2. ATS 已默认收紧：不再使用全局 `NSAllowsArbitraryLoads`，仅保留 `NSAllowsLocalNetworking`（本地/局域网 HTTP 联调）。生产如不需要局域网 HTTP，可一并移除。
+3. API 地址由**构建配置注入**：把 Release 的 `TALLY_API_BASE_URL`（`ios/project.yml` 的 `configs.Release`，或 `xcodebuild ... TALLY_API_BASE_URL=https://你的域名`）改为 `https://你的域名`。
+   `Info.plist` 的 `TallyAPIBaseURL` 为 `$(TALLY_API_BASE_URL)`；`APIClient` 在 Release 强制校验 HTTPS，非 HTTPS 直接拒绝启动。
+4. 后端在反向代理后设置 `TRUST_PROXY=1`（才能正确还原客户端 IP 做限流；客户端伪造的左侧 XFF 会被忽略）。
+5. 重新构建/安装 App。
 
 ## 安全核对
 - [ ] 公网 8080 已关闭
 - [ ] 域名已配置，浏览器访问 `https://你的域名/health/live` 返回 ok
 - [ ] App 通过 https 正常登录/记账/导入
+- [ ] 生产 `JWT_SECRET` 为 ≥32 位强随机且非占位值
+- [ ] 生产 `CORS_ORIGINS` 已显式列出前端域名
 - [ ] 仅 22/80/443 对外开放

@@ -48,6 +48,7 @@ final class AppState {
     func login(email: String, password: String) async throws {
         let res = try await APIService.shared.login(email: email, password: password)
         KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
+        APIClient.resetSessionExpiredState()
         user = res.user
         isAuthenticated = true
     }
@@ -55,6 +56,7 @@ final class AppState {
     func register(email: String, password: String, displayName: String) async throws {
         let res = try await APIService.shared.register(email: email, password: password, displayName: displayName)
         KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
+        APIClient.resetSessionExpiredState()
         user = res.user
         isAuthenticated = true
     }
@@ -62,6 +64,7 @@ final class AppState {
     func loginWithCode(phone: String, code: String) async throws {
         let res = try await APIService.shared.loginWithCode(phone: phone, code: code)
         KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
+        APIClient.resetSessionExpiredState()
         user = res.user
         isAuthenticated = true
     }

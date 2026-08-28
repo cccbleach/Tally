@@ -41,10 +41,17 @@ Tally/
 │   ├── project.yml          # XcodeGen 声明
 │   ├── Tally.xcodeproj      # 已生成，可直接用 Xcode 打开
 │   └── Tally/               # SwiftUI 源码
+├── ios-local/               # 离线优先的个人记账版（独立工程，见其 README，勿与本目录混改）
 └── docs/
     ├── api.md               # API 契约
     └── deploy.md            # 部署指南
 ```
+
+> **ios/ 与 ios-local/ 的定位（唯一源码来源）**
+> - `ios/`：本仓库在线版 iOS 客户端，连接 `backend/` API，是本文档指向的**唯一在线客户端源码来源**。
+> - `ios-local/`：一个**相互独立的离线优先** iOS 项目（无账号、SwiftData 本地存储），自带工程/测试/文档，
+>   与本仓库的 `ios/` 和 `backend/` 互不影响。为避免双目录漂移，两边改动请分别在各自工程内进行、
+>   不要互相复制代码；本仓库后续维护以 `ios/` 为准。
 
 ## 快速开始
 

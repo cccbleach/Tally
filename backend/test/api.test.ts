@@ -657,7 +657,6 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   assert.equal(regA.statusCode, 200, regA.body);
   const hA = { authorization: "Bearer " + regA.json().token };
   const idA = regA.json().user.id as string;
-
   const regB = await req("POST", "/api/v1/auth/register", { email: "family-b@test.com", password: "password123" });
   assert.equal(regB.statusCode, 200, regB.body);
   const hB = { authorization: "Bearer " + regB.json().token };
@@ -678,14 +677,14 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   });
   assert.equal(acc.statusCode, 200, acc.body);
 
-  // B 加入家庭
-  const add = await app.inject({
+  // A 添加 B 为家庭成员
+  const addB = await app.inject({
     method: "POST",
     url: `/api/v1/families/${familyId}/members`,
     headers: hA,
-    payload: { userId: idB },
+    payload: { account: "family-b@test.com" },
   });
-  assert.equal(add.statusCode, 200, add.body);
+  assert.equal(addB.statusCode, 200, addB.body);
 
   // B 能看到家庭账本里的账户
   const listB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + familyLedger, headers: hB });
@@ -747,7 +746,8 @@ test("跨来源去重：同一笔在不同来源（不同 externalId）导入只
   assert.ok(second.json().suspectedDuplicates.length >= 1, "应返回疑似重复信息");
 });
 
-test("贷款创建、还款生成转账与负债统计", async () => {
+test("贷款创建、还款本金/利息拆分、转账与负债统计", async () => {
+  // 还款来源银行卡
   const bank = await req("POST", "/api/v1/accounts", {
     name: "还款卡",
     type: "bank",
@@ -757,57 +757,151 @@ test("贷款创建、还款生成转账与负债统计", async () => {
   assert.equal(bank.statusCode, 200, bank.body);
   const bankId = bank.json().item.id as string;
 
+  // 先创建一个 loan 类型负债账户
   const loanAccount = await req("POST", "/api/v1/accounts", {
-    name: "贷款账户",
-    type: "other",
+    name: "房贷负债",
+    type: "loan",
     currency: "CNY",
     initialBalance: 0,
   });
   assert.equal(loanAccount.statusCode, 200, loanAccount.body);
   const loanAccountId = loanAccount.json().item.id as string;
 
-  const created = await req("POST", "/api/v1/loans", {
-    name: "房贷",
+  // 贷款不能绑定普通银行卡作为贷款负债账户（必须 loan 类型）
+  const badBind = await req("POST", "/api/v1/loans", {
+    name: "非法绑定",
     type: "mortgage",
-    principal: 1_000_000, // 1万元
+    principal: 100000,
     annualRate: 4.9,
     termMonths: 12,
     startDate: "2026-01-01",
-    accountId: loanAccountId,
+    liabilityAccountId: bankId,
+  });
+  assert.equal(badBind.statusCode, 400, "把银行卡绑定为贷款负债账户应失败");
+
+  const created = await req("POST", "/api/v1/loans", {
+    name: "房贷",
+    type: "mortgage",
+    principal: 1_000_000, // 1万元（分）
+    annualRate: 4.9,
+    termMonths: 12,
+    startDate: "2026-01-01",
+    accountId: bankId,
+    liabilityAccountId: loanAccountId,
   });
   assert.equal(created.statusCode, 200, created.body);
   const loanId = created.json().item.id as string;
   assert.ok(created.json().item.monthlyPayment > 0);
+  assert.equal(created.json().item.liabilityAccountId, loanAccountId);
 
   const detail = await req("GET", "/api/v1/loans/" + loanId);
   assert.equal(detail.statusCode, 200, detail.body);
   assert.equal(detail.json().schedule.length, 12);
 
-  // 显式指定还款来源为银行卡，并用当天日期（首页流水按当月查询，能命中）
-  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, payDate: todayStr() });
-  assert.equal(pay.statusCode, 200, pay.body);
+  const firstPayDue = detail.json().schedule[0] as { principalDue: number; interestDue: number; total: number; installmentNo: number };
+  const principalPart = firstPayDue.principalDue;
+  const interestPart = firstPayDue.interestDue;
+  assert.ok(principalPart > 0 && interestPart > 0, "首期应含本金与利息");
 
-  // 还款应生成一条从银行卡到贷款账户的转账流水
+  // 还款：用银行卡还第一期（偿还下一期必须携带幂等键）
+  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-1" });
+  assert.equal(pay.statusCode, 200, pay.body);
+  const payBody = pay.json();
+  assert.ok(payBody.paymentGroupId, "还款应返回 paymentGroupId");
+  assert.ok(payBody.principalTransactionId && payBody.interestTransactionId, "应返回本金/利息两条流水 id");
+
   const txs = await req("GET", "/api/v1/transactions");
-  const paymentTx = (txs.json().items as Array<{ accountId: string; transferToAccountId: string | null; type: string; sourceType: string }>).find(
-    (t) => t.accountId === bankId && t.type === "transfer" && t.sourceType === "loan-payment",
-  );
-  assert.ok(paymentTx, "还款应生成转账流水");
-  assert.equal(paymentTx!.transferToAccountId, loanAccountId, "转账目标为贷款绑定的账户");
+  const items = txs.json().items as Array<{ id: string; accountId: string; transferToAccountId: string | null; type: string; sourceType: string; amount: number; paymentGroupId: string | null }>;
+  // 本金转账：银行卡 → 贷款负债账户，不计入收支
+  const principalTx = items.find((t) => t.id === payBody.principalTransactionId);
+  assert.ok(principalTx, "本金转账应存在");
+  assert.equal(principalTx!.type, "transfer");
+  assert.equal(principalTx!.accountId, bankId);
+  assert.equal(principalTx!.transferToAccountId, loanAccountId, "本金转账目标为贷款负债账户");
+  assert.equal(principalTx!.amount, principalPart, "本金转账金额为本金部分");
+  assert.equal(principalTx!.paymentGroupId, payBody.paymentGroupId, "本金与利息共用 paymentGroupId");
+  // 利息支出：银行卡 → 支出，计入消费
+  const interestTx = items.find((t) => t.id === payBody.interestTransactionId);
+  assert.ok(interestTx, "利息支出应存在");
+  assert.equal(interestTx!.type, "expense");
+  assert.equal(interestTx!.accountId, bankId);
+  assert.equal(interestTx!.amount, interestPart, "利息支出金额为利息部分");
+  assert.equal(interestTx!.paymentGroupId, payBody.paymentGroupId, "利息与本金共用 paymentGroupId");
 
   const liabilities = await req("GET", "/api/v1/liabilities");
   assert.equal(liabilities.statusCode, 200, liabilities.body);
-  const loan = (liabilities.json().loans as Array<{ id: string; remainingPrincipal: number }>).find((l) => l.id === loanId);
+  const loan = (liabilities.json().loans as Array<{ id: string; remainingPrincipal: number; liabilityAccountId: string | null }>).find((l) => l.id === loanId);
   assert.ok(loan, "负债列表应包含贷款");
-  assert.ok(loan.remainingPrincipal < 1_000_000, "还款后剩余本金应减少");
+  assert.equal(loan!.liabilityAccountId, loanAccountId);
+  assert.equal(loan!.remainingPrincipal, 1_000_000 - principalPart, "剩余本金只减少本金部分");
 
-  // 审计日志应记录本次还款
+  // 审计日志记录本次还款（含本金/利息拆分）
   const audit = await req("GET", "/api/v1/audit-logs?entityType=loan&entityId=" + loanId);
   assert.equal(audit.statusCode, 200, audit.body);
-  const payAudit = (audit.json().items as Array<{ action: string; after: { transactionId: string } }>).find((a) => a.action === "loan_pay");
+  const payAudit = (audit.json().items as Array<{ action: string; after: { principal: number; interest: number; paymentGroupId: string } }>).find((a) => a.action === "loan_pay");
   assert.ok(payAudit, "审计日志应包含 loan_pay 记录");
-  assert.equal(payAudit!.after.transactionId, paymentTx!.id, "审计里的转账 id 应与流水一致");
+  assert.equal(payAudit!.after.principal, principalPart);
+  assert.equal(payAudit!.after.interest, interestPart);
+  assert.equal(payAudit!.after.paymentGroupId, payBody.paymentGroupId);
 
+  // 资产负债恒等：银行减少总月供，负债只减少本金；利息计入支出、本金不计入支出
+  // （用增量断言，避免测试库中其他月份/历史流水干扰绝对数值）
+  const summaryUrl = `/api/v1/stats/summary?year=${todayStr().slice(0, 4)}&month=${Number(todayStr().slice(5, 7))}`;
+  const second = detail.json().schedule[1] as { principalDue: number; interestDue: number };
+  const beforePay = (await req("GET", summaryUrl)).json();
+  const txsBefore = (await req("GET", "/api/v1/transactions")).json().items.length as number;
+  const paySecond = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-2" });
+  assert.equal(paySecond.statusCode, 200, paySecond.body);
+  const s = (await req("GET", summaryUrl)).json();
+  const txsAfter = (await req("GET", "/api/v1/transactions")).json().items.length as number;
+  assert.equal(s.expense - beforePay.expense, second.interestDue, "第二期利息应计入当月支出，本金不计入");
+  assert.equal(txsAfter - txsBefore, 2, "第二期仍只新增 2 条流水（本金+利息）");
+  const remainingAfterSecond = 1_000_000 - principalPart - second.principalDue;
+  // 用增量验证负债（避免测试库中其他历史负债干扰绝对数值）
+  assert.equal(s.totalDebt, beforePay.totalDebt - second.principalDue, "负债随还款只减少本金部分");
+
+  // 还款后负债账户余额应等于 -(剩余本金)
+  const accountsRes = await req("GET", "/api/v1/accounts");
+  const loanAcctOut = (accountsRes.json().items as Array<{ id: string; balance: number; isLiability: boolean }>).find((a) => a.id === loanAccountId);
+  assert.ok(loanAcctOut, "负债账户应存在");
+  assert.equal(loanAcctOut!.isLiability, true, "loan 类型账户标记为负债");
+  assert.equal(loanAcctOut!.balance, -remainingAfterSecond, "负债账户余额 = -(剩余本金)，不重复计负债");
+
+  // 继续还完全部剩余期次后返回已还清；再还返回 400 LOAN_PAID_OFF
+  for (let i = 0; i < 10; i++) {
+    const r = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-" + (i + 3) });
+    assert.equal(r.statusCode, 200, `补还第 ${i + 3} 期失败: ${r.body}`);
+  }
+  const over = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-13" });
+  assert.equal(over.statusCode, 400, "还清后再还款应返回 400");
+  assert.match(over.body, /LOAN_PAID_OFF/);
+});
+
+test("贷款不传负债账户时自动创建 loan 类型账户", async () => {
+  const bank = await req("POST", "/api/v1/accounts", {
+    name: "还款卡2",
+    type: "bank",
+    currency: "CNY",
+    initialBalance: 1000000,
+  });
+  const bankId = bank.json().item.id as string;
+  const created = await req("POST", "/api/v1/loans", {
+    name: "车贷",
+    type: "car",
+    principal: 500000,
+    annualRate: 0,
+    termMonths: 10,
+    startDate: "2026-01-01",
+    accountId: bankId,
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const liabilityAccountId = created.json().item.liabilityAccountId as string;
+  assert.ok(liabilityAccountId, "应自动创建负债账户");
+  const accountsRes = await req("GET", "/api/v1/accounts");
+  const acct = (accountsRes.json().items as Array<{ id: string; type: string; balance: number }>).find((a) => a.id === liabilityAccountId);
+  assert.ok(acct, "自动创建的负债账户应存在");
+  assert.equal(acct!.type, "loan");
+  assert.equal(acct!.balance, -500000, "自动创建时负余额 = 贷款本金");
 });
 
 test("导入 force=true 可强制保留重复项", async () => {
@@ -1071,6 +1165,13 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
     { path: "/api/v1/loans/{id}/pay", method: "POST" },
     { path: "/api/v1/credit-card-bills/{id}/pay", method: "POST" },
     { path: "/api/v1/audit-logs", method: "GET" },
+    { path: "/api/v1/families/{id}/invitations", method: "POST" },
+    { path: "/api/v1/families/invitations/{token}/accept", method: "POST" },
+    { path: "/api/v1/families/invitations/{token}/decline", method: "POST" },
+    { path: "/api/v1/families/{id}/exit", method: "POST" },
+    { path: "/api/v1/families/{id}/transfer", method: "POST" },
+    { path: "/api/v1/families/{id}", method: "DELETE" },
+    { path: "/api/v1/families/{id}/members/{memberUserId}", method: "PATCH" },
   ];
 
   for (const ep of endpoints) {
@@ -1083,3 +1184,27 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
   }
 });
 
+test("OpenAPI 文档可解析、operationId 唯一、路径均为合法前缀", async () => {
+  const openapi = readFileSync(resolve("../docs/openapi.yaml"), "utf8");
+
+  // 顶层结构（OpenAPI 3.0 必需字段）
+  assert.match(openapi, /^openapi:\s*3\.0/m, "应声明 OpenAPI 3.0");
+  assert.match(openapi, /^info:\s*$/m, "应有 info 块");
+  assert.match(openapi, /^paths:\s*$/m, "应有 paths 块");
+
+  // 路径条目均为合法前缀
+  for (const line of openapi.split("\n")) {
+    const m = line.match(/^  (\/(api\/v1\/\S+|health(?:\/\S+)?)):\s*$/);
+    if (m) {
+      const name = m[1]!;
+      assert.ok(/^\/api\/v1\//.test(name) || name.startsWith("/health"), `路径应为合法前缀: ${name}`);
+    }
+  }
+
+  // operationId 唯一性
+  const opIds = [...openapi.matchAll(/^[ ]+operationId:\s*(\S+)\s*$/gm)].map((m) => m[1]!);
+  assert.ok(opIds.length >= 25, `应至少有 25 个 operationId，实际 ${opIds.length}`);
+  const seen = new Set<string>();
+  const dupes = opIds.filter((id) => (seen.has(id) ? true : (seen.add(id), false)));
+  assert.deepEqual(dupes, [], `operationId 不应重复: ${dupes.join(", ")}`);
+});

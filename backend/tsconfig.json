@@ -19,7 +19,8 @@
     "noUncheckedIndexedAccess": true
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "src/**/*.cts"
   ],
   "exclude": [
     "node_modules",

@@ -22,15 +22,23 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "0.1.0"
+      configs:
+        # API 地址由构建配置注入：Debug 允许本地 HTTP，Release 必须是 HTTPS 生产域名
+        Debug:
+          TALLY_API_BASE_URL: http://localhost:8080
+        Release:
+          TALLY_API_BASE_URL: https://your-production-domain.example.com
     info:
       path: Tally/Support/Info.plist
       properties:
         CFBundleDisplayName: Tally
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
+        # 由构建配置（TALLY_API_BASE_URL）注入，避免源码/Info.plist 写死地址
+        TallyAPIBaseURL: $(TALLY_API_BASE_URL)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        # 生产用 HTTPS；开发期通过 NSAllowsLocalNetworking 放行本地/局域网 HTTP
+        # 生产用 HTTPS 不再全局放行任意 HTTP；仅允许本地/局域网 HTTP 便于开发联调
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true

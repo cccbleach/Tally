@@ -46,11 +46,15 @@ export function assetDebtSummary(db: DB, userId: string, ledgerId: string): Asse
     if (a.type === "credit") {
       debts += convert(db, userId, Math.max(0, -native), a.currency, config.baseCurrency);
       assets += convert(db, userId, Math.max(0, native), a.currency, config.baseCurrency);
+    } else if (a.type === "loan") {
+      // loan 类型账户的负债由 remainingPrincipal 表达，这里跳过账户循环避免重复计。
+      continue;
     } else {
       assets += base;
     }
   }
-  // 贷款剩余本金计入负债
+  // 贷款负债：以 remainingPrincipal 为负债口径（计划表缓存，定期与负债账户余额对账）。
+  // 不在上方把 loan 账户余额再算一遍，因此不会双重计负债。
   const loanRows = db.select().from(loans).where(eq(loans.ledgerId, ledgerId)).all();
   const loanDebt = loanRows.reduce((s, l) => s + l.remainingPrincipal, 0);
   return { assets, debts: debts + loanDebt, net: assets - debts - loanDebt };

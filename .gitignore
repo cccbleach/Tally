@@ -10,3 +10,8 @@ ios/DerivedData/
 ios/build/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+
+# 临时测试脚本/子进程脚本兜底
+.prod-sec-*.ts
+.trust-proxy-*.ts
+*.tmp

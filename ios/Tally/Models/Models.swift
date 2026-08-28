@@ -71,6 +71,9 @@ struct Transaction: Codable, Identifiable, Hashable {
     var categoryIcon: String?
     var categoryColor: String?
     var transferToAccountName: String?
+    var sourceType: String?
+    // 一次还款拆分的本金/利息流水共用同一分组 ID，用于追溯
+    var paymentGroupId: String?
 }
 
 struct TransactionsResponse: Codable {
@@ -273,9 +276,14 @@ struct LoanItem: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let type: String
+    var currency: String?
     let remainingPrincipal: Int
     let monthlyPayment: Int
     let nextPaymentDate: String?
+    var accountId: String?
+    // 贷款负债账户（type=loan），其负余额 = 剩余本金
+    var liabilityAccountId: String?
+    var status: String?
 }
 
 struct CreditCardBillItem: Codable, Identifiable, Hashable {

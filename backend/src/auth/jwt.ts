@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
+import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 
 export interface JwtPayload {
@@ -17,7 +18,7 @@ export function makeJwt(secret: string) {
         .sign(key);
     },
     async signRefresh(userId: string): Promise<string> {
-      return await new SignJWT({ sub: userId, type: "refresh" })
+      return await new SignJWT({ sub: userId, type: "refresh", jti: randomUUID() }) // jti 保证同一秒内多次登录也唯一
         .setProtectedHeader({ alg: "HS256" })
         .setIssuedAt()
         .setExpirationTime(config.refreshTokenTtl)

@@ -7,6 +7,7 @@ import { accounts, categories, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { requireLedgerPermission, requireTransactionModify } from "../lib/authorization.js";
 import { loadRelationMaps, type RelationMaps } from "../services/transactionService.js";
 import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
@@ -19,7 +20,25 @@ import {
   type ParsedBill,
 } from "../lib/billParser.js";
 import { buildDedupKey } from "../lib/dedup.js";
+import { badRequest as _badRequest } from "../lib/errors.js";
 import type { Jwt } from "../auth/jwt.js";
+
+// xlsx 解析错误统一转为 400（旧版导入接口）
+async function safeParseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
+  try {
+    return await parseWechatXlsx(buf);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    const code = /XLSX_TOO_LARGE/.test(msg)
+      ? "FILE_TOO_LARGE"
+      : /XLSX_TOO_MANY_ROWS/.test(msg)
+        ? "TOO_MANY_ROWS"
+        : /XLSX_TOO_MANY_CELLS/.test(msg)
+          ? "TOO_MANY_CELLS"
+          : "PARSE_FAILED";
+    throw _badRequest(code, `无法解析微信 Excel 账单：${msg}`);
+  }
+}
 
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -91,6 +110,7 @@ function toDto(tx: TransactionRow, am: RelationMaps["am"], cm: RelationMaps["cm"
     date: tx.date,
     sourceType: tx.sourceType ?? null,
     transferToAccountId: tx.transferToAccountId,
+    paymentGroupId: tx.paymentGroupId ?? null,
     createdAt: tx.createdAt,
     updatedAt: tx.updatedAt,
     accountName: am.get(tx.accountId)?.name ?? null,
@@ -143,6 +163,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const userId = getUserId(req);
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
     const account = db
       .select()
@@ -150,6 +171,11 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!account) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
+
+    // 未实现交易级汇率换算：禁止在账户币种与流水币种不一致的场合入账，避免账实不符。
+    if (account.currency !== body.currency) {
+      throw badRequest("CURRENCY_MISMATCH", "跨币种操作暂不支持，请改用同币种账户或先开通汇率换算");
+    }
 
     let categoryId: string | null = null;
     let transferToAccountId: string | null = null;
@@ -164,6 +190,9 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         .where(and(eq(accounts.id, body.transferToAccountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!toAccount) throw badRequest("ACCOUNT_NOT_FOUND", "转入账户不存在");
+      if (account.currency !== toAccount.currency) {
+        throw badRequest("CURRENCY_MISMATCH", "跨币种转账暂不支持，请先开通汇率换算");
+      }
       transferToAccountId = body.transferToAccountId;
     } else {
       const cat = db
@@ -224,6 +253,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
+    // 账本可访问 + 资源可修改分开校验（member 只能改自己的）
+    requireTransactionModify(db, userId, ledgerId, existing.userId);
     if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
       throw conflict("CONFLICT", "流水已被其他端修改，请刷新后重试");
     }
@@ -280,16 +311,21 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
+    // 账本可访问 + 资源可修改分开校验（member 只能删自己的）
+    requireTransactionModify(db, userId, ledgerId, existing.userId);
     db.delete(transactions)
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .run();
     return { ok: true };
   });
 
+  // 已下线旧导入流程：请使用 /api/v1/imports/jobs（暂存+预览+确认）。保留一个版本兼容（OpenAPI 中标记 deprecated）。
+  // 不再继续维护两套去重逻辑。
   app.post("/api/v1/transactions/import", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
     const body = billImportSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
     let items: ParsedBill[];
     if (body.mode === "raw") {
@@ -300,7 +336,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         items = await parseBankPdf(buf);
       } else if (body.source === "wechat") {
         // 微信导出可能是 txt 或 xlsx；xlsx 文件头为 PK（zip）
-        items = buf && buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? parseWechatXlsx(buf) : parseWechat(content);
+        items = buf && buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? await safeParseWechatXlsx(buf) : parseWechat(content);
       } else {
         items = parseAlipay(content);
       }
@@ -362,10 +398,11 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         updatedAt: now,
       };
       try {
+        // 硬去重仅依靠稳定来源 ID（同账本同来源同 external_id）；dedup_key 不再硬唯一
         const r = db
           .insert(transactions)
           .values(row)
-          .onConflictDoNothing({ target: [transactions.ledgerId, transactions.dedupKey] })
+          .onConflictDoNothing({ target: [transactions.ledgerId, transactions.sourceType, transactions.externalId] })
           .run();
         if (r.changes > 0) imported++;
       } catch {
@@ -394,6 +431,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .get();
     if (!source || !target) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
     if (source.id === target.id) throw badRequest("INVALID_LINK", "不能关联自身");
+    // 关联操作修改 source 流水的归属关系：需写权限，且普通 member 只能关联自己的流水
+    requireTransactionModify(db, userId, ledgerId, source.userId);
     db.update(transactions)
       .set({ linkedTransactionId: target.id, updatedAt: new Date().toISOString() })
       .where(eq(transactions.id, source.id))

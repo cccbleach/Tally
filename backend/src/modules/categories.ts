@@ -7,6 +7,7 @@ import { categories } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { requireLedgerPermission } from "../lib/authorization.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createSchema = z.object({
@@ -60,6 +61,7 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
     const userId = getUserId(req);
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "category:manage");
     const row = {
       id: randomUUID(),
       userId,
@@ -79,6 +81,7 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
     const userId = getUserId(req);
     const body = updateSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+      requireLedgerPermission(db, userId, ledgerId, "category:manage");
     const { id } = req.params as { id: string };
     const existing = db
       .select()
@@ -107,6 +110,7 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+      requireLedgerPermission(db, userId, ledgerId, "category:manage");
     const { id } = req.params as { id: string };
     const existing = db
       .select()

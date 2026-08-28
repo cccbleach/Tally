@@ -34,7 +34,9 @@ export async function buildApp(deps: Deps) {
         : { level: config.logLevel, serializers: { req: (r: { method: string; url: string; id: unknown }) => ({ method: r.method, url: r.url, id: r.id }) } },
   });
 
-  // CORS：配置白名单则仅放行白名单源；未配置则开发期放行所有（iOS 客户端不受影响）
+  // CORS：配置白名单则仅放行白名单源；未配置时，
+  // - 开发环境：放行所有（iOS 客户端不受浏览器同源策略影响）
+  // - 生产环境：拒绝放行任意 Origin（防止跨站调用/凭证滥用），仅允许无 Origin 的同源请求
   const whitelist = config.corsOrigins;
   await app.register(cors, {
     origin:
@@ -43,7 +45,13 @@ export async function buildApp(deps: Deps) {
             if (!origin || whitelist.includes(origin)) cb(null, true);
             else cb(new Error("CORS_NOT_ALLOWED"), false);
           }
-        : true,
+        : config.isProduction
+          ? (origin, cb) => {
+              // 生产环境未配置白名单：只放行无 Origin 的同源/非浏览器请求
+              if (!origin) cb(null, true);
+              else cb(new Error("CORS_NOT_ALLOWED"), false);
+            }
+          : true,
   });
   await app.register(multipart, {
     limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 10 },

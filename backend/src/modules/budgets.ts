@@ -8,6 +8,7 @@ import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { expenseByCategory, monthlyTotals } from "../lib/aggregates.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { requireLedgerPermission } from "../lib/authorization.js";
 import { currentYearMonth } from "../lib/date.js";
 import type { Jwt } from "../auth/jwt.js";
 
@@ -64,9 +65,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const rows = db
       .select()
       .from(budgets)
-      .where(
-        and(eq(budgets.userId, userId), eq(budgets.ledgerId, ledgerId), eq(budgets.year, year), eq(budgets.month, month)),
-      )
+      .where(and(eq(budgets.ledgerId, ledgerId), eq(budgets.year, year), eq(budgets.month, month)))
       .all();
     const totals = monthlyTotals(db, userId, ledgerId, year, month);
     const byCat = expenseByCategory(db, userId, ledgerId, year, month);
@@ -88,6 +87,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
     if (body.categoryId) {
       const cat = db
         .select()
@@ -100,14 +100,12 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const cond =
       body.categoryId === null || body.categoryId === undefined
         ? [
-            eq(budgets.userId, userId),
             eq(budgets.ledgerId, ledgerId),
             eq(budgets.year, body.year),
             eq(budgets.month, body.month),
             isNull(budgets.categoryId),
           ]
         : [
-            eq(budgets.userId, userId),
             eq(budgets.ledgerId, ledgerId),
             eq(budgets.year, body.year),
             eq(budgets.month, body.month),
@@ -141,6 +139,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const body = updateSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
     const existing = db
       .select()
@@ -162,6 +161,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
     const existing = db
       .select()
@@ -188,7 +188,6 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .from(budgets)
       .where(
         and(
-          eq(budgets.userId, userId),
           eq(budgets.ledgerId, ledgerId),
           eq(budgets.year, year),
           eq(budgets.month, month),
@@ -201,7 +200,6 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .from(budgets)
       .where(
         and(
-          eq(budgets.userId, userId),
           eq(budgets.ledgerId, ledgerId),
           eq(budgets.year, year),
           eq(budgets.month, month),

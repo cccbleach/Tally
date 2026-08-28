@@ -15,14 +15,38 @@ import { config } from "../config.js";
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
 function clientIp(req: FastifyRequest): string {
+  // 默认（TRUST_PROXY=0）不信任客户端提交的 X-Forwarded-For，只信 TCP 对端地址。
+  // 仅在显式配置可信代理层数后才取 XFF。
+  if (config.trustedProxyCount <= 0) {
+    return req.socket.remoteAddress ?? "unknown";
+  }
   const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd.length > 0) return fwd.split(",")[0]!.trim();
+  if (typeof fwd === "string" && fwd.length > 0) {
+    const parts = fwd
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      // 标准约定：每个受信代理都会把自己的“上一跳来源”追加到 XFF 最右侧。
+      // 因此配置了 N 个可信代理时，真实客户端 IP 是从右往左数第 N 个地址；
+      // 更左侧的地址可能由客户端伪造，不能固定采用最左侧。
+      const idx = Math.max(0, parts.length - config.trustedProxyCount);
+      return parts[idx] ?? (req.socket.remoteAddress ?? "unknown");
+    }
+  }
   return req.socket.remoteAddress ?? "unknown";
 }
 
-function enforceLimiter(limiter: AuthLimiter, req: FastifyRequest) {
-  const { allowed } = limiter(clientIp(req));
+function enforceLimiter(limiter: AuthLimiter, key: string) {
+  if (!config.enableRateLimit) return;
+  const { allowed } = limiter(key);
   if (!allowed) throw tooManyRequests("RATE_LIMITED", "请求过于频繁，请稍后再试");
+}
+
+// 认证类接口同时做 IP 维度与账号维度限流。
+function enforceAuthLimits(limiter: AuthLimiter, req: FastifyRequest, account?: string) {
+  enforceLimiter(limiter, "ip:" + clientIp(req));
+  if (account) enforceLimiter(limiter, "account:" + account.trim().toLowerCase());
 }
 
 // 账号：邮箱 或 手机号（中国大陆常见格式，可带 +/空格）
@@ -78,7 +102,7 @@ export function registerAuthRoutes(
   const auth = makeAuth(deps.jwt);
 
   app.post("/api/v1/auth/register", async (req) => {
-    enforceLimiter(deps.authLimiter, req);
+    enforceAuthLimits(deps.authLimiter, req, "register");
     const body = registerSchema.parse(req.body);
     const result = await service.register(body.email, body.password, body.displayName ?? "");
     const ledgerId = createDefaultLedger(deps.db, result.user.id);
@@ -87,23 +111,21 @@ export function registerAuthRoutes(
   });
 
   app.post("/api/v1/auth/login", async (req) => {
-    enforceLimiter(deps.authLimiter, req);
     const body = loginSchema.parse(req.body);
+    enforceAuthLimits(deps.authLimiter, req, body.email);
     return await service.login(body.email, body.password);
   });
 
   app.post("/api/v1/auth/refresh", async (req) => {
-    enforceLimiter(deps.authLimiter, req);
+    enforceLimiter(deps.authLimiter, clientIp(req));
     const body = refreshSchema.parse(req.body);
-    const payload = await deps.jwt.verify(body.refreshToken);
-    if (payload.type !== "refresh") throw unauthorized("INVALID_REFRESH_TOKEN", "刷新令牌无效");
-    return await service.refresh(payload.sub);
+    return await service.refresh(body.refreshToken);
   });
 
   app.post("/api/v1/auth/request-code", async (req) => {
-    enforceLimiter(deps.authLimiter, req);
     const body = requestCodeSchema.parse(req.body);
     const phone = body.email.trim().toLowerCase();
+    enforceAuthLimits(deps.authLimiter, req, phone);
     const production = config.authMode === "production";
 
     // 生产模式：验证码永不回传、发送失败不降级为明文，只返回通用提示。
@@ -121,9 +143,9 @@ export function registerAuthRoutes(
   });
 
   app.post("/api/v1/auth/login-code", async (req) => {
-    enforceLimiter(deps.authLimiter, req);
     const body = loginCodeSchema.parse(req.body);
     const key = body.email.trim().toLowerCase();
+    enforceAuthLimits(deps.authLimiter, req, key);
 
     // 校验验证码：优先用短信认证服务端校验；若服务端未通过（如发送失败/降级），再回退本地校验
     const svc = await checkVerifyCode(key, body.code);
@@ -148,12 +170,18 @@ export function registerAuthRoutes(
 
   app.post("/api/v1/auth/forgot-password", async (req) => {
     const body = forgotSchema.parse(req.body);
+    enforceAuthLimits(deps.authLimiter, req, body.email);
     const resetToken = await service.requestReset(body.email);
-    // 开发阶段直接返回 resetToken；接入邮件服务后改为“已发送邮件”。
+    if (config.authMode === "production") {
+      // 生产环境：绝不把 reset token 回传给客户端，只返回通用提示，防止 token 泄漏。
+      return { ok: true };
+    }
+    // 开发阶段直接返回 resetToken，便于本地联调。
     return { ok: true, resetToken };
   });
 
   app.post("/api/v1/auth/reset-password", async (req) => {
+    enforceAuthLimits(deps.authLimiter, req, "reset-password");
     const body = resetSchema.parse(req.body);
     await service.resetPassword(body.resetToken, body.newPassword);
     return { ok: true };

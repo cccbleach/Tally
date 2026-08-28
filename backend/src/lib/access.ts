@@ -16,6 +16,9 @@ export function getAccessibleLedger(db: DB, userId: string, ledgerId?: string): 
   const ledger = db.select().from(ledgers).where(eq(ledgers.id, targetId)).get();
   if (!ledger) throw notFound("LEDGER_NOT_FOUND", "账本不存在");
 
+  // 已删除（家庭删除后保留数据但不可访问）的账本对任何人（含原属主）不可访问
+  if (ledger.deletedAt) throw notFound("LEDGER_DELETED", "账本已删除，无法访问");
+
   if (ledger.familyId) {
     const member = db
       .select()

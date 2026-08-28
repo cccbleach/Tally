@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Xcode build products & caches
+DerivedData/
+build/
+*.xcresult
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Local only
+*.log

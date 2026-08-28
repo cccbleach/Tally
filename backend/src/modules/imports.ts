@@ -8,7 +8,8 @@ import { importItems, importJobs, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
-import { buildDedupKey } from "../lib/dedup.js";
+import { requireLedgerPermission } from "../lib/authorization.js";
+import { buildDedupKey, normalizeMerchant } from "../lib/dedup.js";
 import { writeAudit } from "../lib/audit.js";
 import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
@@ -21,6 +22,23 @@ import {
   type ParsedBill,
 } from "../lib/billParser.js";
 import type { Jwt } from "../auth/jwt.js";
+
+// xlsx 解析错误统一转为 400，避免把内部解析异常暴露为 500。
+async function safeParseWechatXlsx(buf: Uint8Array): Promise<import("../lib/billParser.js").ParsedBill[]> {
+  try {
+    return await parseWechatXlsx(buf);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    const code = /XLSX_TOO_LARGE/.test(msg)
+      ? "FILE_TOO_LARGE"
+      : /XLSX_TOO_MANY_ROWS/.test(msg)
+        ? "TOO_MANY_ROWS"
+        : /XLSX_TOO_MANY_CELLS/.test(msg)
+          ? "TOO_MANY_CELLS"
+          : "PARSE_FAILED";
+    throw badRequest(code, `无法解析微信 Excel 账单：${msg}`);
+  }
+}
 
 const createJobSchema = z.object({
   mode: z.enum(["items", "raw"]),
@@ -43,7 +61,11 @@ const createJobSchema = z.object({
 });
 
 const patchItemSchema = z.object({
-  decision: z.enum(["accept", "skip"]),
+  decision: z.enum(["accept", "skip"]).optional(),
+  accountId: z.string().optional(),
+  categoryId: z.string().optional(),
+}).refine((v) => v.decision !== undefined || v.accountId !== undefined || v.categoryId !== undefined, {
+  message: "至少提供一项变更",
 });
 
 function fileHashOf(buf: Buffer): string {
@@ -84,15 +106,41 @@ async function createStagedJob(
     })
     .run();
 
+  // 任务内去重：同一文件里出现多条相同外部 ID 或相同软指纹时，后续条目标记为重复
+  const seenExternal = new Set<string>();
+  const seenDedup = new Set<string>();
   for (const it of items) {
     const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
     const dedupKey = buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note);
-    const existing = db
-      .select()
-      .from(transactions)
-      .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.dedupKey, dedupKey)))
-      .get();
+    const merchant = normalizeMerchant(it.note);
+    // 硬去重：同一账本、同一来源、同一外部 ID（稳定来源 ID，不依赖启发式指纹）
+    const hard = seenExternal.has(externalId)
+      ? { id: null }
+      : db
+          .select()
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.ledgerId, ledgerId),
+              eq(transactions.sourceType, source),
+              eq(transactions.externalId, externalId),
+            ),
+          )
+          .get();
+    // 软去重：启发式指纹（日期/金额/币种/规范化商家），不作为硬唯一
+    const soft =
+      hard || seenDedup.has(dedupKey)
+        ? { id: null }
+        : db
+            .select()
+            .from(transactions)
+            .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.dedupKey, dedupKey)))
+            .get();
+    const existing = hard ?? soft;
     const status = existing ? "duplicate" : "new";
+    const score = existing ? (hard ? 100 : 70) : 0;
+    seenExternal.add(externalId);
+    seenDedup.add(dedupKey);
     db.insert(importItems)
       .values({
         id: randomUUID(),
@@ -102,9 +150,12 @@ async function createStagedJob(
         type: it.type,
         amount: it.amount,
         currency: it.currency ?? "CNY",
-        merchant: it.note ? buildDedupKey(it.date, it.amount, it.currency ?? "CNY", it.note).slice(0, 64) : null,
+        merchant: merchant || null,
         rawDescription: it.note,
+        dedupKey,
+        source,
         duplicateStatus: status,
+        duplicateScore: score,
         matchedTransactionId: existing?.id ?? null,
         decision: status === "duplicate" ? "skip" : "accept",
         createdAt: now,
@@ -123,6 +174,7 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const body = createJobSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
     let items: ParsedBill[];
     let rawBuffer: Buffer | null = null;
@@ -137,7 +189,7 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
         if (!buf) throw badRequest("BANK_NEED_FILE", "银行账单请上传 PDF 文件");
         items = await parseBankPdf(buf);
       } else if (body.source === "wechat") {
-        items = buf && buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? parseWechatXlsx(buf) : parseWechat(content);
+        items = buf && buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? await safeParseWechatXlsx(buf) : parseWechat(content);
       } else {
         items = parseAlipay(content);
       }
@@ -182,12 +234,13 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (src === "items") throw badRequest("SOURCE_REQUIRED", "请指定账单来源");
 
     const ledgerId = getAccessibleLedger(db, userId, (req.query as Record<string, string | undefined>).ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
     let items: ParsedBill[];
     if (src === "bank") {
       items = await parseBankPdf(buf);
     } else if (src === "wechat") {
-      items = buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? parseWechatXlsx(buf) : parseWechat(decodeBillBuffer(buf));
+      items = buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? await safeParseWechatXlsx(buf) : parseWechat(decodeBillBuffer(buf));
     } else {
       items = parseAlipay(decodeBillBuffer(buf));
     }
@@ -237,12 +290,25 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const body = patchItemSchema.parse(req.body);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
     const { itemId } = req.params as { itemId: string };
     const item = db.select().from(importItems).where(eq(importItems.id, itemId)).get();
     if (!item) throw notFound("IMPORT_ITEM_NOT_FOUND", "明细项不存在");
     const job = db.select().from(importJobs).where(eq(importJobs.id, item.jobId)).get();
     if (!job || job.ledgerId !== ledgerId || job.status !== "staged") throw conflict("IMPORT_NOT_STAGED", "任务不可修改");
-    db.update(importItems).set({ decision: body.decision }).where(eq(importItems.id, itemId)).run();
+    const patch: Partial<typeof importItems.$inferInsert> = { createdAt: item.createdAt };
+    if (body.decision !== undefined) patch.decision = body.decision;
+    if (body.accountId !== undefined) {
+      const acct = listAccountsForUser(db, userId, ledgerId).find((a) => a.id === body.accountId);
+      if (!acct) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
+      patch.accountId = body.accountId;
+    }
+    if (body.categoryId !== undefined) {
+      const cat = listCategoriesForUser(db, userId, ledgerId).find((c) => c.id === body.categoryId);
+      if (!cat) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
+      patch.categoryId = body.categoryId;
+    }
+    db.update(importItems).set(patch).where(eq(importItems.id, itemId)).run();
     return { ok: true };
   });
 
@@ -251,6 +317,7 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
     const { id } = req.params as { id: string };
     const job = db.select().from(importJobs).where(eq(importJobs.id, id)).get();
     if (!job || job.ledgerId !== ledgerId) throw notFound("IMPORT_JOB_NOT_FOUND", "导入任务不存在");
@@ -270,29 +337,52 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     let imported = 0;
     let skipped = 0;
     db.transaction((tx) => {
-      for (const it of items) {
-        if (it.decision !== "accept" || it.duplicateStatus === "duplicate") continue;
-        const row = {
-          id: randomUUID(),
-          userId,
-          ledgerId,
-          accountId: defaultAccount.id,
-          categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
-          type: it.type,
-          amount: it.amount,
-          currency: it.currency,
-          note: it.rawDescription,
-          date: it.occurredAt,
-          transferToAccountId: null,
-          recurringId: null,
-          externalId: it.externalId,
-          sourceType: job.source,
-          createdAt: now,
-          updatedAt: now,
-        };
-        tx.insert(transactions).values(row).run();
-        imported++;
-      }
+        for (const it of items) {
+          if (it.decision !== "accept") continue;
+          const forced = it.duplicateStatus === "duplicate" || it.duplicateStatus === "suspected";
+          const accountId = it.accountId ?? defaultAccount.id;
+          const categoryId = it.categoryId ?? (it.type === "income" ? incomeCat : expenseCat)?.id ?? null;
+          const row = {
+            id: randomUUID(),
+            userId,
+            ledgerId,
+            accountId,
+            categoryId,
+            type: it.type,
+            amount: it.amount,
+            currency: it.currency,
+            note: it.rawDescription,
+            date: it.occurredAt,
+            transferToAccountId: null,
+            recurringId: null,
+            externalId: it.externalId,
+            sourceType: it.source ?? job.source,
+            dedupKey: it.dedupKey,
+            linkedTransactionId: forced ? it.matchedTransactionId : null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          try {
+            tx.insert(transactions).values(row).run();
+          } catch {
+            // 同账本同来源同外部 ID 的硬去重冲突：明确报错而非静默跳过/丢弃
+            throw conflict(
+              "IMPORT_HARD_DUPLICATE",
+              `第 ${it.externalId || it.id} 条与已存在流水来源冲突，请改为 skip 或重新确认`,
+            );
+          }
+          if (forced) {
+            writeAudit(tx, {
+              ledgerId,
+              actorUserId: userId,
+              entityType: "import_item",
+              entityId: it.id,
+              action: "import_forced_accept",
+              afterJson: { matchedTransactionId: it.matchedTransactionId, duplicateStatus: it.duplicateStatus, decision: it.decision },
+            });
+          }
+          imported++;
+        }
       skipped = items.length - imported;
       tx.update(importJobs)
         .set({ status: "committed", importedCount: imported, skippedCount: skipped, updatedAt: now })

@@ -7,6 +7,7 @@ import { accounts, categories, recurring } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
+import { requireLedgerPermission } from "../lib/authorization.js";
 import { accountNameMap } from "../repositories/accountRepository.js";
 import { categoryNameMap } from "../repositories/categoryRepository.js";
 import type { Jwt } from "../auth/jwt.js";
@@ -87,6 +88,7 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     const userId = getUserId(req);
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:create");
     const account = db
       .select()
       .from(accounts)
@@ -132,6 +134,7 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     const userId = getUserId(req);
     const body = updateSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
     const existing = db
       .select()
@@ -195,6 +198,7 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
+    requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
     const existing = db
       .select()

@@ -3,17 +3,24 @@ services:
     build: .
     container_name: tally-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # HTTPS 由 Caddy 反向代理终结，公网不直接暴露 8080：
+    # 仅向 Docker 内网暴露，配合 Caddyfile.example 中 reverse_proxy tally-backend:8080
+    expose:
+      - "8080"
     environment:
+      NODE_ENV: "${NODE_ENV:-production}"
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: "./data/tally.db"
-      # 生产环境务必通过环境变量或 .env 传入强随机密钥
-      JWT_SECRET: "${JWT_SECRET:-please-change-me-to-a-long-random-string}"
+      # 生产环境必须显式传入强随机 JWT_SECRET（≥32 位且非占位值），未提供则拒绝启动
+      JWT_SECRET: "${JWT_SECRET:?请设置强随机 JWT_SECRET（openssl rand -hex 32）}"
       # 业务时区：与账本日期口径一致（“今天/当月”判断）
       TZ: "Asia/Shanghai"
       APP_TIMEZONE: "Asia/Shanghai"
+      # HTTPS 由 Caddy 终止时，通过环境变量传入前端域名白名单；生产为空则不放行任意 Origin
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      # 反代层数：部署在 Caddy/Nginx 之后时设 TRUST_PROXY=1，以还原真实客户端 IP 做限流
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
     volumes:
       - tally-data:/app/data
 
