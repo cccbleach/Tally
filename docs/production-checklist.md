@@ -262,3 +262,6 @@ git diff --check
 git ls-files | grep -E 'xcuserdata|\.xcuserstate' && echo "不应存在" || echo OK
 git status --porcelain   # 构建后应为空
 ```
+
+> 各项验收在开发环境的实际执行结果与复现命令，见 [`release-acceptance.md`](./release-acceptance.md)。
+
