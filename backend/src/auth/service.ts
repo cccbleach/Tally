@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { DB } from "../db/client.js";
-import { users, authSessions, passwordResetTokens } from "../db/schema.js";
+import { users, authSessions } from "../db/schema.js";
 import { AppError, badRequest, unauthorized } from "../lib/errors.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import type { Jwt } from "./jwt.js";
@@ -46,7 +46,6 @@ function ttlToMs(ttl: string): number {
 }
 
 const REFRESH_TTL_MS = ttlToMs(config.refreshTokenTtl);
-const RESET_TTL_MS = 30 * 60 * 1000;
 
 export function makeAuthService(db: DB, jwt: Jwt) {
   // 创建登录会话：签发 access/refresh 并落库 refresh token 哈希。
@@ -179,53 +178,28 @@ export function makeAuthService(db: DB, jwt: Jwt) {
       return { user: toDto(user), created: true, ...session };
     },
 
-    // 生成 reset token 并落库（单次使用、短时效）。返回明文 token；是否回传由路由按生产/开发决定。
-    async requestReset(account: string) {
+    // 账号是否存在（找回验证码只发给已注册手机号，避免“返回成功但拿不到验证码”）。
+    accountExists(account: string): boolean {
       const normalized = normalizeAccount(account);
-      const user = db.select().from(users).where(eq(users.email, normalized)).get();
-      if (!user) return null; // 为安全起见不暴露账号是否存在
-      const token = await jwt.signReset(user.id);
-      const now = new Date().toISOString();
-      db.insert(passwordResetTokens)
-        .values({
-          id: randomUUID(),
-          userId: user.id,
-          tokenHash: sha256(token),
-          expiresAt: new Date(Date.now() + RESET_TTL_MS).toISOString(),
-          usedAt: null,
-          createdAt: now,
-        })
-        .run();
-      return token;
+      if (!normalized) return false;
+      return !!db.select({ id: users.id }).from(users).where(eq(users.email, normalized)).get();
     },
 
-    async resetPassword(resetToken: string, newPassword: string) {
-      let payload;
-      try {
-        payload = await jwt.verify(resetToken);
-      } catch {
-        throw badRequest("INVALID_RESET_TOKEN", "重置令牌无效或已过期");
-      }
-      if (payload.type !== "reset") throw badRequest("INVALID_RESET_TOKEN", "重置令牌无效或已过期");
-      const record = db.select().from(passwordResetTokens).where(eq(passwordResetTokens.tokenHash, sha256(resetToken))).get();
-      if (!record || record.usedAt || new Date(record.expiresAt).getTime() < Date.now()) {
-        throw badRequest("INVALID_RESET_TOKEN", "重置令牌无效或已过期");
-      }
-      const user = db.select().from(users).where(eq(users.id, payload.sub)).get();
-      if (!user) throw badRequest("INVALID_RESET_TOKEN", "重置令牌无效或已过期");
-      if (user.id !== record.userId) throw badRequest("INVALID_RESET_TOKEN", "重置令牌无效或已过期");
+    // 短信验证码通过后的密码恢复：设置新密码 + 吊销全部会话。
+    // 调用方（路由）必须先完成验证码校验；这里只认已注册账号。
+    async setPasswordBySms(account: string, newPassword: string) {
+      const normalized = normalizeAccount(account);
+      const user = db.select().from(users).where(eq(users.email, normalized)).get();
+      if (!user) throw new AppError(404, "ACCOUNT_NOT_FOUND", "该手机号未注册");
       const passwordHash = await hashPassword(newPassword);
       db.transaction(() => {
-        db.update(passwordResetTokens)
-          .set({ usedAt: new Date().toISOString() })
-          .where(eq(passwordResetTokens.id, record.id))
-          .run();
         db.update(users)
           .set({ passwordHash, updatedAt: new Date().toISOString() })
           .where(eq(users.id, user.id))
           .run();
         revokeAllSessions(user.id);
       });
+      return { user: toDto(user) };
     },
 
     async me(userId: string) {

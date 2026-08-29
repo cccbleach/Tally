@@ -1,0 +1,142 @@
+# =============================================================================
+# Tally 生产 HTTPS 部署栈（可直接运行）
+#   Caddy（公网仅 80/443，自动 HTTPS）+ Tally backend（仅 Docker 内网 8080）
+#
+# 用法（在 backend/ 目录下）：
+#   export TALLY_DOMAIN=tally.yourdomain.cn              # 必填：已解析到本机的域名
+#   export JWT_SECRET=$(openssl rand -hex 32)             # 必填：≥32 位强随机
+#   export CORS_ORIGINS=https://tally.yourdomain.cn       # 可选：浏览器端来源白名单
+#   docker compose -f docker-compose.caddy.yml config     # 先校验（渲染后的最终配置）
+#   docker compose -f docker-compose.caddy.yml up -d --build
+#   docker compose -f docker-compose.caddy.yml ps         # 两个服务都应为 healthy
+#   curl -k https://$TALLY_DOMAIN/health/ready
+#
+# 拓扑与暴露面：
+#   internet ──▶ caddy:80/443（唯一 publish 的端口，HTTP→HTTPS 自动跳转 + ACME 证书）
+#                  └─内网 tally-edge 网络─▶ tally-backend:8080（只有 expose，无 ports）
+#   后端容器没有对宿主发布任何端口，因此公网/宿主都无法直连 8080；
+#   云安全组只需放行 22/80/443。
+#
+# 数据持久化（全部为命名卷，重建容器不丢数据）：
+#   tally-data   → /app/data        SQLite 数据文件（tally.db 及 -wal/-shm）
+#   caddy_data   → /data            证书、ACME 账户密钥（丢失会重新签发并有速率限制）
+#   caddy_config → /config          Caddy 运行时缓存
+#
+# 说明：
+#   - 443/udp（HTTP/3）故意不发布，严格只开 80/443 的 TCP。
+#   - 未设置必填环境变量时 compose 直接报错退出（不使用弱默认值）。
+# =============================================================================
+
+name: tally
+
+services:
+  tally-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tally-backend:latest
+    container_name: tally-backend
+    restart: unless-stopped
+    # 与 Caddy 同一自定义网络：Caddy 通过 http://tally-backend:8080 反代
+    networks:
+      - tally-edge
+    # 只对 Docker 网络内暴露 8080，不写 ports ⇒ 宿主/公网都直连不到后端
+    expose:
+      - "8080"
+    environment:
+      NODE_ENV: "production"
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "./data/tally.db"
+      # 必填：≥32 位强随机（openssl rand -hex 32）。生产模式缺失/占位值容器会拒绝启动。
+      JWT_SECRET: "${JWT_SECRET:?必须设置强随机 JWT_SECRET：openssl rand -hex 32}"
+      # 业务时区：与账本“今天/当月”口径一致
+      TZ: "${TZ:-Asia/Shanghai}"
+      APP_TIMEZONE: "${APP_TIMEZONE:-Asia/Shanghai}"
+      BASE_CURRENCY: "${BASE_CURRENCY:-CNY}"
+      # 浏览器端来源白名单（逗号分隔）。生产为空时后端只放行无 Origin 的请求，
+      # iOS 原生客户端不带 Origin，故可留空；有 Web 端务必填写。
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      # 位于 Caddy 之后 ⇒ 信任 1 层反代，从 X-Forwarded-For 最右侧还原真实客户端 IP 做限流
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      # 生产建议 info（JSON 日志便于采集）；off 表示关闭访问日志
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      # 短信验证码（阿里云）。不配置 = 无法发送验证码，生产下找回密码/登录会明确失败，
+      # 不会「返回成功但用户拿不到验证码」。
+      ALIYUN_SMS_ENABLED: "${ALIYUN_SMS_ENABLED:-}"
+      ALIYUN_ACCESS_KEY_ID: "${ALIYUN_ACCESS_KEY_ID:-}"
+      ALIYUN_ACCESS_KEY_SECRET: "${ALIYUN_ACCESS_KEY_SECRET:-}"
+      ALIYUN_SMS_SIGN_NAME: "${ALIYUN_SMS_SIGN_NAME:-}"
+      ALIYUN_SMS_TEMPLATE_CODE: "${ALIYUN_SMS_TEMPLATE_CODE:-}"
+      ACCESS_TOKEN_TTL: "${ACCESS_TOKEN_TTL:-15m}"
+      REFRESH_TOKEN_TTL: "${REFRESH_TOKEN_TTL:-30d}"
+    volumes:
+      - tally-data:/app/data
+    # 镜像内没有 curl/wget，用 Node 自带 fetch 探活（Node 24）
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    # SQLite 需要把 -wal 落盘，给足优雅退出时间避免撕裂
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    container_name: tally-caddy
+    restart: unless-stopped
+    networks:
+      - tally-edge
+    # 全站唯一对外发布端口：仅 80/443
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddyfile 里的站点地址由此变量注入（{$TALLY_DOMAIN}）；未设置则容器启动失败
+      TALLY_DOMAIN: "${TALLY_DOMAIN:?必须设置 TALLY_DOMAIN：已解析到本机的 HTTPS 域名}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      tally-backend:
+        condition: service_healthy
+    # 镜像内无 curl；用 bash 的 /dev/tcp 探活两个公网端口是否在内层监听
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "bash -c '</dev/tcp/127.0.0.1/80' && bash -c '</dev/tcp/127.0.0.1/443'"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  # 自建 bridge 网络：Caddy 与 backend 同网互通；后端不发布端口 ⇒ 公网不可达
+  tally-edge:
+    name: tally-edge
+    driver: bridge
+
+volumes:
+  tally-data:
+  caddy_data:
+  caddy_config:

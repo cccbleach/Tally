@@ -31,24 +31,57 @@ actor APIClient {
     private var refreshTask: Task<Void, Error>?
 
     // API 地址由构建配置（TALLY_API_BASE_URL → Info.plist 的 TallyAPIBaseURL）注入，
-    // 源码不写死任何地址。Debug 允许本地 HTTP 联调；Release 强制 HTTPS，否则直接拒绝启动。
+    // 源码不写死任何“看起来像生产”的地址（曾经的 https://api.example.com 兜底已删除：
+    // 它会让占位域名被打进 Release 产物并静默联网失败）。
+    // Debug 未配置时回落本机 127.0.0.1（仅开发用）；Release 必须是非占位 HTTPS 域名，否则拒绝启动。
     nonisolated var baseURL: String {
-        let resolved: String
-        if let configured = Bundle.main.object(forInfoDictionaryKey: "TallyAPIBaseURL") as? String,
-           !configured.isEmpty {
-            resolved = configured
-        } else {
-            resolved = "https://api.example.com"
-        }
+        let configured = (Bundle.main.object(forInfoDictionaryKey: "TallyAPIBaseURL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         #if DEBUG
-        return resolved
+        if configured.isEmpty { return "http://127.0.0.1:8080" }
+        return configured
         #else
-        // Release 构建必须使用 HTTPS，杜绝明文生产流量
-        if !resolved.hasPrefix("https://") {
-            fatalError("Release 构建必须使用 HTTPS API 地址（当前: \(resolved)）。请在构建配置 TALLY_API_BASE_URL 中设置 https:// 地址。")
+        // 构建期已有 scripts/validate-api-url.sh 拦截；这里再兜一层，
+        // 防止有人绕过脚本（旧工程、手改 plist）把明文/占位地址带到线上包。
+        if configured.isEmpty {
+            fatalError("Release 构建缺少 API 地址：请在构建时注入 TALLY_API_BASE_URL=https://你的域名")
         }
-        return resolved
+        if !configured.hasPrefix("https://") {
+            fatalError("Release 构建必须使用 HTTPS API 地址（当前: \(configured)）")
+        }
+        if APIClient.isPlaceholderOrLocalHost(URL(string: configured)?.host ?? "") {
+            fatalError("Release 构建的 API 地址是本机/内网/示例/占位域名：\(configured)")
+        }
+        return configured
         #endif
+    }
+
+    // Release 产物里不允许出现的 API 主机：本机、环回、私网、单标签（容器名）、示例域与常见占位词。
+    nonisolated static func isPlaceholderOrLocalHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased()
+        if host.isEmpty { return true }
+        if host == "localhost" || host.hasSuffix(".localhost") { return true }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") {
+            return true
+        }
+        if host.hasPrefix("172.") {
+            let second = Int(host.split(separator: ".").dropFirst().first.flatMap { Int($0) } ?? -1)
+            if (16...31).contains(second) { return true }
+        }
+        // 纯 IP：无法签发公网证书，视为内网/调试地址
+        if !host.contains(where: { $0.isLetter }) { return true }
+        // 单标签主机名（tally-backend、backend 等 Docker 服务名）
+        if !host.contains(".") { return true }
+        // RFC 保留域与示例域
+        let reservedSuffixes = [".example.com", ".example.org", ".example.net", ".example", ".test", ".invalid", ".local", ".internal", ".docker"]
+        if reservedSuffixes.contains(where: { host == String($0.dropFirst()) || host.hasSuffix($0) }) { return true }
+        let tld = host.components(separatedBy: ".").last ?? ""
+        if tld.count < 2 || !tld.allSatisfy({ $0.isLetter }) { return true }
+        // 常见占位词
+        let placeholders = ["yourdomain", "your-domain", "yourcompany", "your-production-domain", "production-domain",
+                            "placeholder", "changeme", "change-me", "please-change", "replace-me", "your-server",
+                            "fixme", "todo", "tbd", "dummy", "sample", "template", "my-domain", "mydomain"]
+        return placeholders.contains { host.contains($0) }
     }
 
     nonisolated var token: String? {

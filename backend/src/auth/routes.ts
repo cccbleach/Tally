@@ -14,6 +14,16 @@ import { config } from "../config.js";
 
 type AuthLimiter = ReturnType<typeof createRateLimiter>;
 
+// 找回密码验证码与登录验证码相互隔离的 OTP 命名空间前缀
+const RESET_OTP_PREFIX = "reset:";
+
+// 账号归一化（与 service 保持一致）：邮箱统一小写，手机号去掉内部空格
+function normalizeAccount(account: string): string {
+  const t = account.trim();
+  if (t.includes("@")) return t.toLowerCase();
+  return t.replace(/\s+/g, "");
+}
+
 function clientIp(req: FastifyRequest): string {
   // 默认（TRUST_PROXY=0）不信任客户端提交的 X-Forwarded-For，只信 TCP 对端地址。
   // 仅在显式配置可信代理层数后才取 XFF。
@@ -76,12 +86,17 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1, "刷新令牌不能为空"),
 });
 
-const forgotSchema = z.object({
-  email: z.string().email("邮箱格式不正确"),
+// 找回流程：先申请短信验证码，再用验证码直接设置新密码。
+// 两步都必须真实投递短信；生产环境发不出去就返回 503，绝不返回“成功但拿不到验证码”。
+// account 允许提交邮箱（与注册口径一致），但邮箱会在处理函数里被明确拒绝：
+// 项目未接入 SMTP，邮箱没有任何可用的凭证投递通道。
+const resetCodeSchema = z.object({
+  account: accountValidator,
 });
 
 const resetSchema = z.object({
-  resetToken: z.string().min(1, "重置令牌不能为空"),
+  account: accountValidator,
+  code: z.string().min(4, "验证码长度为 4-8 位").max(8, "验证码长度为 4-8 位"),
   newPassword: z.string().min(8, "密码至少 8 位").max(128, "密码过长"),
 });
 
@@ -168,22 +183,67 @@ export function registerAuthRoutes(
     return { user: result.user, token: result.token, refreshToken: result.refreshToken };
   });
 
-  app.post("/api/v1/auth/forgot-password", async (req) => {
-    const body = forgotSchema.parse(req.body);
-    enforceAuthLimits(deps.authLimiter, req, body.email);
-    const resetToken = await service.requestReset(body.email);
-    if (config.authMode === "production") {
-      // 生产环境：绝不把 reset token 回传给客户端，只返回通用提示，防止 token 泄漏。
-      return { ok: true };
+  // 申请找回密码验证码（短信投递）。与「验证码登录」使用不同 OTP 命名空间，
+  // 登录验证码不能用来改密码，反之亦然。
+  app.post("/api/v1/auth/reset-code", async (req) => {
+    const body = resetCodeSchema.parse(req.body);
+    const phone = normalizeAccount(body.account);
+    enforceAuthLimits(deps.authLimiter, req, phone);
+    const production = config.authMode === "production";
+
+    // 邮箱账号没有可投递通道 → 明确拒绝，而不是假装已发送。
+    if (phone.includes("@")) {
+      throw badRequest(
+        "EMAIL_RECOVERY_UNAVAILABLE",
+        "找回密码仅支持手机号（短信投递）；邮箱账号未接入邮件通道，请使用手机号账号或联系管理员人工重置",
+      );
     }
-    // 开发阶段直接返回 resetToken，便于本地联调。
-    return { ok: true, resetToken };
+    // 账号不存在 → 明确报错（不能返回“成功”，否则用户永远等不到验证码）。
+    if (!service.accountExists(phone)) {
+      throw new AppError(404, "ACCOUNT_NOT_FOUND", "该手机号未注册");
+    }
+
+    const sms = await sendVerifyCode(phone);
+    if (sms.sent && sms.code) {
+      deps.otp.store(RESET_OTP_PREFIX + phone, sms.code);
+      return { ok: true, ...(production ? {} : { code: sms.code }) };
+    }
+    // 生产模式：短信发不出去就是失败（503），既不回传验证码也不降级为“已受理”。
+    if (production) {
+      throw new AppError(503, "SMS_SEND_FAILED", "短信发送失败，请稍后重试");
+    }
+    // 开发模式：本地生成并回传验证码，便于无短信环境下联调。
+    const code = deps.otp.generate(RESET_OTP_PREFIX + phone);
+    return { ok: true, code };
   });
 
+  // 用短信验证码直接设置新密码：证明手机号所有权即可恢复账号，无需邮件 reset token。
+  // 成功后旧密码失效并吊销全部会话（其它设备需重新登录）。
   app.post("/api/v1/auth/reset-password", async (req) => {
-    enforceAuthLimits(deps.authLimiter, req, "reset-password");
     const body = resetSchema.parse(req.body);
-    await service.resetPassword(body.resetToken, body.newPassword);
+    const phone = normalizeAccount(body.account);
+    enforceAuthLimits(deps.authLimiter, req, phone);
+
+    // 邮箱账号没有可投递通道，也不可能有找回验证码 → 直接给出可执行的错误提示。
+    if (phone.includes("@")) {
+      throw badRequest(
+        "EMAIL_RECOVERY_UNAVAILABLE",
+        "找回密码仅支持手机号（短信投递）；邮箱账号未接入邮件通道，请使用手机号账号或联系管理员人工重置",
+      );
+    }
+
+    // 与登录验证码一致：优先短信服务端校验；未启用/异常时回退本地校验
+    //（本地过期时间与尝试次数限制始终生效）。
+    const svc = await checkVerifyCode(phone, body.code);
+    const local = deps.otp.verify(RESET_OTP_PREFIX + phone, body.code);
+    if ((svc.supported && svc.ok !== true) || !local.ok) {
+      throw badRequest(
+        local.reason === "expired" ? "CODE_EXPIRED" : local.reason === "exhausted" ? "CODE_EXHAUSTED" : "INVALID_CODE",
+        local.reason === "expired" ? "验证码已过期，请重新获取" : local.reason === "exhausted" ? "验证码错误次数过多，请重新获取" : "验证码错误",
+      );
+    }
+
+    await service.setPasswordBySms(phone, body.newPassword);
     return { ok: true };
   });
 

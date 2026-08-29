@@ -18,21 +18,36 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tally.logan
         CODE_SIGN_STYLE: Automatic
+        # 与已提交的 Tally.xcodeproj 同步（Xcode 里手工设置过）：重新 xcodegen generate
+        # 时不要丢掉 Team，否则真机安装 / Archive 会因缺少签名配置而失败
+        DEVELOPMENT_TEAM: XN5LYQCCY2
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CURRENT_PROJECT_VERSION: "1"
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "1.0.0"
       configs:
-        # API 地址由构建配置注入：Debug 允许本地 HTTP，Release 必须是 HTTPS 生产域名
+        # API 地址由构建配置注入：Debug 允许本地 HTTP，Release 必须显式注入真实 HTTPS 域名。
+        # Release 故意【不设默认值】：任何占位域名（example.com / your-production-domain 等）
+        # 都可能被误打进产物，因此无有效 URL 时 preBuild 校验会让构建直接失败。
         Debug:
           TALLY_API_BASE_URL: http://localhost:8080
         Release:
-          TALLY_API_BASE_URL: https://your-production-domain.example.com
+          TALLY_API_BASE_URL: ""
+    preBuildScripts:
+      - name: "校验 API 地址（Release 禁止 localhost/示例域/占位域名）"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          if [ "${CONFIGURATION:-}" = "Release" ]; then
+            bash "${SRCROOT}/scripts/validate-api-url.sh" --url "${TALLY_API_BASE_URL:-}" --require-https
+          else
+            echo "note: ${CONFIGURATION:-Debug} 构建跳过 Release 域名校验（TALLY_API_BASE_URL=${TALLY_API_BASE_URL:-<未设置>}）"
+          fi
     info:
       path: Tally/Support/Info.plist
       properties:
         CFBundleDisplayName: Tally
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "1"
         # 由构建配置（TALLY_API_BASE_URL）注入，避免源码/Info.plist 写死地址
         TallyAPIBaseURL: $(TALLY_API_BASE_URL)

@@ -8,8 +8,16 @@ backend/data/
 .DS_Store
 ios/DerivedData/
 ios/build/
-*.xcodeproj/xcuserdata/
-*.xcworkspace/xcuserdata/
+DerivedData/
+
+# Xcode 用户态：IDE 窗口布局/断点/scheme 管理，属于个人环境，禁止入库。
+# 说明：必须用 **/ 前缀。含斜杠的 ignore 模式相对仓库根锚定，
+# 原来的 `*.xcodeproj/xcuserdata/` 只能匹配仓库根目录，匹配不到 ios/**、ios-local/**。
+**/xcuserdata/
+**/*.xcuserstate
+**/*.xcscmblueprint
+*.xcresult/
+*.xcarchive/
 
 # 临时测试脚本/子进程脚本兜底
 .prod-sec-*.ts

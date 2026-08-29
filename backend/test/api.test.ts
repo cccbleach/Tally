@@ -571,20 +571,65 @@ test("刷新令牌不能当作访问令牌使用", async () => {
   assert.equal(bad.statusCode, 401);
 });
 
-test("忘记密码与重置密码流程", async () => {
-  const forgot = await req("POST", "/api/v1/auth/forgot-password", { email: "test@example.com" });
-  assert.equal(forgot.statusCode, 200, forgot.body);
-  const resetToken = forgot.json().resetToken as string;
-  assert.ok(resetToken, "应返回 resetToken");
+// 账号恢复方案（确定采用「短信恢复」）：
+// - 邮件 reset-token 通道未接入投递（无 SMTP），契约已从后端/OpenAPI/iOS 全部移除；
+// - 手机号账号用「短信验证码 + 新密码」自助恢复；
+// - 邮箱账号没有可投递通道 → 明确 400，不再出现「返回成功但拿不到 token」。
+test("账号恢复：短信验证码重设密码（手机号账号）", async () => {
+  const phone = "13900139000";
+  const reg = await req("POST", "/api/v1/auth/register", { email: phone, password: "oldpass123" });
+  assert.equal(reg.statusCode, 200, reg.body);
+  const oldToken = reg.json().token as string;
 
-  const reset = await req("POST", "/api/v1/auth/reset-password", { resetToken, newPassword: "newpass123" });
+  // 开发模式下短信未启用 → 直接回传验证码便于联调（生产模式永不回传，见 prodSecurity 测试）
+  const codeRes = await req("POST", "/api/v1/auth/reset-code", { account: phone });
+  assert.equal(codeRes.statusCode, 200, codeRes.body);
+  const code = codeRes.json().code as string;
+  assert.ok(code && code.length >= 4, "开发模式应回传验证码，实际: " + codeRes.body);
+
+  // 旧契约（resetToken）必须不再被接受
+  const legacy = await req("POST", "/api/v1/auth/reset-password", { resetToken: "x", newPassword: "newpass123" });
+  assert.equal(legacy.statusCode, 400, "旧 resetToken 契约应被拒绝: " + legacy.body);
+
+  // 验证码错误不得改密码
+  const wrongCode = await req("POST", "/api/v1/auth/reset-password", { account: phone, code: "000000", newPassword: "newpass123" });
+  assert.equal(wrongCode.statusCode, 400, wrongCode.body);
+  const stillOld = await req("POST", "/api/v1/auth/login", { email: phone, password: "oldpass123" });
+  assert.equal(stillOld.statusCode, 200, "验证码错误时旧密码必须仍然有效");
+
+  const codeRes2 = await req("POST", "/api/v1/auth/reset-code", { account: phone });
+  assert.equal(codeRes2.statusCode, 200, codeRes2.body);
+  const reset = await req("POST", "/api/v1/auth/reset-password", {
+    account: phone,
+    code: codeRes2.json().code as string,
+    newPassword: "newpass123",
+  });
   assert.equal(reset.statusCode, 200, reset.body);
 
-  const old = await req("POST", "/api/v1/auth/login", { email: "test@example.com", password: "password123" });
-  assert.equal(old.statusCode, 401, "旧密码应失效");
-  const fresh = await req("POST", "/api/v1/auth/login", { email: "test@example.com", password: "newpass123" });
-  assert.equal(fresh.statusCode, 200, "新密码应可登录");
-  headers = { authorization: "Bearer " + fresh.json().token };
+  const oldLogin = await req("POST", "/api/v1/auth/login", { email: phone, password: "oldpass123" });
+  assert.equal(oldLogin.statusCode, 401, "旧密码应失效");
+  const newLogin = await req("POST", "/api/v1/auth/login", { email: phone, password: "newpass123" });
+  assert.equal(newLogin.statusCode, 200, "新密码应可登录");
+
+  // 恢复后必须吊销全部会话（旧 access token 之外，旧 refresh 也失效）
+  const refreshOld = await req("POST", "/api/v1/auth/refresh", { refreshToken: reg.json().refreshToken });
+  assert.equal(refreshOld.statusCode, 401, "重设密码后旧刷新令牌应失效");
+});
+
+test("账号恢复：邮箱账号与未注册手机号不得返回假成功", async () => {
+  // 邮箱账号：没有邮件投递通道 → 明确 400，而不是 200 ok
+  const emailRes = await req("POST", "/api/v1/auth/reset-code", { account: "test@example.com" });
+  assert.equal(emailRes.statusCode, 400, emailRes.body);
+  assert.ok(emailRes.body.includes("EMAIL_RECOVERY_UNAVAILABLE"), emailRes.body);
+
+  // 未注册手机号：明确 404，不返回「已发送」
+  const missing = await req("POST", "/api/v1/auth/reset-code", { account: "13911112222" });
+  assert.equal(missing.statusCode, 404, missing.body);
+  assert.ok(missing.body.includes("ACCOUNT_NOT_FOUND"), missing.body);
+
+  // 已下线的邮件找回入口必须 404（契约不存在）
+  const legacyEntry = await req("POST", "/api/v1/auth/forgot-password", { email: "test@example.com" });
+  assert.equal(legacyEntry.statusCode, 404, "邮件找回入口应已从契约中移除");
 });
 
 test("健康检查校验数据库可达", async () => {
@@ -1152,6 +1197,8 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
   const endpoints: Array<{ path: string; method: "GET" | "POST" | "PATCH" | "DELETE" }> = [
     { path: "/api/v1/auth/register", method: "POST" },
     { path: "/api/v1/auth/login-code", method: "POST" },
+    { path: "/api/v1/auth/reset-code", method: "POST" },
+    { path: "/api/v1/auth/reset-password", method: "POST" },
     { path: "/api/v1/accounts", method: "GET" },
     { path: "/api/v1/transactions", method: "GET" },
     { path: "/api/v1/imports/jobs", method: "POST" },
@@ -1182,6 +1229,10 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
     // 证明契约文档覆盖该端点
     assert.ok(openapi.includes(ep.path), `OpenAPI 应包含: ${ep.path}`);
   }
+
+  // 邮件找回入口必须彻底不在契约里（避免客户端误接一个“返回成功但拿不到 token”的接口）
+  assert.ok(!openapi.includes("/api/v1/auth/forgot-password"), "OpenAPI 不应再包含邮件找回入口");
+  assert.ok(!openapi.includes("resetToken"), "OpenAPI 不应再有 resetToken 契约");
 });
 
 test("OpenAPI 文档可解析、operationId 唯一、路径均为合法前缀", async () => {

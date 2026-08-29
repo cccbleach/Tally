@@ -1,12 +1,76 @@
 name: CI
 
+# 触发：主干推送 / PR / 手动（生产发布前跑一次全量验收）
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Release 构建注入的 HTTPS API 地址（禁止 localhost/example.com/占位域名）"
+        required: false
+        default: "https://staging-api.tallyapp.cn"
+
+# Release 构建注入的 API 地址：必须是真实可解析的 HTTPS 域名。
+# 这里刻意不使用 localhost / example.com / your-* 等占位形式；
+# ios/scripts/validate-api-url.sh 会拒绝占位值，Release 构建也会因此直接失败。
+env:
+  STAGING_API_BASE_URL: ${{ inputs.api_base_url || 'https://staging-api.tallyapp.cn' }}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------- 仓库卫生
+  hygiene:
+    name: 仓库卫生（git diff --check / 无本地产物 / 无占位域名）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 空白字符检查（git diff --check）
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "检查 $base -> $GITHUB_SHA"
+            git --no-pager diff --check "$base" "$GITHUB_SHA"
+          else
+            git --no-pager log --oneline -3
+            git --no-pager diff --check HEAD~1 HEAD
+          fi
+
+      - name: 禁止跟踪 xcuserdata / 本地数据
+        run: |
+          set -euo pipefail
+          hits="$(git ls-files | grep -E 'xcuserdata|\.xcuserstate|backend/data/|\.env$' || true)"
+          if [ -n "$hits" ]; then
+            echo "::error::以下本地产物不应进入 Git 索引："
+            echo "$hits"
+            exit 1
+          fi
+          echo "✅ Git 索引里没有 xcuserdata / .env / 本地数据"
+
+      - name: 生产构建配置里禁止占位域名
+        run: |
+          set -euo pipefail
+          if grep -rnI --exclude-dir=node_modules --exclude-dir=.git \
+               -e 'your-production-domain' \
+               -e 'example\.com' \
+               ios/project.yml ios/Tally.xcodeproj/project.pbxproj \
+               backend/docker-compose.caddy.yml backend/Caddyfile ios/Tally/Support/Info.plist; then
+            echo "::error::发现占位 API 域名（example.com / your-production-domain）"
+            exit 1
+          fi
+          echo "✅ 未发现占位 API 域名"
+
+  # ---------------------------------------------------------------- 后端
   backend:
+    name: 后端（typecheck/test/audit/build/dist/Docker）
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,11 +85,95 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: backend/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
 
-  ios:
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: test（全量集成测试）
+        run: pnpm test
+
+      - name: audit（生产依赖，high/critical 硬失败）
+        run: |
+          set -euo pipefail
+          pnpm audit --audit-level=high --prod || {
+            echo "::error::生产依赖存在 high/critical 漏洞，发布前必须处理（或明确豁免并记录）"
+            pnpm audit --prod || true
+            exit 1
+          }
+
+      - name: build（tsc -> dist）
+        run: pnpm build
+
+      - name: dist smoke（生产路径 xlsx 解析）
+        run: node scripts/smoke-dist-xlsx.mjs
+
+      - name: dist smoke（起服务 + /health/ready 探活）
+        run: |
+          set -euo pipefail
+          JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" \
+          NODE_ENV=production PORT=18080 HOST=127.0.0.1 \
+          DATABASE_URL=./data/ci-smoke.db LOG_LEVEL=off \
+          node dist/index.js > /tmp/tally-dist.log 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/health/ready > /tmp/health.json; then
+              cat /tmp/health.json; echo; echo "✅ dist 产物启动并通过 /health/ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::dist 启动探活失败"
+          cat /tmp/tally-dist.log
+          exit 1
+
+      - name: Docker 镜像构建
+        run: docker build -t tally-backend:ci .
+
+      - name: docker compose 配置校验（docker-compose.caddy.yml）
+        run: |
+          set -euo pipefail
+          export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+          export TALLY_DOMAIN="staging-api.tallyapp.cn"
+          docker compose -f docker-compose.caddy.yml config --quiet
+          docker compose -f docker-compose.caddy.yml config --format json > /tmp/rendered.json
+          node -e '
+            const fs = require("fs");
+            const c = JSON.parse(fs.readFileSync("/tmp/rendered.json", "utf8"));
+            const be = c.services["tally-backend"], cd = c.services["caddy"];
+            const pub = (s) => (s?.ports ?? []).flatMap(p => [].concat(p.published ?? []));
+            const bePub = pub(be), cdPub = pub(cd).map(String);
+            console.log("backend published:", JSON.stringify(bePub));
+            console.log("caddy published:", JSON.stringify(cdPub));
+            if (bePub.length !== 0) throw new Error("backend 不应向宿主发布任何端口（8080 只能走 Docker 内网）");
+            const sorted = cdPub.slice().sort();
+            if (JSON.stringify(sorted) !== JSON.stringify(["443", "80"]))
+              throw new Error("caddy 只应暴露 80/443，实际 " + JSON.stringify(sorted));
+            for (const [n, s] of Object.entries(c.services)) {
+              if (!s.healthcheck) throw new Error(n + " 缺少 healthcheck");
+              if (!s.restart) throw new Error(n + " 缺少 restart 策略");
+              if (!Object.keys(s.volumes ?? {}).length) throw new Error(n + " 缺少持久卷");
+            }
+            const nb = Object.keys(be.networks ?? {}), nc = Object.keys(cd.networks ?? {});
+            if (!nb.some(n => nc.includes(n))) throw new Error("caddy 与 backend 不在同一网络");
+            console.log("✅ compose 拓扑合规：仅 80/443 暴露、后端仅内网、healthcheck/restart/持久卷齐全、同网络");
+          '
+
+      - name: 缺少必填变量时 compose 必须拒绝（防弱默认值上线）
+        run: |
+          set -euo pipefail
+          if JWT_SECRET= TALLY_DOMAIN= docker compose -f docker-compose.caddy.yml config >/dev/null 2>&1; then
+            echo "::error::缺少 JWT_SECRET/TALLY_DOMAIN 时 compose 竟然通过了校验"
+            exit 1
+          fi
+          echo "✅ 缺少必填变量时 compose 按预期拒绝"
+
+  # ---------------------------------------------------------- 联网版 iOS 客户端
+  ios-online:
+    name: iOS 联网版（Debug + Release + 产物校验）
     runs-on: macos-15
     defaults:
       run:
@@ -35,4 +183,153 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: "16.0"
-      - run: xcodebuild -project Tally.xcodeproj -scheme Tally -sdk iphonesimulator -configuration Debug build CODE_SIGNING_ALLOWED=NO
+
+      - name: 发布资产检查（图标/版本号/Bundle ID/签名）
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/check-ios-release-assets.sh ios Tally
+
+      - name: Debug 构建（允许本机 HTTP 联调）
+        run: |
+          set -euo pipefail
+          xcodebuild -project Tally.xcodeproj -scheme Tally \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-debug" \
+            build CODE_SIGNING_ALLOWED=NO
+
+      - name: Release 构建（显式注入非占位 HTTPS staging URL）
+        run: |
+          set -euo pipefail
+          echo "注入 API 地址：$STAGING_API_BASE_URL"
+          xcodebuild -project Tally.xcodeproj -scheme Tally \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-release" \
+            build CODE_SIGNING_ALLOWED=NO \
+            TALLY_API_BASE_URL="$STAGING_API_BASE_URL"
+
+      - name: 校验 Release 产物 Info.plist 是非占位 HTTPS 地址
+        run: |
+          set -euo pipefail
+          APP="$(find "$RUNNER_TEMP/dd-release/Build/Products" -maxdepth 2 -name 'Tally.app' -print -quit)"
+          test -n "$APP" || { echo "::error::找不到 Release 产物 Tally.app"; exit 1; }
+          plutil -extract TallyAPIBaseURL raw -o - "$APP/Info.plist"
+          # 校验 TallyAPIBaseURL + 扫描产物 Info.plist 里出现的每一个 URL
+          "$GITHUB_WORKSPACE/ios/scripts/validate-api-url.sh" --plist "$APP"
+          # 二进制层面兜底：Release 包里不允许出现任何明文 http 地址
+          # （APIClient 自身的“占位域名黑名单”字面量含 example.com 是刻意的运行时守门代码，
+          #  不属于泄漏，因此这里只查明文 http 地址）
+          if grep -a -E 'http://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0\.0)' "$APP/Tally" > /dev/null 2>&1; then
+            echo "::error::Release 二进制里残留明文 http 地址"
+            grep -a -o -E 'http://[^" ]{0,40}' "$APP/Tally" | sort -u | head
+            exit 1
+          fi
+          echo "✅ Release 产物 API 地址合规：$STAGING_API_BASE_URL"
+
+      - name: 无效 URL 时 Release 构建必须失败（守门人回归）
+        run: |
+          set -uo pipefail
+          if xcodebuild -project Tally.xcodeproj -scheme Tally \
+               -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+               -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-bad" \
+               build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL="https://api.example.com" \
+               > /tmp/bad-release.log 2>&1; then
+            echo "::error::占位地址竟然构建成功，构建期校验失效"
+            tail -50 /tmp/bad-release.log
+            exit 1
+          fi
+          grep -q 'API 地址不合规' /tmp/bad-release.log \
+            || { echo "::error::构建失败原因不是域名校验"; tail -50 /tmp/bad-release.log; exit 1; }
+          echo "✅ 占位/无效地址被构建期直接拒绝"
+
+      - name: Archive（版本号 / 发布资产，主干或手动触发时）
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project Tally.xcodeproj -scheme Tally \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -archivePath "$RUNNER_TEMP/Tally.xcarchive" \
+            -allowProvisioningUpdates \
+            archive CODE_SIGNING_ALLOWED=NO \
+            TALLY_API_BASE_URL="$STAGING_API_BASE_URL"
+          APP="$RUNNER_TEMP/Tally.xcarchive/Products/Applications/Tally.app"
+          test -d "$APP"
+          echo "版本号: $(plutil -extract CFBundleShortVersionString raw -o - "$APP/Info.plist")" \
+            "build $(plutil -extract CFBundleVersion raw -o - "$APP/Info.plist")"
+          plutil -extract TallyAPIBaseURL raw -o - "$APP/Info.plist"
+
+  # --------------------------------------------------------- 离线版 iOS 客户端
+  ios-local:
+    name: iOS 离线版（build + 全量测试）
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios-local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.0"
+
+      - name: 发布资产检查（1024 AppIcon / 版本号 / 签名）
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/check-ios-release-assets.sh ios-local Tally
+
+      - name: 真机 target 构建（iphoneos / Release，CI 免签模式）
+        run: |
+          set -euo pipefail
+          xcodebuild -project TallyLocal.xcodeproj -scheme Tally \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-device" \
+            build CODE_SIGNING_ALLOWED=NO
+
+      - name: 全量测试（Swift Testing 单测 + UI 测试）
+        run: |
+          set -euo pipefail
+          xcodebuild -project TallyLocal.xcodeproj -scheme Tally \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/dd-test" \
+            -resultBundlePath "$RUNNER_TEMP/ioslocal-test.xcresult" \
+            -allowProvisioningUpdates test 2>&1 | tee /tmp/ioslocal-test.log
+          grep -E "Test run with [0-9]+ tests .* passed|Test Suite 'All tests' passed" /tmp/ioslocal-test.log | tail -3
+          grep -q "\*\* TEST SUCCEEDED \*\*" /tmp/ioslocal-test.log
+
+      - name: Archive（离线版发布包，主干或手动触发时）
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project TallyLocal.xcodeproj -scheme Tally \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -archivePath "$RUNNER_TEMP/TallyLocal.xcarchive" \
+            -allowProvisioningUpdates archive CODE_SIGNING_ALLOWED=NO
+          test -d "$RUNNER_TEMP/TallyLocal.xcarchive/Products/Applications/Tally.app"
+
+      - name: 上传测试结果（失败时便于排查）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-local-test-results
+          path: ${{ runner.temp }}/ioslocal-test.xcresult
+
+  # ------------------------------------------------- 构建/测试后工作区仍需干净
+  clean-tree:
+    name: 构建后 git status 必须干净
+    needs: [ios-online, ios-local]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 复现关键构建并确认无生成物泄漏进 Git
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/Tally.xcodeproj -scheme Tally \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-clean" \
+            build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL="$STAGING_API_BASE_URL" >/dev/null
+          xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-clean2" \
+            build CODE_SIGNING_ALLOWED=NO >/dev/null
+          git status --porcelain=v1
+          if [ -n "$(git status --porcelain=v1)" ]; then
+            echo "::error::构建产生了受版本控制文件的改动（检查 xcuserdata / 生成物是否已忽略）"
+            exit 1
+          fi
+          echo "✅ 构建后 git status 干净"

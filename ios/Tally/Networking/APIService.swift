@@ -167,6 +167,30 @@ struct APIService {
         return try await client.request("POST", "/api/v1/auth/login-code", body: Body(email: phone, code: code))
     }
 
+    // MARK: 账号恢复（唯一可用通道：短信）
+    //
+    // 服务端没有接入 SMTP，邮件 reset-token 找回入口（POST /auth/forgot-password）已从
+    // 后端与 OpenAPI 契约中整体移除；客户端不再提供任何“邮件找回”的界面或请求。
+    // 恢复方式：已注册手机号收取验证码 → 直接设置新密码（后端会吊销全部会话）。
+
+    /// 申请「找回密码」短信验证码。生产环境返回值恒为 nil（验证码只走短信），
+    /// 只有开发环境才会在响应里回传验证码便于联调。
+    func requestPasswordResetCode(phone: String) async throws -> String? {
+        struct Body: Encodable { let account: String }
+        struct CodeResponse: Decodable { let ok: Bool; let code: String? }
+        let res: CodeResponse = try await client.request("POST", "/api/v1/auth/reset-code", body: Body(account: phone))
+        return res.code
+    }
+
+    /// 用短信验证码设置新密码；成功后所有设备都需要重新登录。
+    func resetPasswordByCode(phone: String, code: String, newPassword: String) async throws {
+        struct Body: Encodable { let account: String; let code: String; let newPassword: String }
+        let _: OKResponse = try await client.request(
+            "POST", "/api/v1/auth/reset-password",
+            body: Body(account: phone, code: code, newPassword: newPassword)
+        )
+    }
+
     // 账户
     func accounts() async throws -> [Account] {
         let res: ListResponse<Account> = try await client.request("GET", "/api/v1/accounts")

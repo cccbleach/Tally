@@ -10,6 +10,7 @@ struct LoginView: View {
     @State private var cooldownLeft = 0
     @State private var cooldownTask: Task<Void, Never>?
     @State private var errorMessage: String?
+    @State private var showResetPassword = false
 
     private var phoneDigits: String {
         phone.replacingOccurrences(of: " ", with: "").filter { $0.isNumber }
@@ -65,10 +66,16 @@ struct LoginView: View {
 
                 Text("未注册的手机号将自动创建账号").font(.caption).foregroundColor(.secondary)
 
+                // 账号恢复：只有短信一条路（邮件找回的邮件投递从未接通，契约已下线）
+                Button("用手机号找回密码") { showResetPassword = true }
+                    .font(.footnote)
+                    .foregroundColor(.accentColor)
+
                 Spacer()
             }
             .padding()
             .errorAlert($errorMessage)
+            .sheet(isPresented: $showResetPassword) { ResetPasswordView() }
             .onDisappear { cooldownTask?.cancel() }
         }
     }

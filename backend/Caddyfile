@@ -1,0 +1,39 @@
+# =============================================================================
+# Tally 生产 Caddyfile —— 由 backend/docker-compose.caddy.yml 挂载到 /etc/caddy/Caddyfile
+#
+# 站点地址来自环境变量 TALLY_DOMAIN（compose 必填项）：
+#   未设置时展开为空 ⇒ Caddy 启动直接报错，绝不回退到任何占位域名。
+# Caddy 自动向 Let's Encrypt 申请/续期证书，并把 80 端口 HTTP 自动跳转到 HTTPS。
+#
+# 可选：证书到期告警邮箱（Caddy 只在续期失败时发邮件）。需要就取消注释并填写：
+# {
+# 	email ops@yourdomain.cn
+# }
+# =============================================================================
+
+{$TALLY_DOMAIN} {
+	# 仅反代 Docker 内网服务名:端口；后端容器没有对宿主发布端口，
+	# 因此公网只能从 80/443 进入，无法直连 tally-backend:8080。
+	# 后端在反代后需设 TRUST_PROXY=1 才能取到真实客户端 IP 做限流。
+	reverse_proxy tally-backend:8080
+
+	encode gzip zstd
+
+	# 安全响应头（App/浏览器都用得上；HSTS 一年后过期，配合 includeSubDomains）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	# 访问日志：JSON 落盘并滚动（10MB × 5 份，最多保留 30 天），容器内 /data 是持久卷
+	log {
+		output file /data/access.log {
+			roll_size 10mb
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format json
+	}
+}

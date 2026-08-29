@@ -8,44 +8,28 @@
 - 域名 A 记录指向服务器公网 IP（部署方按实际情况填写）。
 - 云厂商安全组放行 `80` 和 `443`。
 
-## 方案一：Caddy（推荐，自动证书/续期）
-仓库已带模板 `backend/Caddyfile.example`：
+## 方案一：Caddy（推荐，自动证书/续期）—— 仓库自带可直接运行的生产栈
 
-1. 把 `tally.example.com` 换成你的域名。
-2. 用 compose 叠加 Caddy（见下方示例）或直接在服务器跑 Caddy：
-   ```bash
-   cd /opt/tally/backend
-   # 安装 caddy 后：
-   caddy run --config Caddyfile.example
-   ```
-3. Caddy 自动申请并续期 HTTPS 证书，反代到内网 `tally-backend:8080`。
+仓库提供 `backend/docker-compose.caddy.yml` + `backend/Caddyfile`（Caddy 与后端同网络，
+**只有 Caddy 对宿主发布 80/443**，后端 8080 只在 Docker 内网可达）：
 
-### Docker Compose 叠加示例（backend/docker-compose.caddy.yml）
-```yaml
-services:
-  tally-backend:
-    extends:
-      file: docker-compose.yml
-      service: tally-backend
-
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - tally-backend
-
-volumes:
-  caddy_data:
-  caddy_config:
+```bash
+cd backend
+export TALLY_DOMAIN=api.tallyapp.cn               # 必填：已解析到本机的域名（不给纯 IP 签证书）
+export JWT_SECRET=$(openssl rand -hex 32)         # 必填：≥32 位强随机，占位值会被拒绝启动
+export CORS_ORIGINS=https://api.tallyapp.cn       # 可选：有 Web 端才需要
+docker compose -f docker-compose.caddy.yml config --quiet   # 先校验渲染结果
+docker compose -f docker-compose.caddy.yml up -d --build
+docker compose -f docker-compose.caddy.yml ps               # 两个服务都应 healthy
+curl -sS https://$TALLY_DOMAIN/health/ready
 ```
+
+要点：
+- 站点地址由 `TALLY_DOMAIN` 注入 Caddyfile（`{$TALLY_DOMAIN}`），**没有默认值**：忘填会直接启动失败，
+  避免把 `example.com` 之类占位域名带上线。
+- 命名卷：`tally-data`（SQLite）、`caddy_data`（证书/ACME 账户，删了会重新签发并受速率限制）、`caddy_config`。
+- 两个服务都有 `healthcheck`、`restart: unless-stopped`、日志轮转（10MB×5）。
+- 只想在服务器上手工跑 Caddy（不用 Docker）时，可参考模板 `backend/Caddyfile.example`。
 
 ## 方案二：Nginx + certbot
 ```nginx
@@ -65,15 +49,29 @@ server {
 ## 上线后 App 端收尾
 1. **关闭公网直连 8080**：安全组仅保留 22/80/443。
 2. ATS 已默认收紧：不再使用全局 `NSAllowsArbitraryLoads`，仅保留 `NSAllowsLocalNetworking`（本地/局域网 HTTP 联调）。生产如不需要局域网 HTTP，可一并移除。
-3. API 地址由**构建配置注入**：把 Release 的 `TALLY_API_BASE_URL`（`ios/project.yml` 的 `configs.Release`，或 `xcodebuild ... TALLY_API_BASE_URL=https://你的域名`）改为 `https://你的域名`。
-   `Info.plist` 的 `TallyAPIBaseURL` 为 `$(TALLY_API_BASE_URL)`；`APIClient` 在 Release 强制校验 HTTPS，非 HTTPS 直接拒绝启动。
+3. API 地址由**构建配置注入**，Release **故意没有默认值**（占位域名不允许进产物）：
+   ```bash
+   xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
+     ... TALLY_API_BASE_URL=https://api.tallyapp.cn
+   ```
+   - 构建期由 Run Script 调 `ios/scripts/validate-api-url.sh` 校验：空值、`$(...)` 未展开、
+     `http://`、`localhost`/`127.x`/私网 IP/裸 IP、单标签主机名（容器服务名）、
+     `example.com`/`.test`/`.invalid` 以及 `your-*`、`placeholder` 等占位词一律 **构建失败**。
+   - 产物复核：`ios/scripts/validate-api-url.sh --plist path/to/Tally.app`（读产物里的 Info.plist）。
+   - `APIClient` 在 Release 再兜一层：非 HTTPS 或本机/示例/占位域名直接 `fatalError` 拒绝启动。
 4. 后端在反向代理后设置 `TRUST_PROXY=1`（才能正确还原客户端 IP 做限流；客户端伪造的左侧 XFF 会被忽略）。
 5. 重新构建/安装 App。
 
 ## 安全核对
-- [ ] 公网 8080 已关闭
-- [ ] 域名已配置，浏览器访问 `https://你的域名/health/live` 返回 ok
+
+完整上线核对见 [production-checklist.md](production-checklist.md)（域名/TLS/JWT/CORS/TRUST_PROXY、
+迁移前备份、异机备份与恢复演练、健康检查/日志/告警）。最少必须勾完：
+
+- [ ] 公网 8080 已关闭（compose 未对后端发布任何端口；安全组只留 22/80/443）
+- [ ] 域名已配置，`https://你的域名/health/live` 返回 ok，`/health/ready` 的 `migrationsApplied` > 0
 - [ ] App 通过 https 正常登录/记账/导入
 - [ ] 生产 `JWT_SECRET` 为 ≥32 位强随机且非占位值
-- [ ] 生产 `CORS_ORIGINS` 已显式列出前端域名
+- [ ] 生产 `CORS_ORIGINS` 已显式列出前端域名（或确认无需放行任何浏览器 Origin）
+- [ ] 后端位于反代之后时 `TRUST_PROXY=1`
+- [ ] 短信（`ALIYUN_SMS_*`）已配置：否则生产 `/auth/reset-code` 返回 503，用户无法找回密码
 - [ ] 仅 22/80/443 对外开放

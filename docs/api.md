@@ -22,14 +22,41 @@
 | POST | /auth/register | 注册，入参 `{account, password(≥8), displayName?}`，账号可为邮箱或手机号；成功自动播种默认分类，返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
 | POST | /auth/login | 登录，入参 `{account, password}`，账号可为邮箱或手机号；返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
 | POST | /auth/refresh | 刷新，入参 `{refreshToken}`，返回 `{token, refreshToken}` |
-| POST | /auth/request-code | 请求验证码，入参 `{account}`（手机号）。已配置阿里云短信时发送短信并返回 `{ok}`；未配置时返回 `{ok, code}`（开发/降级模式） |
-| POST | /auth/login-code | 验证码登录，入参 `{account, code}`；未注册的手机号自动注册并投产默认分类，返回 `{user, token, refreshToken}` |
+| POST | /auth/request-code | 请求登录验证码，入参 `{email}`（字段名保留为 `email`，实际接受手机号）。已配置阿里云短信时发送短信并返回 `{ok}`；未配置时返回 `{ok, code}`（开发/降级模式） |
+| POST | /auth/login-code | 验证码登录，入参 `{email, code}`（字段名保留为 `email`，实际接受手机号）；未注册的手机号自动注册并投产默认分类，返回 `{user, token, refreshToken}` |
+| POST | /auth/reset-code | **找回密码**：入参 `{account}`（已注册手机号）。短信真实投递成功才返回 `{ok}`；开发模式额外回传 `code`。邮箱账号→`400 EMAIL_RECOVERY_UNAVAILABLE`；未注册→`404 ACCOUNT_NOT_FOUND`；短信发不出去→`503 SMS_SEND_FAILED` |
+| POST | /auth/reset-password | **找回密码**：入参 `{account, code, newPassword(≥8)}`，验证码通过即设置新密码并吊销该账号全部会话，返回 `{ok}` |
 | GET | /auth/me | 当前用户，返回 `{user}` |
 
 - `token` 为短期访问令牌（HS256，默认 15 分钟）；`refreshToken` 为刷新令牌（默认 30 天）。
 - 访问令牌过期后，客户端用 `refreshToken` 调用 /auth/refresh 换新；刷新令牌不能用作访问令牌（受保护接口返回 401）。
 - 验证码为 6 位、5 分钟有效、最多错 3 次；未配置短信服务时直接回传 `code`（开发模式），配置阿里云短信后发送短信并仅返回 `{ok:true}`。
-- 验证码登录未注册时自动创建账号（密码置空），可后续通过忘记密码设置密码。
+- 验证码登录未注册时自动创建账号（密码置空），之后可用 `/auth/reset-code` + `/auth/reset-password` 用短信验证码设置/重设密码。
+
+### 账号恢复：只做短信，不做邮件（生产可用性契约）
+
+本项目**未接入 SMTP**，因此不存在可用的邮件投递通道。历史上存在的
+`POST /auth/forgot-password`（提交邮箱 → 生成 reset token → 声称“已受理”）在生产环境
+**永远无法把 token 交给用户**（生产模式禁止回传 token），属于“返回成功但用户拿不到凭证”的
+不可用契约，已整体下线：后端路由、OpenAPI 契约、iOS 入口三处同时移除。
+
+现存的唯一自助恢复路径（短信）：
+
+1. `POST /auth/reset-code {account}` → 阿里云短信真实下发 6 位验证码（与登录验证码使用不同命名空间，互不通用）；
+2. `POST /auth/reset-password {account, code, newPassword}` → 校验验证码 → 设置新密码 → 吊销全部会话。
+
+生产环境的错误语义（可由 `backend/test/prodSecurity.test.ts` 回归）：
+
+| 情况 | 响应 |
+|---|---|
+| 短信下发成功 | `200 {ok:true}`（验证码只走短信，绝不出现在响应里） |
+| 短信下发失败/未配置短信 | `503 SMS_SEND_FAILED`（不是 200） |
+| 提交邮箱账号 | `400 EMAIL_RECOVERY_UNAVAILABLE`（明确告知走不通，不假装已发送） |
+| 手机号未注册 | `404 ACCOUNT_NOT_FOUND`（明确告知，不假装已发送） |
+| 验证码错误/过期/次数用尽 | `400 CODE_EXPIRED / CODE_EXHAUSTED / INVALID_CODE`，旧密码继续可用 |
+
+> 邮箱账号目前没有自助找回通道：请改用手机号账号注册/登录，或由管理员人工核实身份后
+> 直接改库重置密码并吊销会话（见 docs/production-checklist.md）。
 
 ## 账户 Accounts
 

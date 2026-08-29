@@ -21,7 +21,7 @@
 | iOS | SwiftUI + Swift 5（语言模式），iOS 17+，MVVM（`@Observable` + async/await），Swift Charts |
 | 后端 | Node.js 24 + TypeScript + Fastify |
 | 数据库 | SQLite（单文件）+ Drizzle ORM |
-| 认证 | 账号（邮箱或手机号）+ 密码 + JWT（`jose`），密码用 `crypto.scrypt` 加盐哈希 |
+| 认证 | 手机号 + 短信验证码（iOS 客户端唯一登录方式），或邮箱/手机号 + 密码；JWT（`jose`），密码用 `crypto.scrypt` 加盐哈希。**账号恢复只有短信一条路，没有邮件找回**（见 docs/api.md） |
 | 校验 | zod |
 | 工程 | XcodeGen 声明式生成 `.xcodeproj` |
 
@@ -35,16 +35,27 @@ Tally/
 │   ├── src/                 # 源码（auth/db/modules/lib）
 │   ├── migrations/          # SQL 迁移
 │   ├── test/                # 集成测试（node:test + fastify.inject）
-│   ├── Dockerfile / docker-compose.yml
+│   ├── Dockerfile
+│   ├── docker-compose.yml               # 只跑后端（8080 不发布到宿主）
+│   ├── docker-compose.caddy.yml         # 生产 HTTPS 栈：Caddy 只暴露 80/443 + 后端仅内网
+│   ├── Caddyfile                        # 生产 Caddy 配置（站点地址由 TALLY_DOMAIN 注入）
+│   ├── Caddyfile.example                # 在服务器上手工跑 Caddy 时的模板
 │   └── package.json
 ├── ios/
 │   ├── project.yml          # XcodeGen 声明
 │   ├── Tally.xcodeproj      # 已生成，可直接用 Xcode 打开
+│   ├── scripts/validate-api-url.sh  # Release 域名校验（构建期 + 产物 Info.plist 复核）
 │   └── Tally/               # SwiftUI 源码
 ├── ios-local/               # 离线优先的个人记账版（独立工程，见其 README，勿与本目录混改）
+├── scripts/
+│   ├── backup.sh / restore.sh / prune-retention.mjs   # 备份、恢复、保留策略
+│   └── check-ios-release-assets.sh  # 图标/版本号/Bundle ID/签名 的发布资产检查
 └── docs/
-    ├── api.md               # API 契约
-    └── deploy.md            # 部署指南
+    ├── api.md                   # API 契约（含「账号恢复只做短信、不做邮件」的说明）
+    ├── deploy.md                # 部署指南
+    ├── https-deploy.md          # HTTPS/Caddy 上线步骤
+    ├── openapi.yaml             # OpenAPI 契约（被测试校验）
+    └── production-checklist.md  # ★ 生产上线清单（域名/TLS/JWT/CORS/备份/告警）
 ```
 
 > **ios/ 与 ios-local/ 的定位（唯一源码来源）**
@@ -75,7 +86,14 @@ open ios/Tally.xcodeproj   # 直接用 Xcode 打开（.xcodeproj 已生成）
 ```
 
 - 在 Xcode 中选择模拟器或真机，点击运行。
-- 模拟器后端地址默认 `http://127.0.0.1:8080`；**真机**请改成 Mac 的局域网 IP（App 内「设置 → 服务器地址」），并确保同一局域网可达。
+- API 地址由**构建配置注入**（不在 App 内配置）：Debug 默认 `http://localhost:8080`；
+  **Release 没有默认值**，必须显式注入真实 HTTPS 域名，否则构建直接失败：
+  ```bash
+  xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
+    -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO \
+    TALLY_API_BASE_URL=https://api.tallyapp.cn
+  ```
+  校验规则见 `ios/scripts/validate-api-url.sh`（禁止 localhost / 私网 IP / `example.com` / `your-*` 等占位）。
 - 若改动了 `ios/project.yml` 或源文件增删，可重新生成工程：
 
 ```bash
@@ -88,12 +106,37 @@ cd ios && xcodegen generate
 ```bash
 cd backend
 pnpm typecheck
-pnpm test        # 51 个测试，覆盖认证/账户/分类/流水/统计/预算/周期账单/家庭/贷款/去重（含幂等、契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、迁移校验、乐观锁、安全/令牌刷新/密码重置/手机号注册与验证码登录、账单导入去重、贷款与信用卡账单等回归）
+pnpm test        # 105 个测试：认证/账号恢复（短信）/账户/分类/流水/统计/预算/周期账单/家庭/贷款/去重
+                 # （含幂等、OpenAPI 契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、
+                 #  迁移校验、乐观锁、限流与 TRUST_PROXY、生产模式安全策略、账单导入去重等回归）
 ```
+
+iOS 侧（需 Xcode）：
+
+```bash
+# 联网版：Debug + Release（Release 必须注入真实 HTTPS 地址）
+xcodebuild -project ios/Tally.xcodeproj -scheme Tally -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO
+# 离线版：全量单测 + UI 测试
+xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
+  -destination 'platform=iOS Simulator,name=iPhone 16' test
+# 发布资产（图标 / 版本号 / Bundle ID / 签名）
+./scripts/check-ios-release-assets.sh ios Tally
+./scripts/check-ios-release-assets.sh ios-local Tally
+```
+
+CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / build / dist smoke /
+`docker build` / `docker compose config`（并断言只暴露 80/443、后端不对宿主发布端口）、
+联网版 iOS Debug+Release（含 Release 产物 Info.plist 非占位 HTTPS 校验、无效地址必须构建失败）、
+离线版 iOS 真机构建 + 全量测试 + Archive、`git diff --check`、以及构建后 `git status` 必须干净。
 
 ## 部署
 
-见 [docs/deploy.md](docs/deploy.md)：Docker（一键）、直接运行、pm2 三种方式；含 HTTPS 与数据备份说明。
+- **上线必读**：[docs/production-checklist.md](docs/production-checklist.md) —— 域名/TLS/JWT/CORS/TRUST_PROXY、
+  迁移前备份、异机备份与恢复演练、健康检查/日志/告警、iOS 发布资产与发布流程。
+- 部署方式：[docs/deploy.md](docs/deploy.md)（Docker 一键、直接运行、pm2）。
+- 生产 HTTPS（推荐）：`cd backend && TALLY_DOMAIN=... JWT_SECRET=... docker compose -f docker-compose.caddy.yml up -d --build`
+  —— Caddy 只发布 80/443，后端 8080 仅在 Docker 内网可达（见 [docs/https-deploy.md](docs/https-deploy.md)）。
 
 ## API
 
@@ -109,5 +152,21 @@ pnpm test        # 51 个测试，覆盖认证/账户/分类/流水/统计/预�
 ## 安全说明
 
 - 密码使用 `scrypt` 加盐哈希，不存明文
-- JWT 密钥来自环境变量，生产务必改为强随机值
-- App 开发期放行 HTTP 仅用于本地调试，上线请启用 HTTPS（见部署文档）
+- JWT 密钥来自环境变量，生产务必改为强随机值（占位/过短密钥**生产模式拒绝启动**）
+- App 开发期放行本地 HTTP 仅用于调试（ATS 只开 `NSAllowsLocalNetworking`），上线必须 HTTPS
+- **账号恢复只有短信通道**：服务端未接入 SMTP，邮件 reset-token 契约（旧 `POST /auth/forgot-password`）
+  已整体下线；生产环境短信发不出去就返回 503，绝不出现「返回成功但用户拿不到验证码」
+- 生产模式验证码/重置凭证永不经响应回传；限流按「IP + 账号」双维度，反代后需设 `TRUST_PROXY`
+- 每个响应带 `x-request-id`，关键写操作进 `audit_logs` 审计表
+
+## 发布前自检（最小集）
+
+```bash
+cd backend
+pnpm typecheck && pnpm test && pnpm build && node scripts/smoke-dist-xlsx.mjs
+JWT_SECRET=$(openssl rand -hex 32) TALLY_DOMAIN=api.tallyapp.cn \
+  docker compose -f docker-compose.caddy.yml config --quiet
+docker build -t tally-backend:latest .
+cd .. && ./scripts/check-ios-release-assets.sh ios Tally && ./scripts/check-ios-release-assets.sh ios-local Tally
+git diff --check && git status --porcelain    # 两者都必须为空
+```

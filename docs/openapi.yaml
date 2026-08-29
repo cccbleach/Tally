@@ -4,8 +4,10 @@ info:
   version: 0.1.0
   description: 家庭记账后端契约。金额统一为整数（分），日期为 YYYY-MM-DD，时间为 ISO-8601。
 servers:
-  - url: https://api.example.com
-    description: 生产（HTTPS，实际域名由部署方替换；开发期可用本地 HTTPS 或局域网）
+  - url: https://api.tallyapp.cn
+    description: 生产（HTTPS，由 Caddy 终结 TLS；域名须真实解析并签发证书）
+  - url: https://staging-api.tallyapp.cn
+    description: 预发/staging（CI Release 构建注入的地址）
 security:
   - bearerAuth: []
 tags:
@@ -155,22 +157,31 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
-  /api/v1/auth/forgot-password:
+  # 账号恢复：本项目确定采用「短信恢复」，不提供邮件找回。
+  # 服务端未接入 SMTP，原先的「邮件找回」入口（提交邮箱、返回重置令牌）
+  # 在生产环境只会返回「已受理」而用户永远拿不到 token，属于不可用契约，已整体移除
+  # （后端路由 / OpenAPI / iOS 入口三处同步删除）。邮箱账号请改用手机号账号，
+  # 或由管理员人工核实身份后重置，服务端对此明确返回 400 而不是假成功。
+  /api/v1/auth/reset-code:
     post:
       tags: [auth]
-      operationId: forgotPassword
-      summary: 申请密码重置（生产模式不回传 resetToken，仅返回 ok）
+      operationId: requestPasswordResetCode
+      summary: 发送「找回密码」短信验证码（与登录验证码不同命名空间）
+      description: >-
+        仅支持已注册手机号。生产环境验证码只通过短信投递、绝不经响应返回；
+        短信发送失败返回 503（不会出现“返回成功但用户拿不到验证码”）。
+        开发模式（AUTH_MODE=development 且未配置短信）才在响应中回传验证码便于联调。
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [email]
+              required: [account]
               properties:
-                email: { type: string }
+                account: { type: string, description: 已注册手机号（提交邮箱返回 400 EMAIL_RECOVERY_UNAVAILABLE） }
       responses:
         "200":
-          description: 已受理。开发模式回传 resetToken，生产模式不返回。
+          description: 验证码已真实投递到手机；开发模式额外回传 code
           content:
             application/json:
               schema:
@@ -178,24 +189,32 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean }
-                  resetToken: { type: string, nullable: true, description: 仅开发模式回传；生产环境恒为缺省 }
+                  code: { type: string, nullable: true, description: 仅开发模式存在 }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/reset-password:
     post:
       tags: [auth]
       operationId: resetPassword
+      summary: 用短信验证码直接设置新密码（无需邮件重置令牌）
+      description: >-
+        验证码校验通过即证明手机号所有权：设置新密码并吊销该账号全部会话。
+        旧邮件契约的重置令牌字段已移除，缺少 account/code 的旧请求会被直接拒绝。
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [resetToken, newPassword]
+              required: [account, code, newPassword]
               properties:
-                resetToken: { type: string }
+                account: { type: string, description: 已注册手机号 }
+                code: { type: string, minLength: 4, maxLength: 8 }
                 newPassword: { type: string, minLength: 8 }
       responses:
         "200":
-          description: 重置成功
+          description: 重置成功（全部会话已吊销，需重新登录）
           content:
             application/json:
               schema:
@@ -203,6 +222,8 @@ paths:
                 properties:
                   ok: { type: boolean }
         "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /api/v1/accounts:
     get:
       tags: [accounts]

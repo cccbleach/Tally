@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 // 生产环境安全策略回归测试（P0）：
-// - 生产模式忘记密码接口不得回传 reset token
+// - 生产模式找回密码必须由短信真实投递：短信发不出去就是 503，
+//   绝不出现「返回 200 成功但用户拿不到验证码/令牌」，也绝不把验证码回传客户端
+// - 邮件找回入口（旧 forgot-password）必须已下线（404）
 // - 生产模式未配置 CORS 白名单时不得放行任意 Origin
 // - 生产模式必须拒绝示例/占位/过短的 JWT_SECRET（无法启动）
 // 这些依赖模块加载时的环境变量，因此放到独立子进程里验证，避免与其它测试共享已缓存的 config。
@@ -39,7 +41,7 @@ after(() => {
   }
 });
 
-test("生产模式：forgot-password 不回传 reset token，且无白名单时 CORS 不放行任意 Origin", () => {
+test("生产模式：找回密码不出现假成功（短信不可用→503），且无白名单时 CORS 不放行任意 Origin", () => {
   const script = `
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,14 +56,25 @@ const created = createDb(join(dir, "t.db"));
 runMigrations(created.sqlite, resolve("./migrations"));
 const app = await buildApp({ db: created.db, jwtSecret: process.env.JWT_SECRET! });
 
-// 注册一个用户
-await app.inject({ method: "POST", url: "/api/v1/auth/register", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "prod@test.com", password: "password123", displayName: "P" }) });
-const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot-password", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "prod@test.com" }) });
+// 注册手机号账号
+await app.inject({ method: "POST", url: "/api/v1/auth/register", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "13800000001", password: "password123", displayName: "P" }) });
 
+// 1) 生产模式 + 短信未配置：找回密码必须是 503，不能是 200（否则用户永远收不到验证码）
+const res = await app.inject({ method: "POST", url: "/api/v1/auth/reset-code", headers: { "content-type": "application/json" }, payload: JSON.stringify({ account: "13800000001" }) });
 const body = JSON.parse(res.body);
-console.log("RESULT_FORGOT_STATUS=" + res.statusCode);
-console.log("RESULT_FORGOT_HAS_TOKEN=" + ("resetToken" in body));
-console.log("RESULT_FORGOT_OK=" + (body.ok === true));
+console.log("RESULT_RESETCODE_STATUS=" + res.statusCode);
+console.log("RESULT_RESETCODE_HAS_CODE=" + ("code" in body));
+console.log("RESULT_RESETCODE_FAKE_OK=" + (res.statusCode === 200 && body.ok === true));
+
+// 2) 用随意验证码改密码必须失败（旧密码仍可用）
+const badReset = await app.inject({ method: "POST", url: "/api/v1/auth/reset-password", headers: { "content-type": "application/json" }, payload: JSON.stringify({ account: "13800000001", code: "000000", newPassword: "attacker123" }) });
+console.log("RESULT_BADRESET_STATUS=" + badReset.statusCode);
+const stillOk = await app.inject({ method: "POST", url: "/api/v1/auth/login", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "13800000001", password: "password123" }) });
+console.log("RESULT_OLDPASSWORD_STILL_WORKS=" + (stillOk.statusCode === 200));
+
+// 3) 旧邮件找回入口应已下线
+const legacy = await app.inject({ method: "POST", url: "/api/v1/auth/forgot-password", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "prod@test.com" }) });
+console.log("RESULT_LEGACY_FORGOT_STATUS=" + legacy.statusCode);
 
 // CORS：无白名单 + 生产模式，带 Origin 的请求不应获得 allow-origin 头
 const cors = await app.inject({ method: "GET", url: "/health", headers: { origin: "https://evil.example.com" } });
@@ -76,9 +89,12 @@ created.sqlite.close();
     ALIYUN_ACCESS_KEY_SECRET: "",
     CORS_ORIGINS: "",
   });
-  assert.match(stdout, /RESULT_FORGOT_STATUS=200/);
-  assert.match(stdout, /RESULT_FORGOT_HAS_TOKEN=false/, "生产模式不得回传 reset token");
-  assert.match(stdout, /RESULT_FORGOT_OK=true/);
+  assert.match(stdout, /RESULT_RESETCODE_STATUS=503/, "短信不可用时生产模式必须 503: " + stdout);
+  assert.match(stdout, /RESULT_RESETCODE_HAS_CODE=false/, "生产模式不得回传验证码");
+  assert.match(stdout, /RESULT_RESETCODE_FAKE_OK=false/, "不得出现“返回成功但用户无法取得凭证”");
+  assert.match(stdout, /RESULT_BADRESET_STATUS=400/, "无有效验证码不得改密码");
+  assert.match(stdout, /RESULT_OLDPASSWORD_STILL_WORKS=true/, "改密码失败时旧密码必须仍可用");
+  assert.match(stdout, /RESULT_LEGACY_FORGOT_STATUS=404/, "邮件找回入口必须已从契约移除");
   assert.match(stdout, /RESULT_CORS_ALLOW=false/, "生产无白名单时 CORS 不应放行任意 Origin");
 });
 

@@ -52,14 +52,43 @@ xcodebuild -project TallyLocal.xcodeproj -scheme Tally \
 ```bash
 xcodebuild -project TallyLocal.xcodeproj -scheme Tally \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
-# 当前基线：99 条 Swift Testing（11 套件）+ 2 条 XCUITest
+# 当前基线：100 条 Swift Testing（11 套件）+ 2 条 XCUITest，全部通过
 ```
+
+## 发布准备（图标 / 版本号 / 真机 / Archive）
+
+- **AppIcon**：`Tally/Support/Assets.xcassets/AppIcon.appiconset/AppIcon.png` 是正式的
+  **1024×1024、无 alpha**（App Store 拒绝带透明通道）的单一尺寸图标，由脚本生成，可复现：
+  ```bash
+  python3 scripts/make-appicon.py Tally/Support/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+  sips -g pixelWidth -g pixelHeight -g hasAlpha Tally/Support/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+  ```
+- **版本号**：`MARKETING_VERSION = 1.0.0` / `CURRENT_PROJECT_VERSION = 1`（Debug 与 Release 一致）。
+- **资产检查**（图标、版本号一致性、Bundle ID、签名身份、最低系统版本）：
+  ```bash
+  ./../scripts/check-ios-release-assets.sh ios-local Tally --require-team
+  ```
+- **真机构建**（模拟器之外的 iphoneos target，CI 免签模式）：
+  ```bash
+  xcodebuild -project TallyLocal.xcodeproj -scheme Tally -sdk iphoneos \
+    -destination 'generic/platform=iOS' -configuration Release build CODE_SIGNING_ALLOWED=NO
+  ```
+- **Archive**（产物含 `AppIcon60x60@2x.png` / `AppIcon76x76@2x~ipad.png`、版本 1.0.0(1)）：
+  ```bash
+  xcodebuild -project TallyLocal.xcodeproj -scheme Tally -destination 'generic/platform=iOS' \
+    -configuration Release -archivePath /tmp/TallyLocal.xcarchive archive CODE_SIGNING_ALLOWED=NO
+  ```
+- **签名**：工程为 `CODE_SIGN_STYLE = Automatic`、`DEVELOPMENT_TEAM = XN5LYQCCY2`。
+  真机安装 / TestFlight 上传还需要在本机 Xcode → Settings → Accounts 登录该 Team 的 Apple ID，
+  让 `-allowProvisioningUpdates` 自动申请描述文件（未登录时报
+  `No Accounts` / `No profiles for 'com.tally.local' were found`，属环境而非代码问题）。
 
 ## 未完成（诚实标注）
 - iCloud/CloudKit 同步、周期交易、模板、小组件、Siri：未进入 MVP
 - 繁体/英文本地化：仅简体中文
 - iPad 独立布局：未做
-- 真机、Archive/App Store 上传、万级交易性能与完整 VoiceOver 人工走查：尚未完成
+- App Store 上传与审核、万级交易性能与完整 VoiceOver 人工走查：尚未完成
+  （真机构建与 Archive 结构校验已通过，见上一节）
 
 ## 隐私
 - 数据全部保存在本机 SwiftData store，不上传任何服务器。
