@@ -39,9 +39,13 @@ jobs:
           if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "检查 $base -> $GITHUB_SHA"
             git --no-pager diff --check "$base" "$GITHUB_SHA"
-          else
-            git --no-pager log --oneline -3
+          elif git rev-parse -q --verify HEAD~1 >/dev/null; then
+            echo "基线不可用，退回检查最近一次提交"
             git --no-pager diff --check HEAD~1 HEAD
+          else
+            echo "仓库只有一个提交：检查工作区与索引"
+            git --no-pager diff --check
+            git --no-pager diff --check --cached
           fi
 
       - name: 禁止跟踪 xcuserdata / 本地数据
@@ -140,27 +144,8 @@ jobs:
           export TALLY_DOMAIN="staging-api.tallyapp.cn"
           docker compose -f docker-compose.caddy.yml config --quiet
           docker compose -f docker-compose.caddy.yml config --format json > /tmp/rendered.json
-          node -e '
-            const fs = require("fs");
-            const c = JSON.parse(fs.readFileSync("/tmp/rendered.json", "utf8"));
-            const be = c.services["tally-backend"], cd = c.services["caddy"];
-            const pub = (s) => (s?.ports ?? []).flatMap(p => [].concat(p.published ?? []));
-            const bePub = pub(be), cdPub = pub(cd).map(String);
-            console.log("backend published:", JSON.stringify(bePub));
-            console.log("caddy published:", JSON.stringify(cdPub));
-            if (bePub.length !== 0) throw new Error("backend 不应向宿主发布任何端口（8080 只能走 Docker 内网）");
-            const sorted = cdPub.slice().sort();
-            if (JSON.stringify(sorted) !== JSON.stringify(["443", "80"]))
-              throw new Error("caddy 只应暴露 80/443，实际 " + JSON.stringify(sorted));
-            for (const [n, s] of Object.entries(c.services)) {
-              if (!s.healthcheck) throw new Error(n + " 缺少 healthcheck");
-              if (!s.restart) throw new Error(n + " 缺少 restart 策略");
-              if (!Object.keys(s.volumes ?? {}).length) throw new Error(n + " 缺少持久卷");
-            }
-            const nb = Object.keys(be.networks ?? {}), nc = Object.keys(cd.networks ?? {});
-            if (!nb.some(n => nc.includes(n))) throw new Error("caddy 与 backend 不在同一网络");
-            console.log("✅ compose 拓扑合规：仅 80/443 暴露、后端仅内网、healthcheck/restart/持久卷齐全、同网络");
-          '
+          # 断言集中在仓库脚本里：本地（用已渲染的 JSON 也能跑）与 CI 共用同一实现
+          node "$GITHUB_WORKSPACE/scripts/check-compose-topology.mjs" /tmp/rendered.json
 
       - name: 缺少必填变量时 compose 必须拒绝（防弱默认值上线）
         run: |
