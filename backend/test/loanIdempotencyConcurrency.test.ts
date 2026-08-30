@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import type { FastifyInstance } from "fastify";
 import { createDb } from "../src/db/client.js";
@@ -11,6 +12,13 @@ import { buildApp } from "../src/server.js";
 import { todayStr } from "../src/lib/date.js";
 import { and, asc, eq } from "drizzle-orm";
 import { loanPaymentIdempotency, loanPayments, transactions } from "../src/db/schema.js";
+
+// 本测试的并发 worker 需要能 require TypeScript 源码，但**不能**继承 tsx 的 ESM loader：
+// 否则 Node 会在 worker 内走 ESM loader 的 getSourceSync 读取入口文件，产生
+// “File descriptor ... opened/closed in unmanaged mode” 批量告警（Node 24 + tsx 已知现象）。
+// 因此 worker 用纯 CommonJS（.cjs）入口，并只注入 tsx 的 CJS require 钩子（tsx/cjs），
+// 彻底避开 ESM loader 路径，FD 告警为 0。
+const tsxCjsRequireHook = createRequire(import.meta.url).resolve("tsx/cjs");
 
 process.env.ALIYUN_SMS_ENABLED = "false";
 process.env.ALIYUN_ACCESS_KEY_ID = "";
@@ -98,8 +106,10 @@ async function createLoan(
 
 function spawnServer(dbFile: string): Promise<{ worker: Worker; port: number }> {
   return new Promise((resolvePromise, reject) => {
-    const worker = new Worker(new URL("./loanConcWorker.ts", import.meta.url), {
+    const worker = new Worker(new URL("./loanConcWorker.cjs", import.meta.url), {
       workerData: { dbFile, jwtSecret: JWT_SECRET },
+      // 只注入 tsx 的 CJS require 钩子（不继承 ESM loader），消除 worker 内 FD 告警
+      execArgv: ["--require", tsxCjsRequireHook],
     });
     const timer = setTimeout(() => {
       reject(new Error("worker 启动超时"));

@@ -22,13 +22,16 @@ function enabled(): boolean {
   );
 }
 
-// 供应商响应体脱敏：只遮蔽明文验证码（verifyCode / model.verifyCode），
+// 供应商响应体脱敏：把手机号与明文验证码都视为个人信息（PII）一并遮蔽，
 // 其余（success/requestId/code/message/verifyResult 等）保留以便排障。
-// 手机号属于可追踪的业务字段，且请求上下文已记录，不视为敏感，因此不遮蔽。
+// 遮蔽字段：phoneNumber / phone / verifyCode 及其在 model 下的同名嵌套字段。
+// 统一用“****”替代，确保日志既不出现手机号也不出现验证码明文。
 function sanitizeSmsBody(body: unknown): unknown {
   if (!body || typeof body !== "object") return body;
   const out: Record<string, unknown> = { ...(body as Record<string, unknown>) };
-  if (out.verifyCode !== undefined) out.verifyCode = "****";
+  for (const key of ["phoneNumber", "phone", "verifyCode"]) {
+    if (out[key] !== undefined) out[key] = "****";
+  }
   if (out.model && typeof out.model === "object") {
     out.model = sanitizeSmsBody(out.model);
   }

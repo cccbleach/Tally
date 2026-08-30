@@ -49,12 +49,13 @@ node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
 - 删除 `docs/production-checklist.md` 尾部多余空行（原文件以 2 个空行结尾，`git diff --check` 报 `new blank line at EOF`）。
 - 已复检：修复后 `git diff --check`（工作区+暂存区）通过；提交后 `git diff 73a7a3d..HEAD --check` 通过（见第 8 节）。
 
-### 0.4 Excel worker 测试 FD warnings 清理
+### 0.4 Excel worker 与并发 worker 测试 FD warnings 全部清零（源级修复，无全局屏蔽）
 
-- 根因：测试/开发环境由 `tsx` 注入 ESM loader，worker 线程继承后，Node 在 worker 内通过 `getSourceSync` 读取入口文件，会把 fd 标成 “unmanaged mode”，批量打印 `File descriptor … opened/closed in unmanaged mode`（实测 `test/billParser.test.ts` 复现大批量告警）。
-- 源级修复：Excel worker 为纯 CommonJS（`.cjs`），在 `parseWechatXlsx` 创建 worker 时显式 `execArgv: []`，不再继承 tsx loader —— `test/billParser.test.ts` 复测 **0 条 FD 告警**。
-- 残余说明：`loanIdempotencyConcurrency.test.ts` 的并发 worker 是 `.ts`（必须走 tsx 才能解析 TS），属 Node 24 + tsx loader 的已知告警；在 `package.json` 的 `test` 脚本显式 `NODE_OPTIONS="--disable-warning=Warning"`，仅抑制该通用类告警（不影响其它类型告警与退出码）。
-- 复测：`pnpm test` → **105/105 通过，0 条 FD 告警**（修复前约 1028 条）。
+- 根因：测试/开发环境由 `tsx` 注入 ESM loader（`--import loader.mjs`），worker 线程继承后，Node 会在 worker 内通过 ESM loader 的 `getSourceSync` 读取入口文件，把 fd 标成 “unmanaged mode”，批量打印 `File descriptor … opened/closed in unmanaged mode`。实测 `test/billParser.test.ts` 与 `test/loanIdempotencyConcurrency.test.ts` 合计约 1028 条。
+- Excel worker（`src/lib/billParser.ts`）：纯 CommonJS（`.cjs`），创建 worker 时显式 `execArgv: []`，不继承任何 loader → 0 告警。
+- 并发 worker（`test/loanConcWorker.ts` → 改为 **`test/loanConcWorker.cjs`**）：并发测试仍需真正独立的 worker 线程跑 Fastify + 独立 SQLite，但把 worker 入口改为纯 CommonJS，并在创建时只注入 tsx 的 **CJS require 钩子**（`execArgv: ["--require", require.resolve("tsx/cjs")]`），完全不走 ESM loader；钩子内用显式 `.ts` 扩展 `require` 源码即可加载 TypeScript 模块 → **0 告警**。
+- **未使用** 任何 `NODE_OPTIONS=--disable-warning` / 全局屏蔽 Warning。`package.json` 的 `test` 命令保持朴素 `tsx --test test/*.test.ts`。
+- 复测（**不屏蔽任何 Warning** 的 `pnpm exec tsx --test test/*.test.ts`）：**105/105 通过，FD warning = 0**（修复前约 1028 条）。
 
 ### 0.5 账号枚举与短信供应商响应日志的安全复核
 
@@ -62,7 +63,7 @@ node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
   - 密码登录：账号不存在与密码错误返回完全相同的 401 → 不枚举。
   - 验证码登录 `/request-code`：未注册也返回 `{ok:true}` → 不枚举。
   - 找回密码 `/reset-code`：未注册返回 404 —— **有意保留的风险豁免**：项目无邮件/站内通道，若对未注册账号谎称“已发送”，用户将永远等不到验证码；已由 IP+账号双维度限流缓解，风险已明确记录（代码注释 + 本文档）。
-- 短信供应商响应日志脱敏：`src/lib/sms.ts` 新增 `sanitizeSmsBody`，`sendVerifyCode` 失败日志与 `checkVerifyCode` 响应日志统一遮蔽明文验证码（`verifyCode` / `model.verifyCode` → `****`），保留 `success/requestId/code/message/verifyResult` 等排障字段；成功路径维持“敏感信息不落日志”。
+- 短信供应商响应日志脱敏：`src/lib/sms.ts` 的 `sanitizeSmsBody` 把**手机号与明文验证码都视为个人信息（PII）**一并遮蔽——`phoneNumber` / `phone` / `verifyCode` 及其嵌套字段统一替换为 `****`，覆盖 `sendVerifyCode` 失败日志与 `checkVerifyCode` 响应日志；保留 `success/requestId/code/message/verifyResult` 等排障字段；成功路径维持“敏感信息不落日志”。
 
 ---
 
