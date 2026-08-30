@@ -163,6 +163,12 @@ export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
       workerData: { buf },
       // 内存限制：限制 worker 旧代堆到 64MB、新生代到 16MB（非进程级硬隔离）
       resourceLimits: { maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 16 },
+      // xlsx worker 是纯 CommonJS（.cjs），不需要 TypeScript 转换或 ESM loader：
+      // 明确清空 execArgv，避免继承测试/开发环境（tsx）注入的 --import loader；
+      // 否则 Node 在 worker 内走 ESM loader 的 getSourceSync 读取入口文件时会把
+      // fd 标成 “unmanaged mode”，产生 “File descriptor ... opened/closed in
+      // unmanaged mode” 批量告警（Node 24 + tsx 已知现象，生产 dist 纯 node 无此告警）。
+      execArgv: [],
     });
 
     return await new Promise<ParsedBill[]>((resolve, reject) => {

@@ -156,6 +156,42 @@ jobs:
           fi
           echo "✅ 缺少必填变量时 compose 按预期拒绝"
 
+      # 真实容器级回归：不只是 `compose config`，而是用完整 docker-compose.caddy.yml
+      # 拉起 backend + Caddy，等待两者真正 healthy，并通过 HTTPS 反代访问 /health/ready。
+      # - TALLY_DOMAIN=localhost：CI 无外部 DNS，Caddy 用内发自签证书，仍走真实 80/443 + TLS 反代。
+      # - 复用 tally-backend:ci（上一构建步骤产物），避免重复构建镜像。
+      # - caddy:2 镜像无 bash：healthcheck 用 busybox nc（见 compose 文件），本步骤同时回归它可真正变 healthy。
+      - name: 真实容器级回归（完整 HTTPS 栈：双服务 healthy + HTTPS /health/ready）
+        run: |
+          set -euo pipefail
+          export TALLY_DOMAIN=localhost
+          export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+          docker tag tally-backend:ci tally-backend:latest
+          cleanup() { docker compose -f docker-compose.caddy.yml down -v --remove-orphans >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker compose -f docker-compose.caddy.yml up -d --no-build
+          ok=0
+          for _ in $(seq 1 90); do
+            b="$(docker inspect -f '{{.State.Health.Status}}' tally-backend 2>/dev/null || echo starting)"
+            c="$(docker inspect -f '{{.State.Health.Status}}' tally-caddy 2>/dev/null || echo starting)"
+            if [ "$b" = healthy ] && [ "$c" = healthy ]; then ok=1; break; fi
+            if [ "$b" = unhealthy ] || [ "$c" = unhealthy ]; then
+              echo "::error::服务进入 unhealthy（backend=$b caddy=$c）"
+              docker compose -f docker-compose.caddy.yml ps
+              docker logs tally-caddy --tail 80 2>&1 || true
+              docker logs tally-backend --tail 80 2>&1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::等待超时，双服务未达 healthy"
+            docker compose -f docker-compose.caddy.yml ps
+            docker logs tally-caddy --tail 80 2>&1 || true
+            exit 1
+          fi
+          node "$GITHUB_WORKSPACE/scripts/check-compose-live.mjs" "backend/docker-compose.caddy.yml"
+
   # ---------------------------------------------------------- 联网版 iOS 客户端
   ios-online:
     name: iOS 联网版（Debug + Release + 产物校验）

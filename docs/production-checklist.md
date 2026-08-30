@@ -152,8 +152,9 @@
 | `GET /health/live` | k8s/compose liveness | 只看进程活着，不依赖 DB |
 | `GET /health/ready` | readiness / 拨测 | DB 可达 **且** `schema_migrations` 有记录，返回 `migrationsApplied` |
 
-- [ ] compose 里两个服务都有 `healthcheck`（后端用 Node fetch 打 `/health/live`，Caddy 检查 80/443 端口监听），
-      `restart: unless-stopped`，`caddy` 通过 `depends_on: condition: service_healthy` 等后端就绪。
+- [ ] compose 里两个服务都有 `healthcheck`（后端用 Node fetch 打 `/health/live`；Caddy 镜像无 bash，
+      用镜像自带的 busybox `nc -z` 探活 80/443），`restart: unless-stopped`，
+      `caddy` 通过 `depends_on: condition: service_healthy` 等后端就绪。
 - [ ] 外部拨测（独立于本机，能区分「服务器挂」与「网络挂」）：每 60s 打一次
       `https://api.tallyapp.cn/health/ready`，连续 3 次失败告警。
 - [ ] 反代层加探活：Caddy 挂了也要能发现（`docker compose ps` / `systemctl` 级监控）。
@@ -264,4 +265,3 @@ git status --porcelain   # 构建后应为空
 ```
 
 > 各项验收在开发环境的实际执行结果与复现命令，见 [`release-acceptance.md`](./release-acceptance.md)。
-

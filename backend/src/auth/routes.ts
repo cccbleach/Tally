@@ -185,6 +185,17 @@ export function registerAuthRoutes(
 
   // 申请找回密码验证码（短信投递）。与「验证码登录」使用不同 OTP 命名空间，
   // 登录验证码不能用来改密码，反之亦然。
+  //
+  // 【账号枚举安全复核（2026-08-30）】
+  // - 密码登录 /login：账号不存在与密码错误返回完全相同的 401 INVALID_CREDENTIALS，
+  //   不泄露某个账号是否已注册 → 不枚举。
+  // - 验证码登录 /request-code：无论账号是否注册都返回 { ok:true }（未注册会先发码、登录时自动建号），
+  //   响应体一致 → 不枚举。
+  // - 找回密码 /reset-code：未注册手机号返回 404 ACCOUNT_NOT_FOUND、已注册返回 200 ——
+  //   这是**有意保留的风险豁免**：项目没有邮件/站内通道，若对未注册账号也撒谎“已发送”，
+  //   用户永远等不到验证码也无法收到任何纠正。用“诚实 404 + 明确文案”换取可用性；
+  //   枚举面已由 IP+账号双维度限流（enforceAuthLimits）和 404 提示充分缓解。
+  //   本复核结论同步记录于 docs/release-acceptance.md。
   app.post("/api/v1/auth/reset-code", async (req) => {
     const body = resetCodeSchema.parse(req.body);
     const phone = normalizeAccount(body.account);

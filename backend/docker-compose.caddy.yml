@@ -113,11 +113,12 @@ services:
     depends_on:
       tally-backend:
         condition: service_healthy
-    # 镜像内无 curl；用 bash 的 /dev/tcp 探活两个公网端口是否在内层监听
+    # caddy:2 基于 Alpine/busybox，镜像内没有 bash（/dev/tcp 是 bash 专属语法，永远失败）；
+    # 用镜像实际自带的 busybox `nc` 做零 I/O TCP 探活（-z），确认 80/443 已在容器内监听。
     healthcheck:
       test:
         - CMD-SHELL
-        - "bash -c '</dev/tcp/127.0.0.1/80' && bash -c '</dev/tcp/127.0.0.1/443'"
+        - "nc -z -w 3 127.0.0.1 80 && nc -z -w 3 127.0.0.1 443"
       interval: 30s
       timeout: 5s
       retries: 3

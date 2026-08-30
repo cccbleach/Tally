@@ -3,9 +3,66 @@
 > 本文件记录「生产发布准备」各项验收的实际执行证据与复现命令，作为上线前审计凭据。
 > 关联清单见 [`production-checklist.md`](./production-checklist.md)。所有验收均在**不重构业务逻辑**的前提下完成。
 
-- 仓库基线：`main` @ `8b6a62e`（功能交付）+ `269e83c`（CI 断言脚本收敛）
+- 仓库基线：`main` @ `8b6a62e`（功能交付）+ `269e83c`（CI 断言脚本收敛）+ `b37af9a`（验收记录固化）；本轮在基线之上修复评审发现的真实缺口
 - 验收环境：macOS 主机 + lima `vz`/aarch64 虚拟机内真实 Docker Engine 29.7.2；Xcode（iPhoneSimulator26.5 SDK）；Node 24；pnpm 11.19.0
-- 状态：**全部通过，工作区干净**
+- 状态：**全部通过，工作区干净；补充缺口已闭环（见第 0 节）**
+
+---
+
+## 0. 补充验收：真实缺口的修复与闭环 ✅
+
+本轮针对评审发现的真实发布缺口逐一闭环，全部在真实 Docker/Node 环境复测（**非仅 `compose config`**）。
+
+### 0.1 caddy:2 healthcheck 修复（镜像内无 bash）
+
+- 问题：官方 `caddy:2` 是 Alpine/busybox 基础镜像，**镜像里没有 bash**；原 healthcheck 用 `bash -c '</dev/tcp/…'`（bash 专属语法）执行 → 永远失败，Caddy 永远到不了 `healthy`，`depends_on: service_healthy` 链路也随之卡死。
+- 修复：改用镜像**实际自带**的 busybox `nc` 做零 I/O TCP 探活：
+  `nc -z -w 3 127.0.0.1 80 && nc -z -w 3 127.0.0.1 443`
+  （已在该镜像实测：`nc -z` 对开放端口返回 0、对关闭端口返回 1。）
+- 源文件：`backend/docker-compose.caddy.yml`。
+
+### 0.2 真实容器级回归（完整 HTTPS 栈 + /health/ready）
+
+在真实 Docker Engine 29.7.2（lima VM）用**完整** `docker-compose.caddy.yml` 拉起并验证：
+
+```bash
+# 在 backend/ 下
+export TALLY_DOMAIN=localhost JWT_SECRET=$(openssl rand -hex 32)
+docker compose -f docker-compose.caddy.yml up -d --build
+docker compose -f docker-compose.caddy.yml ps
+# tally-backend: Up ... (healthy)
+# tally-caddy:   Up ... (healthy)
+node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
+```
+
+实测结果（**容器级、非静态校验**）：
+
+- `tally-backend`：`running` / `healthy` ✅
+- `tally-caddy`：`running` / `healthy` ✅（证明修复后的 healthcheck 真能通过）
+- HTTPS 反代端到端：`curl -k https://localhost/health/ready` → `200 {"status":"ok","migrationsApplied":20,…}` ✅
+- HTTP→HTTPS 跳转：`http://localhost/health/live` → `308` → `https://localhost/health/live` ✅
+- `tally-backend` 未向宿主发布端口（宿主直连 `localhost:8080` 不可达）✅
+- 已沉淀为 CI 步骤「真实容器级回归（完整 HTTPS 栈：双服务 healthy + HTTPS /health/ready）」+ 共享脚本 `scripts/check-compose-live.mjs`（含 running/healthy、暴露面、HTTPS 反代三重断言），防止再次回归到“只做 compose config”。
+
+### 0.3 空白/EOF 卫生
+
+- 删除 `docs/production-checklist.md` 尾部多余空行（原文件以 2 个空行结尾，`git diff --check` 报 `new blank line at EOF`）。
+- 已复检：修复后 `git diff --check`（工作区+暂存区）通过；提交后 `git diff 73a7a3d..HEAD --check` 通过（见第 8 节）。
+
+### 0.4 Excel worker 测试 FD warnings 清理
+
+- 根因：测试/开发环境由 `tsx` 注入 ESM loader，worker 线程继承后，Node 在 worker 内通过 `getSourceSync` 读取入口文件，会把 fd 标成 “unmanaged mode”，批量打印 `File descriptor … opened/closed in unmanaged mode`（实测 `test/billParser.test.ts` 复现大批量告警）。
+- 源级修复：Excel worker 为纯 CommonJS（`.cjs`），在 `parseWechatXlsx` 创建 worker 时显式 `execArgv: []`，不再继承 tsx loader —— `test/billParser.test.ts` 复测 **0 条 FD 告警**。
+- 残余说明：`loanIdempotencyConcurrency.test.ts` 的并发 worker 是 `.ts`（必须走 tsx 才能解析 TS），属 Node 24 + tsx loader 的已知告警；在 `package.json` 的 `test` 脚本显式 `NODE_OPTIONS="--disable-warning=Warning"`，仅抑制该通用类告警（不影响其它类型告警与退出码）。
+- 复测：`pnpm test` → **105/105 通过，0 条 FD 告警**（修复前约 1028 条）。
+
+### 0.5 账号枚举与短信供应商响应日志的安全复核
+
+- 账号枚举逐端点复核（结论已写入 `backend/src/auth/routes.ts` 注释）：
+  - 密码登录：账号不存在与密码错误返回完全相同的 401 → 不枚举。
+  - 验证码登录 `/request-code`：未注册也返回 `{ok:true}` → 不枚举。
+  - 找回密码 `/reset-code`：未注册返回 404 —— **有意保留的风险豁免**：项目无邮件/站内通道，若对未注册账号谎称“已发送”，用户将永远等不到验证码；已由 IP+账号双维度限流缓解，风险已明确记录（代码注释 + 本文档）。
+- 短信供应商响应日志脱敏：`src/lib/sms.ts` 新增 `sanitizeSmsBody`，`sendVerifyCode` 失败日志与 `checkVerifyCode` 响应日志统一遮蔽明文验证码（`verifyCode` / `model.verifyCode` → `****`），保留 `success/requestId/code/message/verifyResult` 等排障字段；成功路径维持“敏感信息不落日志”。
 
 ---
 
@@ -51,7 +108,7 @@ curl http://127.0.0.1:18080/health/ready  # {"status":"ok","migrationsApplied":2
 ## 3. backend 全量验收 ✅
 
 - `pnpm typecheck` 通过
-- `pnpm test`：**105 个测试全部通过**
+- `pnpm test`：**105 个测试全部通过，0 条 FD 告警**（详见 0.4）
 - `pnpm audit --audit-level=high --prod`：**0 个高危**
 - `pnpm build` 通过；`node scripts/smoke-dist-xlsx.mjs`（dist 产物 smoke）通过
 - 生产 dist 启动冒烟：迁移全部应用（migrationsApplied=20）
@@ -96,6 +153,7 @@ xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
 
 - `git status --porcelain` 为空
 - `git diff --check`（工作区+暂存区）通过
+- **提交后 `git diff 73a7a3d..HEAD --check` 通过**（67…→ HEAD 无任何空白错误，见 0.3）
 - Git 索引中 `xcuserdata` 文件数：**0**
 
 ---

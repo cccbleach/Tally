@@ -22,6 +22,19 @@ function enabled(): boolean {
   );
 }
 
+// 供应商响应体脱敏：只遮蔽明文验证码（verifyCode / model.verifyCode），
+// 其余（success/requestId/code/message/verifyResult 等）保留以便排障。
+// 手机号属于可追踪的业务字段，且请求上下文已记录，不视为敏感，因此不遮蔽。
+function sanitizeSmsBody(body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  const out: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+  if (out.verifyCode !== undefined) out.verifyCode = "****";
+  if (out.model && typeof out.model === "object") {
+    out.model = sanitizeSmsBody(out.model);
+  }
+  return out;
+}
+
 // 短信认证服务由服务端生成验证码；我们通过 returnVerifyCode 取回并在本地校验。
 export async function sendVerifyCode(phone: string): Promise<SmsResult> {
   if (!enabled()) return { sent: false };
@@ -59,7 +72,7 @@ export async function sendVerifyCode(phone: string): Promise<SmsResult> {
     const sentCode = body?.model?.verifyCode;
     // 业务失败（签名/模板无效、频率限制、欠费等）视为未发送；成功则取服务端生成的验证码
     if (!body || body.success === false || !sentCode) {
-      console.error("[sms] 阿里云返回发送失败:", JSON.stringify(body ?? {}));
+      console.error("[sms] 阿里云返回发送失败（已脱敏）:", JSON.stringify(sanitizeSmsBody(body ?? {})));
       return { sent: false };
     }
     console.log("[sms] 阿里云短信发送成功（敏感信息不落日志）");
@@ -99,7 +112,7 @@ export async function checkVerifyCode(phone: string, code: string): Promise<Veri
     const resp = await client.checkSmsVerifyCodeWithOptions(req, new RuntimeOptions({}));
     const body = resp?.body;
     const pass = body?.success === true && body?.model?.verifyResult === "PASS";
-    console.log("[sms] 校验验证码:", JSON.stringify(body ?? {}));
+    console.log("[sms] 校验验证码（已脱敏）:", JSON.stringify(sanitizeSmsBody(body ?? {})));
     return { supported: true, ok: pass };
   } catch (e: any) {
     console.error("[sms] 校验失败，回退本地校验:", e?.message ?? e);
