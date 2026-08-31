@@ -137,6 +137,7 @@ curl http://127.0.0.1:18080/health/ready  # {"status":"ok","migrationsApplied":2
 - Debug、Release 与 Archive 均为 0 条 Xcode `warning:`；iPhone 保持竖屏，iPad 声明完整方向集，消除了通用 App 的归档方向告警。
 - XcodeGen 生成设置已改为由 `ios/project.yml` 显式声明，不依赖外部 setting presets；连续生成两次 `.pbxproj` / `Info.plist` 哈希不变。
 - `scripts/check-ios-build-settings.sh` 已验证：Debug 含 `DEBUG`、`-Onone`、`ENABLE_TESTABILITY=YES`；Release 含 `-O`、`wholemodule`、`ENABLE_TESTABILITY=NO`。CI 同步执行该守门，防止出现“能编译但 `#if DEBUG` 走错分支”。
+- CI 的联网版/离线版统一固定 `macos-15` 上的 Xcode 16.4，并先断言 iOS 18.5 runtime 可用；不再选择只有 iOS 18.0 SDK、但当前 runner 没有对应已安装模拟器 runtime 的 Xcode 16.0，避免 `CompileAssetCatalog` 在构建尾部失败。
 
 ## 5. ios-local 全量测试（历史基线）✅
 

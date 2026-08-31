@@ -203,9 +203,18 @@ jobs:
         working-directory: ios
     steps:
       - uses: actions/checkout@v4
+      # macos-15 当前只预装 iOS 18.5+ 模拟器 runtime；Xcode 16.0 的 iOS 18.0 SDK
+      # 虽仍在镜像中，但 actool 会因缺少匹配 runtime 在 CompileAssetCatalog 阶段失败。
+      # 固定到同时具备 SDK 与 runtime 的 16.4，避免“Swift 已编译、资源目录最后失败”。
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "16.0"
+          xcode-version: "16.4"
+
+      - name: Xcode / iOS runtime 配对检查
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes available | grep -q 'iOS 18.5'
 
       - name: Debug / Release 核心构建设置防回归
         working-directory: ${{ github.workspace }}
@@ -292,9 +301,16 @@ jobs:
         working-directory: ios-local
     steps:
       - uses: actions/checkout@v4
+      # 与联网版保持同一 Xcode/runtime 配对；不要回退到缺少 iOS 18.0 runtime 的 16.0。
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "16.0"
+          xcode-version: "16.4"
+
+      - name: Xcode / iOS runtime 配对检查
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list runtimes available | grep -q 'iOS 18.5'
 
       - name: 发布资产检查（1024 AppIcon / 版本号 / 签名）
         working-directory: ${{ github.workspace }}
