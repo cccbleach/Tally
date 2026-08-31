@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/runner.js";
 import { buildApp } from "../src/server.js";
-import { todayStr } from "../src/lib/date.js";
+import { currentYearMonth, todayStr } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
 import { ledgers, budgets, transactions } from "../src/db/schema.js";
 import { smsRegister, authHeaders } from "./helpers.js";
@@ -84,8 +84,7 @@ test("A 创建家庭、按昵称邀请 B，B 接受后 member 可写共享账本
   expenseCat = expense!.id;
 
   // member（B）可写：预算
-  const year = new Date().getFullYear();
-  const month = new Date().getMonth() + 1;
+  const { year, month } = currentYearMonth();
   const budget = await api(hB, "POST", "/api/v1/budgets", { year, month, amount: 10000, ledgerId: familyLedger });
   assert.equal(budget.statusCode, 200, "member 创建预算应成功: " + budget.body);
 
@@ -201,8 +200,7 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
 });
 
 test("预算唯一性按 ledger 作用域：同一用户个人账本与家庭账本同月同分类可共存", async () => {
-  const year = new Date().getFullYear();
-  const month = new Date().getMonth() + 1;
+  const { year, month } = currentYearMonth();
 
   const ledgersRes = await api(hA, "GET", "/api/v1/ledgers");
   const personal = (ledgersRes.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null);

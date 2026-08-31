@@ -120,6 +120,7 @@ curl http://127.0.0.1:18080/health/ready  # {"status":"ok","migrationsApplied":2
 
 - `pnpm typecheck` 通过
 - `pnpm test`：**140 个测试全部通过，0 条 FD 告警**
+- CI 固定以 `TZ=UTC` 宿主 + `APP_TIMEZONE=Asia/Shanghai` 业务时区运行测试；预算/统计/RBAC 月份断言统一取 `currentYearMonth()`，不再在 UTC 月末边界混用宿主 `new Date()`。
 - `pnpm audit --audit-level=high --prod`：**0 个高危**
 - `pnpm build` 通过；`node scripts/smoke-dist-xlsx.mjs`（dist 产物 smoke）通过
 - 迁移自动化验证覆盖全新建库与旧库升级至 `0022`；当前 dist 路径的 Excel worker smoke 通过；当前源码构建出的真实容器也已返回 `migrationsApplied=22`（见 0.6）。

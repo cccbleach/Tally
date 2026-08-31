@@ -97,6 +97,11 @@ jobs:
         run: pnpm typecheck
 
       - name: test（全量集成测试）
+        # 故意让宿主时区与业务时区不同，防止测试把 `new Date()` 的本地月份
+        # 与 API 的 Asia/Shanghai 业务月份混用（尤其 UTC 月末 16:00 后）。
+        env:
+          TZ: UTC
+          APP_TIMEZONE: Asia/Shanghai
         run: pnpm test
 
       - name: audit（生产依赖，high/critical 硬失败）

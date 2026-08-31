@@ -8,7 +8,7 @@ import { createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/runner.js";
 import { buildApp } from "../src/server.js";
 import { runDueRecurring } from "../src/lib/recurringRunner.js";
-import { todayStr, addMonths } from "../src/lib/date.js";
+import { todayStr, addMonths, currentYearMonth } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
@@ -304,7 +304,8 @@ test("修改与删除流水", async () => {
 
 // ---- 统计 ----
 test("统计摘要正确", async () => {
-  const res = await req("GET", "/api/v1/stats/summary?year=" + new Date().getFullYear() + "&month=" + (new Date().getMonth() + 1));
+  const { year, month } = currentYearMonth();
+  const res = await req("GET", "/api/v1/stats/summary?year=" + year + "&month=" + month);
   assert.equal(res.statusCode, 200);
   const s = res.json();
   assert.equal(s.income, 10000);
@@ -323,8 +324,7 @@ test("趋势接口", async () => {
 
 // ---- 预算 ----
 test("预算 upsert 与 overview", async () => {
-  const year = new Date().getFullYear();
-  const month = new Date().getMonth() + 1;
+  const { year, month } = currentYearMonth();
   const total = await req("POST", "/api/v1/budgets", { year, month, amount: 20000 });
   assert.equal(total.statusCode, 200);
   const cat = await req("POST", "/api/v1/budgets", { year, month, categoryId: expCat, amount: 5000 });
@@ -391,8 +391,7 @@ test("周期账单未来开始日期不生成", async () => {
 
 // 契约回归：POST/PATCH 预算必须返回 spent/percent，iOS 客户端依赖这些字段解码。
 test("预算创建与更新返回 spent/percent 字段", async () => {
-  const year = new Date().getFullYear();
-  const month = new Date().getMonth() + 1;
+  const { year, month } = currentYearMonth();
 
   const created = await req("POST", "/api/v1/budgets", { year, month, amount: 9999 });
   assert.equal(created.statusCode, 200, created.body);
