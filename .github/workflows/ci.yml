@@ -142,6 +142,7 @@ jobs:
           set -euo pipefail
           export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
           export TALLY_DOMAIN="staging-api.tallyapp.cn"
+          export ACME_EMAIL="ci@example.com"
           docker compose -f docker-compose.caddy.yml config --quiet
           docker compose -f docker-compose.caddy.yml config --format json > /tmp/rendered.json
           # 断言集中在仓库脚本里：本地（用已渲染的 JSON 也能跑）与 CI 共用同一实现
@@ -150,8 +151,8 @@ jobs:
       - name: 缺少必填变量时 compose 必须拒绝（防弱默认值上线）
         run: |
           set -euo pipefail
-          if JWT_SECRET= TALLY_DOMAIN= docker compose -f docker-compose.caddy.yml config >/dev/null 2>&1; then
-            echo "::error::缺少 JWT_SECRET/TALLY_DOMAIN 时 compose 竟然通过了校验"
+          if JWT_SECRET= TALLY_DOMAIN= ACME_EMAIL= docker compose -f docker-compose.caddy.yml config >/dev/null 2>&1; then
+            echo "::error::缺少 JWT_SECRET/TALLY_DOMAIN/ACME_EMAIL 时 compose 竟然通过了校验"
             exit 1
           fi
           echo "✅ 缺少必填变量时 compose 按预期拒绝"
@@ -165,6 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           export TALLY_DOMAIN=localhost
+          export ACME_EMAIL=ci@example.com
           export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
           docker tag tally-backend:ci tally-backend:latest
           cleanup() { docker compose -f docker-compose.caddy.yml down -v --remove-orphans >/dev/null 2>&1 || true; }

@@ -28,6 +28,8 @@
 
 - [ ] 只用仓库里的生产栈：`backend/docker-compose.caddy.yml` + `backend/Caddyfile`
       （站点地址由 `TALLY_DOMAIN` 注入，不设默认值 —— 忘填就起不来，避免占位域名上线）。
+- [ ] 设置有效的 `ACME_EMAIL`（无默认值），用于证书异常通知并启用 Caddy 的
+      Let's Encrypt → ZeroSSL 双 CA 自动回退。
 - [ ] 安全组/防火墙**只放行 22/80/443**；`443/udp`（HTTP/3）按需，不需要就别开。
 - [ ] 后端 8080 不对宿主/公网发布（compose 里后端只有 `expose`，没有 `ports`）。
 - [ ] 证书：Caddy 自动签发 + 自动续期；确认 80 端口可达（ACME http-01）。
@@ -41,7 +43,7 @@
       curl -sSI https://api.tallyapp.cn/health/live | head -1           # 200
       curl -sS  https://api.tallyapp.cn/health/ready                    # migrationsApplied > 0
       echo | openssl s_client -connect api.tallyapp.cn:443 -servername api.tallyapp.cn 2>/dev/null \
-        | openssl x509 -noout -dates -issuer                            # 证书未过期、签发者为 LE
+        | openssl x509 -noout -dates -issuer                            # 证书未过期、签发者为受信任公网 CA
       ```
 - [ ] 证书到期前 30 天内有告警（见第 9 节）。
 

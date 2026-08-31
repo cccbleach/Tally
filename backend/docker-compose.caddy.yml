@@ -4,6 +4,7 @@
 #
 # 用法（在 backend/ 目录下）：
 #   export TALLY_DOMAIN=tally.yourdomain.cn              # 必填：已解析到本机的域名
+#   export ACME_EMAIL=ops@yourdomain.cn                   # 必填：证书联系邮箱 + 备用 CA 回退
 #   export JWT_SECRET=$(openssl rand -hex 32)             # 必填：≥32 位强随机
 #   export CORS_ORIGINS=https://tally.yourdomain.cn       # 可选：浏览器端来源白名单
 #   docker compose -f docker-compose.caddy.yml config     # 先校验（渲染后的最终配置）
@@ -106,6 +107,8 @@ services:
     environment:
       # Caddyfile 里的站点地址由此变量注入（{$TALLY_DOMAIN}）；未设置则容器启动失败
       TALLY_DOMAIN: "${TALLY_DOMAIN:?必须设置 TALLY_DOMAIN：已解析到本机的 HTTPS 域名}"
+      # ACME 联系邮箱；非空时 Caddy 默认启用 Let's Encrypt → ZeroSSL 双 CA 回退
+      ACME_EMAIL: "${ACME_EMAIL:?必须设置 ACME_EMAIL：有效的证书联系邮箱}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

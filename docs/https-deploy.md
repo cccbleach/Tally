@@ -16,6 +16,7 @@
 ```bash
 cd backend
 export TALLY_DOMAIN=api.tallyapp.cn               # 必填：已解析到本机的域名（不给纯 IP 签证书）
+export ACME_EMAIL=ops@tallyapp.cn                 # 必填：证书联系邮箱 + ZeroSSL 备用签发
 export JWT_SECRET=$(openssl rand -hex 32)         # 必填：≥32 位强随机，占位值会被拒绝启动
 export CORS_ORIGINS=https://api.tallyapp.cn       # 可选：有 Web 端才需要
 docker compose -f docker-compose.caddy.yml config --quiet   # 先校验渲染结果
@@ -27,6 +28,8 @@ curl -sS https://$TALLY_DOMAIN/health/ready
 要点：
 - 站点地址由 `TALLY_DOMAIN` 注入 Caddyfile（`{$TALLY_DOMAIN}`），**没有默认值**：忘填会直接启动失败，
   避免把 `example.com` 之类占位域名带上线。
+- ACME 联系邮箱由 `ACME_EMAIL` 注入且没有默认值；非空邮箱让 Caddy 在 Let's Encrypt 不可用时
+  自动回退到 ZeroSSL，并用于证书异常通知。
 - 命名卷：`tally-data`（SQLite）、`caddy_data`（证书/ACME 账户，删了会重新签发并受速率限制）、`caddy_config`。
 - 两个服务都有 `healthcheck`、`restart: unless-stopped`、日志轮转（10MB×5）。
 - 只想在服务器上手工跑 Caddy（不用 Docker）时，可参考模板 `backend/Caddyfile.example`。

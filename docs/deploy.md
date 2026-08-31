@@ -9,6 +9,7 @@ Tally 后端为单文件 SQLite + Node.js 服务，部署极简。任选其一�
 ```bash
 cd backend
 export TALLY_DOMAIN=api.tallyapp.cn              # 必填：已解析的域名
+export ACME_EMAIL=ops@tallyapp.cn                # 必填：证书联系邮箱 + 备用 CA 回退
 export JWT_SECRET=$(openssl rand -hex 32)        # 必填：强随机
 docker compose -f docker-compose.caddy.yml up -d --build
 docker compose -f docker-compose.caddy.yml config --quiet   # 上线前校验
@@ -17,6 +18,7 @@ docker compose -f docker-compose.caddy.yml config --quiet   # 上线前校验
 - 只有 Caddy 对宿主发布 **80/443**；后端 `tally-backend:8080` 只在 Docker 网络 `tally-edge` 内可达。
 - 持久卷：`tally-data`（SQLite）、`caddy_data`（证书）、`caddy_config`。
 - 两个服务都有 healthcheck 与 `restart: unless-stopped`；`TRUST_PROXY` 默认 1。
+- `ACME_EMAIL` 非空时 Caddy 默认启用 Let's Encrypt 与 ZeroSSL 双 CA 自动回退。
 
 ### 内网/无域名（只跑后端，不含 HTTPS）
 

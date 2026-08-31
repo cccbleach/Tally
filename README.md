@@ -135,7 +135,7 @@ CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / bui
 - **上线必读**：[docs/production-checklist.md](docs/production-checklist.md) —— 域名/TLS/JWT/CORS/TRUST_PROXY、
   迁移前备份、异机备份与恢复演练、健康检查/日志/告警、iOS 发布资产与发布流程。
 - 部署方式：[docs/deploy.md](docs/deploy.md)（Docker 一键、直接运行、pm2）。
-- 生产 HTTPS（推荐）：`cd backend && TALLY_DOMAIN=... JWT_SECRET=... docker compose -f docker-compose.caddy.yml up -d --build`
+- 生产 HTTPS（推荐）：`cd backend && TALLY_DOMAIN=... ACME_EMAIL=... JWT_SECRET=... docker compose -f docker-compose.caddy.yml up -d --build`
   —— Caddy 只发布 80/443，后端 8080 仅在 Docker 内网可达（见 [docs/https-deploy.md](docs/https-deploy.md)）。
 
 ## API
@@ -164,7 +164,7 @@ CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / bui
 ```bash
 cd backend
 pnpm typecheck && pnpm test && pnpm build && node scripts/smoke-dist-xlsx.mjs
-JWT_SECRET=$(openssl rand -hex 32) TALLY_DOMAIN=api.tallyapp.cn \
+JWT_SECRET=$(openssl rand -hex 32) TALLY_DOMAIN=api.tallyapp.cn ACME_EMAIL=ops@tallyapp.cn \
   docker compose -f docker-compose.caddy.yml config --quiet
 docker build -t tally-backend:latest .
 cd .. && ./scripts/check-ios-release-assets.sh ios Tally && ./scripts/check-ios-release-assets.sh ios-local Tally

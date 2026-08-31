@@ -5,11 +5,12 @@
 #   未设置时展开为空 ⇒ Caddy 启动直接报错，绝不回退到任何占位域名。
 # Caddy 自动向 Let's Encrypt 申请/续期证书，并把 80 端口 HTTP 自动跳转到 HTTPS。
 #
-# 可选：证书到期告警邮箱（Caddy 只在续期失败时发邮件）。需要就取消注释并填写：
-# {
-# 	email ops@yourdomain.cn
-# }
+# ACME 联系邮箱由 compose 必填环境变量 ACME_EMAIL 注入。除了接收证书异常通知，
+# 非空邮箱还会启用 Caddy 默认的 Let's Encrypt → ZeroSSL 双 CA 自动回退。
 # =============================================================================
+{
+	email {$ACME_EMAIL}
+}
 
 {$TALLY_DOMAIN} {
 	# 仅反代 Docker 内网服务名:端口；后端容器没有对宿主发布端口，

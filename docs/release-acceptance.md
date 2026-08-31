@@ -27,7 +27,7 @@
 
 ```bash
 # 在 backend/ 下
-export TALLY_DOMAIN=localhost JWT_SECRET=$(openssl rand -hex 32)
+export TALLY_DOMAIN=localhost ACME_EMAIL=ci@example.com JWT_SECRET=$(openssl rand -hex 32)
 docker compose -f docker-compose.caddy.yml up -d --build
 docker compose -f docker-compose.caddy.yml ps
 # tally-backend: Up ... (healthy)
@@ -74,7 +74,7 @@ node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
 ```bash
 DOCKER_HOST=unix://<用户名>/.lima/tally/sock/docker.sock \
 DOCKER_CONFIG=/tmp/dockercfg \
-JWT_SECRET='<非空32字节以上>' TALLY_DOMAIN='staging-api.tallyapp.cn' \
+JWT_SECRET='<非空32字节以上>' TALLY_DOMAIN='staging-api.tallyapp.cn' ACME_EMAIL='ci@example.com' \
 docker compose -f backend/docker-compose.caddy.yml config --quiet          # exit 0
 docker compose -f backend/docker-compose.caddy.yml config --format json \
   | node scripts/check-compose-topology.mjs                                # ✅ 拓扑合规
@@ -87,7 +87,7 @@ docker compose -f backend/docker-compose.caddy.yml config --format json \
 - 网络：backend 与 caddy 同属 `tally-edge`（非 internal）
 - 命名卷：`tally-data`、`caddy_data`、`caddy_config`
 - 每个服务均具备 `healthcheck`、`restart: unless-stopped`、持久卷
-- 缺 `JWT_SECRET` 或 `TALLY_DOMAIN` 时 `docker compose config` 直接失败（exit 1，防弱默认值上线）
+- 缺 `JWT_SECRET`、`TALLY_DOMAIN` 或 `ACME_EMAIL` 时 `docker compose config` 直接失败（exit 1，防弱默认值上线）
 
 ## 2. docker image build ✅
 
@@ -163,7 +163,7 @@ xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
 
 以下属环境/机密相关，本机已用等价值验收，上线时于生产/CI 复核：
 
-1. `TALLY_DOMAIN`、`JWT_SECRET`、`ALIYUN_SMS_*` 注入真实值，且 `docker compose config` 通过
+1. `TALLY_DOMAIN`、`ACME_EMAIL`、`JWT_SECRET`、`ALIYUN_SMS_*` 注入真实值，且 `docker compose config` 通过
 2. Caddy 首次启动签发真实证书（DNS 已指向服务器，80/443 可达）
 3. 生产 `TRUST_PROXY=1`、CORS 白名单为真实前端域名、`JWT_SECRET` 为强随机且已备份
 4. 迁移前数据库备份 + 异机恢复演练（见 production-checklist.md）
