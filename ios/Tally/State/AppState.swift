@@ -7,6 +7,11 @@ final class AppState {
     var user: User?
     var isAuthenticated = false
     var isLoading = true
+    // 新账号/旧“用户”账号：验证码通过后进入强制昵称设置
+    var needsNicknameSetup = false
+    var pendingOnboardingToken: String?
+    // 家庭入口角标：待处理邀请数（App 启动 / 回到前台 / 手动刷新时拉取）
+    var pendingInvitationCount = 0
 
     private var sessionObserver: NSObjectProtocol?
 
@@ -29,6 +34,7 @@ final class AppState {
             do {
                 user = try await APIService.shared.me()
                 isAuthenticated = true
+                await refreshPendingInvitations()
             } catch {
                 guard let api = error as? APIError else {
                     // 网络类错误不登出（保留已有会话），避免“刚登录就被踢回登录页”
@@ -45,33 +51,57 @@ final class AppState {
         isLoading = false
     }
 
-    func login(email: String, password: String) async throws {
-        let res = try await APIService.shared.login(email: email, password: password)
-        KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
-        APIClient.resetSessionExpiredState()
-        user = res.user
-        isAuthenticated = true
-    }
-
-    func register(email: String, password: String, displayName: String) async throws {
-        let res = try await APIService.shared.register(email: email, password: password, displayName: displayName)
-        KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
-        APIClient.resetSessionExpiredState()
-        user = res.user
-        isAuthenticated = true
-    }
-
     func loginWithCode(phone: String, code: String) async throws {
         let res = try await APIService.shared.loginWithCode(phone: phone, code: code)
+        if res.status == "authenticated", let u = res.user, let token = res.token, let refresh = res.refreshToken {
+            KeychainStore.saveTokens(token: token, refreshToken: refresh)
+            APIClient.resetSessionExpiredState()
+            user = u
+            needsNicknameSetup = false
+            pendingOnboardingToken = nil
+            isAuthenticated = true
+        } else {
+            // 新账号/旧“用户”账号：进入强制昵称设置
+            needsNicknameSetup = true
+            pendingOnboardingToken = res.onboardingToken
+            isAuthenticated = false
+        }
+    }
+
+    /// 拉取待处理邀请箱（App 启动 / 回到前台 / 手动刷新）
+    func refreshPendingInvitations() async {
+        guard isAuthenticated else {
+            pendingInvitationCount = 0
+            return
+        }
+        do {
+            let pending = try await APIService.shared.pendingInvitations()
+            pendingInvitationCount = pending.count
+        } catch {
+            // 拉取失败保持原值，不阻塞
+        }
+    }
+
+    func completeProfile(nickname: String) async throws {
+        guard let token = pendingOnboardingToken else {
+            throw APIError.invalidResponse
+        }
+        let res = try await APIService.shared.completeProfile(onboardingToken: token, nickname: nickname)
         KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
         APIClient.resetSessionExpiredState()
         user = res.user
+        needsNicknameSetup = false
+        pendingOnboardingToken = nil
         isAuthenticated = true
+        await refreshPendingInvitations()
     }
 
     func logout() {
         KeychainStore.deleteTokens()
         user = nil
+        needsNicknameSetup = false
+        pendingOnboardingToken = nil
+        pendingInvitationCount = 0
         isAuthenticated = false
     }
 }

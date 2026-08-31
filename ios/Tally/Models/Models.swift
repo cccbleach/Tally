@@ -4,15 +4,29 @@ import Foundation
 
 struct User: Codable, Identifiable, Hashable {
     let id: String
-    let email: String
-    let displayName: String
+    let phone: String
+    let nickname: String
+    let nicknameChangeAvailableAt: String?
     let createdAt: String
+    // 脱敏手机号（+86 138****0001），仅本人资料接口返回
+    var phoneMasked: String?
 }
 
 struct AuthResponse: Codable {
+    let status: String // authenticated
     let user: User
     let token: String
     let refreshToken: String
+}
+
+// 验证码登录判别联合：已完整账号直接登录；新账号/旧“用户”账号需先完成强制昵称设置
+struct LoginCodeResponse: Codable {
+    let status: String // authenticated | nickname_required
+    let user: User?
+    let token: String?
+    let refreshToken: String?
+    let onboardingToken: String?
+    let expiresAt: String?
 }
 
 struct RefreshResponse: Codable {
@@ -22,6 +36,11 @@ struct RefreshResponse: Codable {
 
 struct UserResponse: Codable {
     let user: User
+}
+
+struct NicknameCheckResponse: Codable {
+    let available: Bool
+    let reason: String?
 }
 
 // MARK: - 账户
@@ -253,6 +272,73 @@ struct LedgerInfo: Codable, Identifiable, Hashable {
     let isDefault: Bool
     let familyId: String?
     let isCurrent: Bool
+}
+
+/// 家庭邀请箱条目（GET /families/invitations/pending）
+struct PendingInvitation: Codable, Identifiable, Hashable {
+    let id: String
+    let familyId: String
+    let familyName: String
+    let inviterNickname: String
+    let createdAt: String
+    let expiresAt: String
+}
+
+struct PendingInvitationsResponse: Codable {
+    let items: [PendingInvitation]
+}
+
+/// 创建家庭邀请的返回
+struct InvitationCreateResponse: Codable {
+    let item: InvitationCreateItem
+}
+
+struct InvitationCreateItem: Codable, Identifiable, Hashable {
+    let id: String
+    let targetUserId: String
+    let targetNickname: String
+    let expiresAt: String
+    let status: String
+}
+
+/// 家庭成员（仅昵称，不返回手机号）
+struct FamilyMember: Codable, Identifiable, Hashable {
+    let userId: String
+    let nickname: String
+    let role: String
+    let joinedAt: String
+    var id: String { userId }
+}
+
+/// 家庭详情
+struct FamilyDetail: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let ownerUserId: String
+    let createdAt: String
+    let updatedAt: String
+    let members: [FamilyMember]
+    let ledgers: [FamilyLedgerInfo]
+    let invitations: [InvitationLine]
+}
+
+struct FamilyLedgerInfo: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let currency: String
+}
+
+struct InvitationLine: Codable, Identifiable, Hashable {
+    let id: String
+    let targetUserId: String
+    let inviterUserId: String
+    let status: String
+    let expiresAt: String
+    let createdAt: String
+}
+
+struct FamilyDetailResponse: Codable {
+    let item: FamilyDetail
 }
 
 struct LiabilitySummary: Codable {

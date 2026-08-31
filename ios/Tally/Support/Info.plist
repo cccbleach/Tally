@@ -20,19 +20,25 @@
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>TallyAPIBaseURL</key>
-	<string>$(TALLY_API_BASE_URL)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- 生产用 HTTPS 不再全局放行任意 HTTP；仅允许本地/局域网 HTTP 便于开发联调 -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>TallyAPIBaseURL</key>
+	<string>$(TALLY_API_BASE_URL)</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

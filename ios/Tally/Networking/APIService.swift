@@ -133,17 +133,7 @@ struct APIService {
     static let shared = APIService()
     private let client = APIClient.shared
 
-    // 认证
-    func register(email: String, password: String, displayName: String) async throws -> AuthResponse {
-        struct Body: Encodable { let email: String; let password: String; let displayName: String }
-        return try await client.request("POST", "/api/v1/auth/register", body: Body(email: email, password: password, displayName: displayName))
-    }
-
-    func login(email: String, password: String) async throws -> AuthResponse {
-        struct Body: Encodable { let email: String; let password: String }
-        return try await client.request("POST", "/api/v1/auth/login", body: Body(email: email, password: password))
-    }
-
+    // 认证：手机号 + 短信验证码为唯一登录方式；邮箱/密码登录、密码重置已整体下线（后端统一 410）
     func me() async throws -> User {
         let res: UserResponse = try await client.request("GET", "/api/v1/auth/me")
         return res.user
@@ -156,39 +146,41 @@ struct APIService {
     }
 
     func requestLoginCode(phone: String) async throws -> String? {
-        struct Body: Encodable { let email: String }
+        struct Body: Encodable { let phone: String }
         struct CodeResponse: Decodable { let ok: Bool; let code: String? }
-        let res: CodeResponse = try await client.request("POST", "/api/v1/auth/request-code", body: Body(email: phone))
+        let res: CodeResponse = try await client.request("POST", "/api/v1/auth/request-code", body: Body(phone: phone))
         return res.code
     }
 
-    func loginWithCode(phone: String, code: String) async throws -> AuthResponse {
-        struct Body: Encodable { let email: String; let code: String }
-        return try await client.request("POST", "/api/v1/auth/login-code", body: Body(email: phone, code: code))
+    /// 验证码登录：完整账号 → authenticated；新账号/旧“用户”账号 → nickname_required
+    func loginWithCode(phone: String, code: String) async throws -> LoginCodeResponse {
+        struct Body: Encodable { let phone: String; let code: String }
+        return try await client.request("POST", "/api/v1/auth/login-code", body: Body(phone: phone, code: code))
     }
 
-    // MARK: 账号恢复（唯一可用通道：短信）
-    //
-    // 服务端没有接入 SMTP，邮件 reset-token 找回入口（POST /auth/forgot-password）已从
-    // 后端与 OpenAPI 契约中整体移除；客户端不再提供任何“邮件找回”的界面或请求。
-    // 恢复方式：已注册手机号收取验证码 → 直接设置新密码（后端会吊销全部会话）。
-
-    /// 申请「找回密码」短信验证码。生产环境返回值恒为 nil（验证码只走短信），
-    /// 只有开发环境才会在响应里回传验证码便于联调。
-    func requestPasswordResetCode(phone: String) async throws -> String? {
-        struct Body: Encodable { let account: String }
-        struct CodeResponse: Decodable { let ok: Bool; let code: String? }
-        let res: CodeResponse = try await client.request("POST", "/api/v1/auth/reset-code", body: Body(account: phone))
-        return res.code
+    /// 完成强制昵称设置（一次性 onboarding ticket），成功后返回会话
+    func completeProfile(onboardingToken: String, nickname: String) async throws -> AuthResponse {
+        struct Body: Encodable { let onboardingToken: String; let nickname: String }
+        return try await client.request("POST", "/api/v1/auth/complete-profile", body: Body(onboardingToken: onboardingToken, nickname: nickname))
     }
 
-    /// 用短信验证码设置新密码；成功后所有设备都需要重新登录。
-    func resetPasswordByCode(phone: String, code: String, newPassword: String) async throws {
-        struct Body: Encodable { let account: String; let code: String; let newPassword: String }
-        let _: OKResponse = try await client.request(
-            "POST", "/api/v1/auth/reset-password",
-            body: Body(account: phone, code: code, newPassword: newPassword)
-        )
+    /// 昵称可用性
+    func checkNicknameAvailability(_ nickname: String) async throws -> NicknameCheckResponse {
+        try await client.request("GET", "/api/v1/users/nickname-availability", query: [URLQueryItem(name: "nickname", value: nickname)])
+    }
+
+    /// 修改昵称（30 天冷却）
+    func changeNickname(_ nickname: String) async throws -> User {
+        struct Body: Encodable { let nickname: String }
+        struct Res: Decodable { let user: User }
+        let res: Res = try await client.request("PATCH", "/api/v1/users/me/nickname", body: Body(nickname: nickname))
+        return res.user
+    }
+
+    /// 本人资料（含脱敏手机号）
+    func myProfile() async throws -> User {
+        let res: UserResponse = try await client.request("GET", "/api/v1/users/me")
+        return res.user
     }
 
     // 账户
@@ -332,9 +324,60 @@ struct APIService {
         return res.item
     }
 
-    func addFamilyMember(familyId: String, account: String) async throws {
-        struct Body: Encodable { let account: String }
-        let _: OKResponse = try await client.request("POST", "/api/v1/families/\(familyId)/members", body: Body(account: account))
+    /// Owner 按精确昵称邀请成员（单家庭模型）
+    func inviteByNickname(familyId: String, nickname: String) async throws -> InvitationCreateItem {
+        struct Body: Encodable { let nickname: String }
+        let res: InvitationCreateResponse = try await client.request("POST", "/api/v1/families/\(familyId)/invitations", body: Body(nickname: nickname))
+        return res.item
+    }
+
+    /// 我的待处理邀请箱（App 启动/回前台/手动刷新拉取）
+    func pendingInvitations() async throws -> [PendingInvitation] {
+        let res: PendingInvitationsResponse = try await client.request("GET", "/api/v1/families/invitations/pending")
+        return res.items
+    }
+
+    /// 接受邀请（单家庭约束 + 自动撤销其他待处理邀请）
+    func acceptInvitation(id: String) async throws {
+        let _: OKResponse = try await client.request("POST", "/api/v1/families/invitations/\(id)/accept")
+    }
+
+    /// 拒绝邀请
+    func declineInvitation(id: String) async throws {
+        let _: OKResponse = try await client.request("POST", "/api/v1/families/invitations/\(id)/decline")
+    }
+
+    /// 家庭详情（成员昵称、共享账本、邀请）
+    func familyDetail(id: String) async throws -> FamilyDetail {
+        let res: FamilyDetailResponse = try await client.request("GET", "/api/v1/families/\(id)")
+        return res.item
+    }
+
+    /// Member 退出家庭（自动切回个人账本）
+    func exitFamily(id: String) async throws {
+        let _: OKResponse = try await client.request("POST", "/api/v1/families/\(id)/exit")
+    }
+
+    /// Owner 删除家庭（软删除共享账本，成员切回个人账本）
+    func deleteFamily(id: String) async throws {
+        let _: OKResponse = try await client.request("DELETE", "/api/v1/families/\(id)")
+    }
+
+    /// Owner 改家庭名
+    func renameFamily(id: String, name: String) async throws {
+        struct Body: Encodable { let name: String }
+        let _: OKResponse = try await client.request("PATCH", "/api/v1/families/\(id)", body: Body(name: name))
+    }
+
+    /// Owner 移除成员（被移除者自动切回个人账本）
+    func removeMember(familyId: String, memberUserId: String) async throws {
+        let _: OKResponse = try await client.request("DELETE", "/api/v1/families/\(familyId)/members/\(memberUserId)")
+    }
+
+    /// Owner 转移所有权
+    func transferOwnership(familyId: String, toMemberUserId: String) async throws {
+        struct Body: Encodable { let memberUserId: String }
+        let _: OKResponse = try await client.request("POST", "/api/v1/families/\(familyId)/transfer", body: Body(memberUserId: toMemberUserId))
     }
 
     func ledgers() async throws -> [LedgerInfo] {

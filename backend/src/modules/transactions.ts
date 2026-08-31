@@ -3,7 +3,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, gte, lte, or, type SQL } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts, categories, transactions } from "../db/schema.js";
+import { accounts, categories, transactions, familyMembers, ledgers, users } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
@@ -97,7 +97,44 @@ const billImportSchema = z
 
 type TransactionRow = typeof transactions.$inferSelect;
 
-function toDto(tx: TransactionRow, am: RelationMaps["am"], cm: RelationMaps["cm"]) {
+// 家庭流水需展示“记账人昵称”，不返回手机号。
+// 已退出/被移除成员的历史流水仍要正确显示昵称，因此：
+//   - family_members 全量（含 is_active=0）加入；
+//   - 并兜底把该账本上所有流水作者（即使成员行被彻底删除）加入。
+function loadUserNicknames(db: AppDb["db"], userId: string, ledgerId: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const ledger = db.select().from(ledgers).where(eq(ledgers.id, ledgerId)).get();
+  const memberIds: string[] = [];
+  const authors = db
+    .select({ uid: transactions.userId })
+    .from(transactions)
+    .where(eq(transactions.ledgerId, ledgerId))
+    .all()
+    .map((a) => a.uid);
+  if (ledger?.familyId) {
+    const members = db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.familyId, ledger.familyId))
+      .all();
+    memberIds.push(...members.map((m) => m.userId));
+  } else {
+    memberIds.push(userId);
+  }
+  memberIds.push(...authors);
+  for (const id of [...new Set(memberIds)]) {
+    const u = db.select().from(users).where(eq(users.id, id)).get();
+    if (u?.nickname) map.set(id, u.nickname);
+  }
+  return map;
+}
+
+function toDto(
+  tx: TransactionRow,
+  am: RelationMaps["am"],
+  cm: RelationMaps["cm"],
+  um: Map<string, string>,
+) {
   const cat = tx.categoryId ? cm.get(tx.categoryId) : undefined;
   return {
     id: tx.id,
@@ -118,6 +155,7 @@ function toDto(tx: TransactionRow, am: RelationMaps["am"], cm: RelationMaps["cm"
     categoryIcon: cat?.icon ?? null,
     categoryColor: cat?.color ?? null,
     transferToAccountName: tx.transferToAccountId ? (am.get(tx.transferToAccountId)?.name ?? null) : null,
+      recorderNickname: um.get(tx.userId) ?? null,
   };
 }
 
@@ -156,7 +194,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .offset(offset)
       .all();
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
-    return { items: rows.map((r) => toDto(r, am, cm)), total, page, limit };
+    const um = loadUserNicknames(db, userId, ledgerId);
+    return { items: rows.map((r) => toDto(r, am, cm, um)), total, page, limit };
   });
 
   app.post("/api/v1/transactions", { preHandler: auth }, async (req) => {
@@ -224,7 +263,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     };
     db.insert(transactions).values(row).run();
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
-    return { item: toDto(row as TransactionRow, am, cm) };
+    const um = loadUserNicknames(db, userId, ledgerId);
+    return { item: toDto(row as TransactionRow, am, cm, um) };
   });
 
   app.get("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
@@ -239,7 +279,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .get();
     if (!row) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
-    return { item: toDto(row, am, cm) };
+    const um = loadUserNicknames(db, userId, ledgerId);
+    return { item: toDto(row, am, cm, um) };
   });
 
   app.patch("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
@@ -297,7 +338,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
-    return { item: toDto(updated as TransactionRow, am, cm) };
+    const um = loadUserNicknames(db, userId, ledgerId);
+    return { item: toDto(updated as TransactionRow, am, cm, um) };
   });
 
   app.delete("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {

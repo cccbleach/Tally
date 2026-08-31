@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
@@ -31,10 +32,14 @@ before(() => {
   const now = new Date().toISOString();
   db.insert(users).values({
     id: userId,
-    email: "repo@example.com",
-    passwordHash: "x",
-    displayName: "repo",
+    phone: "+8613900000001",
+    nickname: "repo",
+    nicknameKey: "repo",
+    phoneVerifiedAt: now,
+    nicknameChangedAt: now,
+    profileCompletedAt: now,
     defaultLedgerId: ledgerA,
+    currentLedgerId: ledgerA,
     createdAt: now,
     updatedAt: now,
   }).run();

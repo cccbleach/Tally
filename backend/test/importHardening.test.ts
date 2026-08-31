@@ -10,6 +10,7 @@ import { buildApp } from "../src/server.js";
 import { todayStr } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
 import { transactions } from "../src/db/schema.js";
+import { smsRegister, authHeaders } from "./helpers.js";
 
 // 导入加固（阶段 4）验收：
 // - 硬去重只用稳定来源 ID（同账本同来源同 external_id）
@@ -46,12 +47,8 @@ before(async () => {
   runMigrations(sqlite, resolve("./migrations"));
   app = await buildApp({ db, jwtSecret: "test-secret" });
 
-  const res = await req("POST", "/api/v1/auth/register", {
-    email: "import@test.com",
-    password: "password123",
-    displayName: "导入测试",
-  });
-  headers = { authorization: "Bearer " + res.json().token };
+  const reg = await smsRegister(app, "13840000001", "导入测试");
+  headers = authHeaders(reg);
   // 创建账户和分类，供导入默认映射
   await req("POST", "/api/v1/accounts", { name: "储蓄卡", type: "bank", currency: "CNY" });
 });

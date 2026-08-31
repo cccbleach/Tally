@@ -56,9 +56,9 @@ let lastStatus = 0;
 for (let i = 0; i < 4; i++) {
   const r = await app.inject({
     method: "POST",
-    url: "/api/v1/auth/login",
+    url: "/api/v1/auth/login-code",
     headers: { "x-forwarded-for": "203.0.113." + (i + 10) + ", 172.16.0.5", "content-type": "application/json" },
-    payload: JSON.stringify({ email: "user" + i + "@test.com", password: "wrong" }),
+    payload: JSON.stringify({ phone: "13800000001", code: "000000" }),
   });
   lastStatus = r.statusCode;
 }

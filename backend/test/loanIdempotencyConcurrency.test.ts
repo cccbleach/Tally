@@ -12,6 +12,7 @@ import { buildApp } from "../src/server.js";
 import { todayStr } from "../src/lib/date.js";
 import { and, asc, eq } from "drizzle-orm";
 import { loanPaymentIdempotency, loanPayments, transactions } from "../src/db/schema.js";
+import { smsRegister } from "./helpers.js";
 
 // 本测试的并发 worker 需要能 require TypeScript 源码，但**不能**继承 tsx 的 ESM loader：
 // 否则 Node 会在 worker 内走 ESM loader 的 getSourceSync 读取入口文件，产生
@@ -57,18 +58,13 @@ function req(app: FastifyInstance, method: string, url: string, token: string, b
   });
 }
 
-async function seedUser(app: FastifyInstance, email: string) {
-  const reg = await req(app, "POST", "/api/v1/auth/register", "", {
-    email,
-    password: "password123",
-    displayName: email.split("@")[0],
-  });
-  assert.equal(reg.statusCode, 200, reg.body);
-  const token = reg.json().token as string;
+async function seedUser(app: FastifyInstance, phone: string, nickname: string) {
+  const reg = await smsRegister(app, phone, nickname);
+  const token = reg.token as string;
   const ledgers = await req(app, "GET", "/api/v1/ledgers", token);
   const ledgerId = (ledgers.json().items as Array<{ id: string; isCurrent: boolean }>).find((l) => l.isCurrent)!.id;
   const acc = await req(app, "POST", "/api/v1/accounts", token, {
-    name: "工资卡-" + email,
+    name: "工资卡-" + nickname,
     type: "bank",
     currency: "CNY",
     ledgerId,
@@ -149,7 +145,7 @@ before(async () => {
   runMigrations(created.sqlite, resolve("./migrations"));
   const seedApp = await buildApp({ db: created.db, jwtSecret: JWT_SECRET });
 
-  const u1 = await seedUser(seedApp, "conc-user1@test.com");
+  const u1 = await seedUser(seedApp, "13842000001", "并发甲");
   token1 = u1.token;
   ledgerId1 = u1.ledgerId;
   bankId1 = u1.bankId;
@@ -158,7 +154,7 @@ before(async () => {
   inst1Id = loan1.schedule[0]!.id;
   firstDue = loan1.schedule[0]!.dueDate;
 
-  const u2 = await seedUser(seedApp, "conc-user2@test.com");
+  const u2 = await seedUser(seedApp, "13842000002", "并发乙");
   token2 = u2.token;
   ledgerId2 = u2.ledgerId;
   bankId2 = u2.bankId;

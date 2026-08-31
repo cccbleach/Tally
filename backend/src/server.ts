@@ -7,6 +7,7 @@ import type { AppDb } from "./db/client.js";
 import { config } from "./config.js";
 import { makeJwt } from "./auth/jwt.js";
 import { registerAuthRoutes } from "./auth/routes.js";
+import { registerUserRoutes } from "./modules/users.js";
 import { registerAccountRoutes } from "./modules/accounts.js";
 import { registerCategoryRoutes } from "./modules/categories.js";
 import { registerTransactionRoutes } from "./modules/transactions.js";
@@ -88,6 +89,7 @@ export async function buildApp(deps: Deps) {
   });
 
   registerAuthRoutes(app, shared);
+  registerUserRoutes(app, shared);
   registerAccountRoutes(app, shared);
   registerCategoryRoutes(app, shared);
   registerTransactionRoutes(app, shared);

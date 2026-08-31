@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
 import { setRate } from "../src/lib/currency.js";
+import { smsRegister, smsLogin } from "./helpers.js";
 
 // 测试保持确定：强制走短信“开发模式”（本地生成/校验验证码），不依赖真实短信网络
 process.env.ALIYUN_SMS_ENABLED = "false";
@@ -57,16 +58,12 @@ test("health", async () => {
   assert.ok(res.headers["x-request-id"], "响应应带 x-request-id");
 });
 
-test("register 后自动播种默认分类", async () => {
-  const res = await req("POST", "/api/v1/auth/register", {
-    email: "test@example.com",
-    password: "password123",
-    displayName: "测试用户",
-  });
-  assert.equal(res.statusCode, 200, res.body);
-  const body = res.json();
+test("短信注册后自动播种默认分类", async () => {
+  const body = await smsRegister(app, "13800000001", "测试用户");
+  assert.equal(body.status, "authenticated");
   assert.ok(body.token);
-  assert.equal(body.user.email, "test@example.com");
+  assert.equal(body.user.phone, "+8613800000001");
+  assert.equal(body.user.nickname, "测试用户");
   headers = { authorization: "Bearer " + body.token };
 
   const cats = await req("GET", "/api/v1/categories");
@@ -74,28 +71,69 @@ test("register 后自动播种默认分类", async () => {
   assert.ok(cats.json().items.length >= 12, "默认分类应已播种");
 });
 
-test("重复注册返回 409", async () => {
-  const res = await req("POST", "/api/v1/auth/register", {
-    email: "test@example.com",
-    password: "password123",
-  });
-  assert.equal(res.statusCode, 409);
-  assert.equal(res.json().error.code, "EMAIL_EXISTS");
+test("验证码登录（已有账号直接登录 + 手机号归一化）", async () => {
+  const first = await smsLogin(app, "13800000001");
+  assert.equal(first.status, "authenticated");
+  assert.ok(first.token);
+  assert.equal(first.user.phone, "+8613800000001");
+
+  // 手机号归一化：带空格/+86 也视为同一账号
+  const normalized = await smsLogin(app, "+86 1380 0000 001");
+  assert.equal(normalized.status, "authenticated");
+  assert.equal(normalized.user.id, first.user.id);
+
+  // 错误验证码 → 400
+  const bad = await req("POST", "/api/v1/auth/login-code", { phone: "13800000001", code: "000000" });
+  assert.equal(bad.statusCode, 400);
 });
 
-test("登录成功与失败", async () => {
-  const ok = await req("POST", "/api/v1/auth/login", {
-    email: "test@example.com",
-    password: "password123",
-  });
-  assert.equal(ok.statusCode, 200);
-  assert.ok(ok.json().token);
+test("onboarding ticket 仅可使用一次 / 过期作废", async () => {
+  const codeRes = await req("POST", "/api/v1/auth/request-code", { phone: "13700002222" });
+  assert.equal(codeRes.statusCode, 200, codeRes.body);
+  const code = codeRes.json().code as string;
+  assert.match(code, /^\d{6}$/, "应返回 6 位验证码");
 
-  const bad = await req("POST", "/api/v1/auth/login", {
-    email: "test@example.com",
-    password: "wrong-password",
-  });
-  assert.equal(bad.statusCode, 401);
+  const wrong = await req("POST", "/api/v1/auth/login-code", { phone: "13700002222", code: "000000" });
+  assert.equal(wrong.statusCode, 400);
+
+  const need = await req("POST", "/api/v1/auth/login-code", { phone: "13700002222", code });
+  assert.equal(need.statusCode, 200, need.body);
+  assert.equal(need.json().status, "nickname_required");
+  const ticket = need.json().onboardingToken as string;
+  assert.ok(ticket);
+
+  const complete = await req("POST", "/api/v1/auth/complete-profile", { onboardingToken: ticket, nickname: "小七" });
+  assert.equal(complete.statusCode, 200, complete.body);
+  const replay = await req("POST", "/api/v1/auth/complete-profile", { onboardingToken: ticket, nickname: "小八" });
+  assert.equal(replay.statusCode, 409, replay.body);
+
+  const again = await smsLogin(app, "13700002222");
+  assert.equal(again.status, "authenticated");
+});
+
+test("新账号强制昵称：昵称规则与冲突", async () => {
+  const codeRes = await req("POST", "/api/v1/auth/request-code", { phone: "13600000001" });
+  const code = codeRes.json().code as string;
+  const login = await req("POST", "/api/v1/auth/login-code", { phone: "13600000001", code });
+  const ticket = login.json().onboardingToken as string;
+
+  const bad = await req("POST", "/api/v1/auth/complete-profile", { onboardingToken: ticket, nickname: "123" });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(bad.json().error.code, "INVALID_NICKNAME");
+
+  const clash = await req("POST", "/api/v1/auth/complete-profile", { onboardingToken: ticket, nickname: "测试用户" });
+  assert.equal(clash.statusCode, 409);
+  assert.equal(clash.json().error.code, "NICKNAME_TAKEN");
+});
+
+test("旧邮箱/密码接口统一 410 AUTH_METHOD_REMOVED", async () => {
+  for (const url of ["/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/reset-code", "/api/v1/auth/reset-password"]) {
+    const res = await req("POST", url, { email: "a@b.com", password: "x", account: "13800000001" });
+    assert.equal(res.statusCode, 410, url + " -> " + res.body);
+    assert.equal(res.json().error.code, "AUTH_METHOD_REMOVED", url);
+  }
+  const legacyEntry = await req("POST", "/api/v1/auth/forgot-password", { email: "a@b.com" });
+  assert.equal(legacyEntry.statusCode, 404, "邮件找回入口应已从契约中移除");
 });
 
 test("未带 token 访问受保护接口返回 401", async () => {
@@ -103,10 +141,11 @@ test("未带 token 访问受保护接口返回 401", async () => {
   assert.equal(res.statusCode, 401);
 });
 
-test("me 返回当前用户", async () => {
+test("me 返回当前用户（仅本人返回手机号）", async () => {
   const res = await req("GET", "/api/v1/auth/me");
   assert.equal(res.statusCode, 200);
-  assert.equal(res.json().user.email, "test@example.com");
+  assert.equal(res.json().user.phone, "+8613800000001");
+  assert.equal(res.json().user.nickname, "测试用户");
 });
 
 // ---- 账户 ----
@@ -484,7 +523,7 @@ test("信用卡负债方向与资产负债拆分正确", async () => {
 });
 
 test("账本隔离：非默认账本的数据不出现在默认 API 中", async () => {
-  const u = db.select().from(users).where(eq(users.email, "test@example.com")).get()!;
+  const u = db.select().from(users).where(eq(users.phone, "+8613800000001")).get()!;
   const otherLedgerId = randomUUID();
   const now = new Date().toISOString();
   db.insert(ledgers)
@@ -537,15 +576,12 @@ test("乐观锁：预期更新时间戳不匹配返回 409", async () => {
 });
 
 test("刷新令牌可换取新访问令牌", async () => {
-  const login = await req("POST", "/api/v1/auth/login", {
-    email: "test@example.com",
-    password: "password123",
-  });
-  assert.equal(login.statusCode, 200, login.body);
-  assert.ok(login.json().refreshToken, "登录应返回 refreshToken");
+  const login = await smsLogin(app, "13800000001");
+  assert.equal(login.status, "authenticated");
+  assert.ok(login.refreshToken, "登录应返回 refreshToken");
 
   const refresh = await req("POST", "/api/v1/auth/refresh", {
-    refreshToken: login.json().refreshToken,
+    refreshToken: login.refreshToken,
   });
   assert.equal(refresh.statusCode, 200, refresh.body);
   assert.ok(refresh.json().token);
@@ -559,14 +595,11 @@ test("刷新令牌可换取新访问令牌", async () => {
 });
 
 test("刷新令牌不能当作访问令牌使用", async () => {
-  const login = await req("POST", "/api/v1/auth/login", {
-    email: "test@example.com",
-    password: "password123",
-  });
+  const login = await smsLogin(app, "13800000001");
   const bad = await app.inject({
     method: "GET",
     url: "/api/v1/accounts",
-    headers: { authorization: "Bearer " + login.json().refreshToken },
+    headers: { authorization: "Bearer " + login.refreshToken },
   });
   assert.equal(bad.statusCode, 401);
 });
@@ -575,60 +608,17 @@ test("刷新令牌不能当作访问令牌使用", async () => {
 // - 邮件 reset-token 通道未接入投递（无 SMTP），契约已从后端/OpenAPI/iOS 全部移除；
 // - 手机号账号用「短信验证码 + 新密码」自助恢复；
 // - 邮箱账号没有可投递通道 → 明确 400，不再出现「返回成功但拿不到 token」。
-test("账号恢复：短信验证码重设密码（手机号账号）", async () => {
-  const phone = "13900139000";
-  const reg = await req("POST", "/api/v1/auth/register", { email: phone, password: "oldpass123" });
-  assert.equal(reg.statusCode, 200, reg.body);
-  const oldToken = reg.json().token as string;
+test("账号恢复：旧密码找回流程统一 410", async () => {
+  // 邮箱/密码恢复流程整体下线 → 410
+  const emailRes = await req("POST", "/api/v1/auth/reset-code", { account: "13800000001" });
+  assert.equal(emailRes.statusCode, 410, emailRes.body);
+  assert.equal(emailRes.json().error.code, "AUTH_METHOD_REMOVED", emailRes.body);
 
-  // 开发模式下短信未启用 → 直接回传验证码便于联调（生产模式永不回传，见 prodSecurity 测试）
-  const codeRes = await req("POST", "/api/v1/auth/reset-code", { account: phone });
-  assert.equal(codeRes.statusCode, 200, codeRes.body);
-  const code = codeRes.json().code as string;
-  assert.ok(code && code.length >= 4, "开发模式应回传验证码，实际: " + codeRes.body);
+  const reset = await req("POST", "/api/v1/auth/reset-password", { account: "13800000001", code: "123456", newPassword: "x" });
+  assert.equal(reset.statusCode, 410, reset.body);
 
-  // 旧契约（resetToken）必须不再被接受
-  const legacy = await req("POST", "/api/v1/auth/reset-password", { resetToken: "x", newPassword: "newpass123" });
-  assert.equal(legacy.statusCode, 400, "旧 resetToken 契约应被拒绝: " + legacy.body);
-
-  // 验证码错误不得改密码
-  const wrongCode = await req("POST", "/api/v1/auth/reset-password", { account: phone, code: "000000", newPassword: "newpass123" });
-  assert.equal(wrongCode.statusCode, 400, wrongCode.body);
-  const stillOld = await req("POST", "/api/v1/auth/login", { email: phone, password: "oldpass123" });
-  assert.equal(stillOld.statusCode, 200, "验证码错误时旧密码必须仍然有效");
-
-  const codeRes2 = await req("POST", "/api/v1/auth/reset-code", { account: phone });
-  assert.equal(codeRes2.statusCode, 200, codeRes2.body);
-  const reset = await req("POST", "/api/v1/auth/reset-password", {
-    account: phone,
-    code: codeRes2.json().code as string,
-    newPassword: "newpass123",
-  });
-  assert.equal(reset.statusCode, 200, reset.body);
-
-  const oldLogin = await req("POST", "/api/v1/auth/login", { email: phone, password: "oldpass123" });
-  assert.equal(oldLogin.statusCode, 401, "旧密码应失效");
-  const newLogin = await req("POST", "/api/v1/auth/login", { email: phone, password: "newpass123" });
-  assert.equal(newLogin.statusCode, 200, "新密码应可登录");
-
-  // 恢复后必须吊销全部会话（旧 access token 之外，旧 refresh 也失效）
-  const refreshOld = await req("POST", "/api/v1/auth/refresh", { refreshToken: reg.json().refreshToken });
-  assert.equal(refreshOld.statusCode, 401, "重设密码后旧刷新令牌应失效");
-});
-
-test("账号恢复：邮箱账号与未注册手机号不得返回假成功", async () => {
-  // 邮箱账号：没有邮件投递通道 → 明确 400，而不是 200 ok
-  const emailRes = await req("POST", "/api/v1/auth/reset-code", { account: "test@example.com" });
-  assert.equal(emailRes.statusCode, 400, emailRes.body);
-  assert.ok(emailRes.body.includes("EMAIL_RECOVERY_UNAVAILABLE"), emailRes.body);
-
-  // 未注册手机号：明确 404，不返回「已发送」
-  const missing = await req("POST", "/api/v1/auth/reset-code", { account: "13911112222" });
-  assert.equal(missing.statusCode, 404, missing.body);
-  assert.ok(missing.body.includes("ACCOUNT_NOT_FOUND"), missing.body);
-
-  // 已下线的邮件找回入口必须 404（契约不存在）
-  const legacyEntry = await req("POST", "/api/v1/auth/forgot-password", { email: "test@example.com" });
+  // 已下线的邮件找回入口必须 404（路由不存在）
+  const legacyEntry = await req("POST", "/api/v1/auth/forgot-password", { email: "a@b.com" });
   assert.equal(legacyEntry.statusCode, 404, "邮件找回入口应已从契约中移除");
 });
 
@@ -638,37 +628,16 @@ test("健康检查校验数据库可达", async () => {
   assert.equal(res.json().status, "ok");
 });
 
-test("支持手机号注册与登录", async () => {
-  const register = await req("POST", "/api/v1/auth/register", {
-    email: "13800138000",
-    password: "phone12345",
-  });
-  assert.equal(register.statusCode, 200, register.body);
-  assert.ok(register.json().token);
+test("手机号归一化：138…/带空格/+86 视为同一账号", async () => {
+  const body = await smsRegister(app, "13800138000", "号码一");
+  assert.equal(body.user.phone, "+8613800138000");
 
-  // 手机号登录（带空格也应归一化成功）
-  const login = await req("POST", "/api/v1/auth/login", {
-    email: "138 0013 8000",
-    password: "phone12345",
-  });
-  assert.equal(login.statusCode, 200, login.body);
-});
+  const norm = await smsLogin(app, "138 0013 8000");
+  assert.equal(norm.status, "authenticated");
+  assert.equal(norm.user.id, body.user.id);
 
-test("手机号验证码登录（自动注册 + 校验码校验）", async () => {
-  const codeReq = await req("POST", "/api/v1/auth/request-code", { email: "13700002222" });
-  assert.equal(codeReq.statusCode, 200, codeReq.body);
-  const code = codeReq.json().code as string;
-  assert.match(code, /^\d{6}$/, "应返回 6 位验证码");
-
-  // 错误验证码 → 400
-  const wrong = await req("POST", "/api/v1/auth/login-code", { email: "13700002222", code: "000000" });
-  assert.equal(wrong.statusCode, 400);
-
-  // 正确验证码 → 登录成功且自动注册
-  const ok = await req("POST", "/api/v1/auth/login-code", { email: "13700002222", code });
-  assert.equal(ok.statusCode, 200, ok.body);
-  assert.ok(ok.json().token);
-  assert.equal(ok.json().user.email, "13700002222");
+  const plus = await smsLogin(app, "+8613800138000");
+  assert.equal(plus.user.id, body.user.id);
 });
 
 test("账单导入按 external_id 去重（重复导入不重复入账）", async () => {
@@ -698,14 +667,12 @@ test("账单导入按 external_id 去重（重复导入不重复入账）", asyn
 });
 
 test("家庭共享账本：成员可读共享数据，非成员不可访问个人账本", async () => {
-  const regA = await req("POST", "/api/v1/auth/register", { email: "family-a@test.com", password: "password123" });
-  assert.equal(regA.statusCode, 200, regA.body);
-  const hA = { authorization: "Bearer " + regA.json().token };
-  const idA = regA.json().user.id as string;
-  const regB = await req("POST", "/api/v1/auth/register", { email: "family-b@test.com", password: "password123" });
-  assert.equal(regB.statusCode, 200, regB.body);
-  const hB = { authorization: "Bearer " + regB.json().token };
-  const idB = regB.json().user.id as string;
+  const regA = await smsRegister(app, "13810000001", "家人甲");
+  const hA = { authorization: "Bearer " + regA.token };
+  const idA = regA.user.id as string;
+  const regB = await smsRegister(app, "13810000002", "家人乙");
+  const hB = { authorization: "Bearer " + regB.token };
+  const idB = regB.user.id as string;
 
   // A 创建家庭（自动创建家庭共享账本并切换为当前）
   const fam = await app.inject({ method: "POST", url: "/api/v1/families", headers: hA, payload: { name: "测试家庭" } });
@@ -722,12 +689,20 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   });
   assert.equal(acc.statusCode, 200, acc.body);
 
-  // A 添加 B 为家庭成员
+  // A 按昵称邀请 B，B 接受后成为家庭成员
+  const inviteB = await app.inject({
+    method: "POST",
+    url: `/api/v1/families/${familyId}/invitations`,
+    headers: hA,
+    payload: { nickname: "家人乙" },
+  });
+  assert.equal(inviteB.statusCode, 200, inviteB.body);
+  const inviteBId = inviteB.json().item.id as string;
   const addB = await app.inject({
     method: "POST",
-    url: `/api/v1/families/${familyId}/members`,
-    headers: hA,
-    payload: { account: "family-b@test.com" },
+    url: `/api/v1/families/invitations/${inviteBId}/accept`,
+    headers: hB,
+    payload: {},
   });
   assert.equal(addB.statusCode, 200, addB.body);
 
@@ -1030,23 +1005,11 @@ test("信用卡账单创建、还款生成转账并标记已还", async () => {
 });
 
 test("越权防护：B 看不到 A 账本的信用卡账单", async () => {
-  const regA = await app.inject({
-    method: "POST",
-    url: "/api/v1/auth/register",
-    headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ email: "cc-a@test.com", password: "password123" }),
-  });
-  assert.equal(regA.statusCode, 200, regA.body);
-  const hA = { authorization: "Bearer " + regA.json().token };
+  const regA = await smsRegister(app, "13820000001", "信用卡甲");
+  const hA = { authorization: "Bearer " + regA.token };
 
-  const regB = await app.inject({
-    method: "POST",
-    url: "/api/v1/auth/register",
-    headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ email: "cc-b@test.com", password: "password123" }),
-  });
-  assert.equal(regB.statusCode, 200, regB.body);
-  const hB = { authorization: "Bearer " + regB.json().token };
+  const regB = await smsRegister(app, "13820000002", "信用卡乙");
+  const hB = { authorization: "Bearer " + regB.token };
 
   const acc = await app.inject({
     method: "POST",
@@ -1196,9 +1159,13 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
 
   const endpoints: Array<{ path: string; method: "GET" | "POST" | "PATCH" | "DELETE" }> = [
     { path: "/api/v1/auth/register", method: "POST" },
+    { path: "/api/v1/auth/request-code", method: "POST" },
     { path: "/api/v1/auth/login-code", method: "POST" },
+    { path: "/api/v1/auth/complete-profile", method: "POST" },
     { path: "/api/v1/auth/reset-code", method: "POST" },
     { path: "/api/v1/auth/reset-password", method: "POST" },
+    { path: "/api/v1/users/nickname-availability", method: "GET" },
+    { path: "/api/v1/users/me/nickname", method: "PATCH" },
     { path: "/api/v1/accounts", method: "GET" },
     { path: "/api/v1/transactions", method: "GET" },
     { path: "/api/v1/imports/jobs", method: "POST" },
@@ -1213,8 +1180,9 @@ test("OpenAPI 契约覆盖已注册的关键路由", async () => {
     { path: "/api/v1/credit-card-bills/{id}/pay", method: "POST" },
     { path: "/api/v1/audit-logs", method: "GET" },
     { path: "/api/v1/families/{id}/invitations", method: "POST" },
-    { path: "/api/v1/families/invitations/{token}/accept", method: "POST" },
-    { path: "/api/v1/families/invitations/{token}/decline", method: "POST" },
+    { path: "/api/v1/families/invitations/pending", method: "GET" },
+    { path: "/api/v1/families/invitations/{id}/accept", method: "POST" },
+    { path: "/api/v1/families/invitations/{id}/decline", method: "POST" },
     { path: "/api/v1/families/{id}/exit", method: "POST" },
     { path: "/api/v1/families/{id}/transfer", method: "POST" },
     { path: "/api/v1/families/{id}", method: "DELETE" },

@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dateStrInTimeZone, todayStr, currentYearMonth } from "../src/lib/date.js";

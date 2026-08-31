@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -50,7 +51,7 @@ test("迁移失败时不标记已应用（事务回滚）", () => {
   }
 });
 
-test("全新数据库与已有数据库（0018→0019）两条迁移路径均可用", () => {
+test("全新数据库与已有数据库（0001-0018 老库 → 0022）两条迁移路径均可用", () => {
   const repo = resolve("./migrations");
   const files = readdirSync(repo).filter((f) => f.endsWith(".sql")).sort();
 
@@ -58,8 +59,8 @@ test("全新数据库与已有数据库（0018→0019）两条迁移路径均可
   const migDir = join(dir, "migrations");
   mkdirSync(migDir, { recursive: true });
 
-  // 已有数据库：同时排除 0019 与 0020，只放 0001-0018 先应用，模拟线上老库
-  const oldFiles = files.filter((f) => !f.startsWith("0019") && !f.startsWith("0020"));
+  // 已有数据库：只放 0001-0018 先应用，模拟线上老库（0019/0020/0021/0022 之后升级）
+  const oldFiles = files.filter((f) => f < "0019");
   for (const f of oldFiles) copyFileSync(join(repo, f), join(migDir, f));
   const dbPath = join(dir, "t.db");
   const { sqlite } = createDb(dbPath);
@@ -67,23 +68,34 @@ test("全新数据库与已有数据库（0018→0019）两条迁移路径均可
     runMigrations(sqlite, migDir);
     const applied = sqlite.prepare("SELECT name FROM schema_migrations ORDER BY name").all() as { name: string }[];
     assert.ok(applied.length >= 18, "老库应先应用 18 个迁移");
-    assert.ok(applied.every((r) => !r.name.startsWith("0019") && !r.name.startsWith("0020")), "老库阶段 0019/0020 均未应用");
-    assert.ok(!applied.some((r) => r.name.startsWith("0020")), "0020 尚未应用");
-    // 升级前明确断言 0020 迁移未应用、loan_payment_idempotency 表不存在
+    assert.ok(
+      applied.every((r) => !/^00(19|20|21|22)/.test(r.name)),
+      "老库阶段 0019/0020/0021/0022 均未应用",
+    );
+
+    // 升级前断言 0020/0021/0022 均未应用、相关表不存在
     const idemTableBefore = sqlite
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loan_payment_idempotency'")
       .get();
     assert.equal(idemTableBefore, undefined, "升级前 loan_payment_idempotency 表不应存在");
+    const ticketTableBefore = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='onboarding_tickets'")
+      .get();
+    assert.equal(ticketTableBefore, undefined, "升级前 onboarding_tickets 表不应存在");
 
-    // 已有数据库升级：放入 0019 / 0020 再跑一次
-    const m19 = files.find((f) => f.startsWith("0019"))!;
-    copyFileSync(join(repo, m19), join(migDir, m19));
-    const m20 = files.find((f) => f.startsWith("0020"))!;
-    copyFileSync(join(repo, m20), join(migDir, m20));
+    // 老库先写入旧结构用户（手机号 + 默认“用户”昵称），验证 0021 迁移质量
+    const now = "2026-01-01T00:00:00Z";
+    sqlite.prepare("INSERT INTO users (id,email,password_hash,display_name,created_at,updated_at) VALUES ('U1','13800000001','x','小明',?,?)").run(now, now);
+    sqlite.prepare("INSERT INTO users (id,email,password_hash,display_name,created_at,updated_at) VALUES ('U2','13900000002','x','用户',?,?)").run(now, now);
+    sqlite.prepare("INSERT INTO auth_sessions (id,user_id,refresh_token_hash,expires_at,last_used_at,created_at) VALUES ('S1','U1','H1','2030-01-01T00:00:00Z',?,?)").run(now, now);
+
+    // 已有数据库升级：放入 0019/0020/0021/0022 再跑一次
+    for (const f of files.filter((f) => f >= "0019")) copyFileSync(join(repo, f), join(migDir, f));
     runMigrations(sqlite, migDir);
     const applied2 = sqlite.prepare("SELECT name FROM schema_migrations ORDER BY name").all() as { name: string }[];
-    assert.ok(applied2.some((r) => r.name.startsWith("0019")), "0019 应已应用");
-    assert.ok(applied2.some((r) => r.name.startsWith("0020")), "0020 应已应用");
+    for (const p of ["0019", "0020", "0021", "0022"]) {
+      assert.ok(applied2.some((r) => r.name.startsWith(p)), p + " 应已应用");
+    }
 
     // 验证新结构：ledgers.deleted_at 存在、预算唯一索引为 ledger 作用域
     const cols = sqlite.prepare("PRAGMA table_info(ledgers)").all() as { name: string }[];
@@ -100,6 +112,43 @@ test("全新数据库与已有数据库（0018→0019）两条迁移路径均可
     }
     const idemIdx = sqlite.prepare("PRAGMA index_list(loan_payment_idempotency)").all() as { name: string; unique: number }[];
     assert.ok(idemIdx.some((i) => i.name === "uniq_loan_pay_idem" && i.unique === 1), "应有唯一索引 uniq_loan_pay_idem");
+
+    // 验证 0021：users 身份字段 + 迁移质量（老“用户”不迁移为公开昵称）
+    const userCols = sqlite.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+    for (const col of ["id", "phone", "nickname", "nickname_key", "phone_verified_at", "nickname_changed_at", "profile_completed_at"]) {
+      assert.ok(userCols.some((c) => c.name === col), "users 应有列 " + col);
+    }
+    const u1 = sqlite.prepare("SELECT * FROM users WHERE id='U1'").get() as { phone: string; nickname: string; profile_completed_at: string | null };
+    assert.equal(u1.phone, "+8613800000001", "旧手机号应迁移为 +86 E.164");
+    assert.equal(u1.nickname, "小明", "真实 display_name 应迁移为公开昵称");
+    assert.ok(u1.profile_completed_at, "真实昵称账号应标记完成");
+    const u2 = sqlite.prepare("SELECT * FROM users WHERE id='U2'").get() as { nickname: string | null; profile_completed_at: string | null };
+    assert.equal(u2.nickname, null, "旧“用户”昵称不迁移为公开昵称");
+    assert.equal(u2.profile_completed_at, null, "旧“用户”账号 profile_completed_at 应为空（下次必须完成昵称设置）");
+
+    // 升级应予吊销旧会话（S1 在升级前已存在）
+    const sess = sqlite.prepare("SELECT revoked_at FROM auth_sessions WHERE id='S1'").get() as { revoked_at: string | null };
+    assert.ok(sess.revoked_at, "升级后旧会话应被吊销");
+
+    // onboarding_tickets / nickname_history 表存在
+    for (const t of ["onboarding_tickets", "nickname_history"]) {
+      const tbl = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='" + t + "'").get();
+      assert.ok(tbl, t + " 表应存在");
+    }
+
+    // 验证 0022：单家庭约束索引 + 邀请结构
+    const fmIdx = sqlite.prepare("PRAGMA index_list(family_members)").all() as { name: string; unique: number }[];
+    assert.ok(fmIdx.some((i) => i.name === "uniq_family_single_active" && i.unique === 1), "应有 uniq_family_single_active");
+    const ledIdx = sqlite.prepare("PRAGMA index_list(ledgers)").all() as { name: string; unique: number }[];
+    assert.ok(ledIdx.some((i) => i.name === "uniq_family_active_ledger" && i.unique === 1), "应有 uniq_family_active_ledger");
+    const invCols = sqlite.prepare("PRAGMA table_info(family_invitations)").all() as { name: string }[];
+    assert.ok(invCols.some((c) => c.name === "target_user_id"), "family_invitations 应有 target_user_id");
+    const invIdx = sqlite.prepare("PRAGMA index_list(family_invitations)").all() as { name: string; unique: number }[];
+    assert.ok(invIdx.some((i) => i.name === "uniq_family_invite_pending" && i.unique === 1), "应有 uniq_family_invite_pending");
+
+    // 外键检查无误
+    const fk = sqlite.prepare("PRAGMA foreign_key_check").all();
+    assert.deepEqual(fk, [], "升级后外键检查应无误");
 
     // 同一用户、不同 ledger、同月同分类预算可共存（不再触发旧 userId 唯一冲突）
     sqlite.prepare("PRAGMA foreign_keys = OFF").run();

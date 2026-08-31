@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -17,11 +17,10 @@
 		2C9202DFDB4AA641B3C288FA /* DateUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A3BDDFEFD9B920B999E61B5 /* DateUtils.swift */; };
 		2FA18B8A1A2FBD103DFA1892 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 86A7321141122F091B69800A /* Assets.xcassets */; };
 		38D8930ECE127B52B0160F08 /* CategoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 489CCB0AFAB75C8802580BE4 /* CategoryListView.swift */; };
-		3DE06B0A5E9B176349ABBA60 /* RegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A3F69BDE521E3D6D5DF46D0 /* RegisterView.swift */; };
-		FA5E000000000000000000B1 /* ResetPasswordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA5E000000000000000000B2 /* ResetPasswordView.swift */; };
 		46948E91885459C5BC84B3C4 /* Money.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3A31DB5569911544A0D6CC /* Money.swift */; };
 		51A795CEF78D1F0D56AC4FDA /* RecurringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06310F711F4FEFBA429E1B31 /* RecurringView.swift */; };
 		645FD11014CDAE745CBD6021 /* BudgetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E7347CB4B2A04DD32C15BDF /* BudgetsView.swift */; };
+		82EF2FCF43AEBBFD00D70E9E /* StagedImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198156EF0288AD47531542F4 /* StagedImportView.swift */; };
 		8B82A74FE8BAE701AD66D112 /* AddTransactionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5995C8DEF9BF2C7F6A5D40EA /* AddTransactionView.swift */; };
 		917D462F542D8E7FAA3F9473 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6342E892EBE5BEB778A07EE4 /* HomeView.swift */; };
 		A32674C9FF582790F5FEBFDC /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89513120F27A7911ABCDE2A1 /* AppState.swift */; };
@@ -31,26 +30,23 @@
 		EADA31B4C874E3C20A19F2FA /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54782358AF5CE7F3BAD98E06 /* AccountsView.swift */; };
 		EAF917C9C1E68B4E119288DB /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE08867B8DEAB77A713CFF6E /* Models.swift */; };
 		FF6C3E328548A7270D83C745 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0438430608549D75B2F651AE /* SettingsView.swift */; };
-		A11111111111111111111111 /* StagedImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22222222222222222222222 /* StagedImportView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0438430608549D75B2F651AE /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		B22222222222222222222222 /* StagedImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagedImportView.swift; sourceTree = "<group>"; };
 		06310F711F4FEFBA429E1B31 /* RecurringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecurringView.swift; sourceTree = "<group>"; };
 		0A3BDDFEFD9B920B999E61B5 /* DateUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateUtils.swift; sourceTree = "<group>"; };
+		198156EF0288AD47531542F4 /* StagedImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagedImportView.swift; sourceTree = "<group>"; };
 		21204D627D4C8710391424BA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		238ABB8EF7339F116A13D0D9 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		3F3A31DB5569911544A0D6CC /* Money.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Money.swift; sourceTree = "<group>"; };
 		46E01DF37CD02C2EC6B10B54 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		489CCB0AFAB75C8802580BE4 /* CategoryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryListView.swift; sourceTree = "<group>"; };
-		4DCF1A5BC6FA366C4B658D35 /* Tally.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tally.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4DCF1A5BC6FA366C4B658D35 /* Tally.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Tally.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		54782358AF5CE7F3BAD98E06 /* AccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountsView.swift; sourceTree = "<group>"; };
 		5995C8DEF9BF2C7F6A5D40EA /* AddTransactionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTransactionView.swift; sourceTree = "<group>"; };
 		61B58C9C5C8206EB5C932C4F /* DataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataStore.swift; sourceTree = "<group>"; };
 		6342E892EBE5BEB778A07EE4 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
-		7A3F69BDE521E3D6D5DF46D0 /* RegisterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
-		FA5E000000000000000000B2 /* ResetPasswordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResetPasswordView.swift; sourceTree = "<group>"; };
 		8668BA29E65D6E3B2826CA53 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		86A7321141122F091B69800A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		89513120F27A7911ABCDE2A1 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -96,8 +92,6 @@
 			isa = PBXGroup;
 			children = (
 				AF996E1B698CC64A9AE0760F /* LoginView.swift */,
-				7A3F69BDE521E3D6D5DF46D0 /* RegisterView.swift */,
-				FA5E000000000000000000B2 /* ResetPasswordView.swift */,
 			);
 			path = Auth;
 			sourceTree = "<group>";
@@ -169,7 +163,7 @@
 			isa = PBXGroup;
 			children = (
 				0438430608549D75B2F651AE /* SettingsView.swift */,
-				B22222222222222222222222 /* StagedImportView.swift */,
+				198156EF0288AD47531542F4 /* StagedImportView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -241,7 +235,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1CE06C52A241371D16CFAE3B /* Build configuration list for PBXNativeTarget "Tally" */;
 			buildPhases = (
-				FA5E000000000000000000A1 /* Validate API Base URL */,
+				50D37F2B9FC8B93ABC8C9909 /* 校验 API 地址（Release 禁止 localhost/示例域/占位域名） */,
 				CACE146F76E8632C4560C232 /* Sources */,
 				94E81F7D0BB35613A931FAA0 /* Resources */,
 			);
@@ -250,8 +244,6 @@
 			dependencies = (
 			);
 			name = Tally;
-			packageProductDependencies = (
-			);
 			productName = Tally;
 			productReference = 4DCF1A5BC6FA366C4B658D35 /* Tally.app */;
 			productType = "com.apple.product-type.application";
@@ -266,11 +258,13 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					A9C692CEE4C99A9267A1F79D = {
+						DevelopmentTeam = XN5LYQCCY2;
 						ProvisioningStyle = Automatic;
 					};
 				};
 			};
 			buildConfigurationList = 5C367879F862A4ED5849A1D0 /* Build configuration list for PBXProject "Tally" */;
+			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -278,9 +272,6 @@
 				en,
 			);
 			mainGroup = 519AF95473A55A971C76D7FC;
-			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = C75C7E2A36C05412BA7D5036 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -301,7 +292,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		FA5E000000000000000000A1 /* Validate API Base URL */ = {
+		50D37F2B9FC8B93ABC8C9909 /* 校验 API 地址（Release 禁止 localhost/示例域/占位域名） */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -311,14 +302,14 @@
 			);
 			inputPaths = (
 			);
-			name = "Validate API Base URL";
+			name = "校验 API 地址（Release 禁止 localhost/示例域/占位域名）";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nif [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n  bash \"${SRCROOT}/scripts/validate-api-url.sh\" --url \"${TALLY_API_BASE_URL:-}\" --require-https\nelse\n  echo \"note: ${CONFIGURATION:-Debug} build skips the Release API URL check\"\nfi\n";
+			shellScript = "set -eu\nif [ \"${CONFIGURATION:-}\" = \"Release\" ]; then\n  bash \"${SRCROOT}/scripts/validate-api-url.sh\" --url \"${TALLY_API_BASE_URL:-}\" --require-https\nelse\n  echo \"note: ${CONFIGURATION:-Debug} 构建跳过 Release 域名校验（TALLY_API_BASE_URL=${TALLY_API_BASE_URL:-<未设置>}）\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -344,11 +335,9 @@
 				EAF917C9C1E68B4E119288DB /* Models.swift in Sources */,
 				46948E91885459C5BC84B3C4 /* Money.swift in Sources */,
 				51A795CEF78D1F0D56AC4FDA /* RecurringView.swift in Sources */,
-				3DE06B0A5E9B176349ABBA60 /* RegisterView.swift in Sources */,
-				FA5E000000000000000000B1 /* ResetPasswordView.swift in Sources */,
 				1BF848C159AE44A46303C475 /* RootView.swift in Sources */,
 				FF6C3E328548A7270D83C745 /* SettingsView.swift in Sources */,
-				A11111111111111111111111 /* StagedImportView.swift in Sources */,
+				82EF2FCF43AEBBFD00D70E9E /* StagedImportView.swift in Sources */,
 				27BE98AAECA230D90785FBD3 /* StatsView.swift in Sources */,
 				D2D47FE492168B5BD5332232 /* TallyApp.swift in Sources */,
 			);
@@ -437,8 +426,8 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tally.logan;
-				TALLY_API_BASE_URL = "";
 				SDKROOT = iphoneos;
+				TALLY_API_BASE_URL = "";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -480,6 +469,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -516,8 +506,8 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tally.logan;
-				TALLY_API_BASE_URL = "http://localhost:8080";
 				SDKROOT = iphoneos;
+				TALLY_API_BASE_URL = "http://localhost:8080";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;

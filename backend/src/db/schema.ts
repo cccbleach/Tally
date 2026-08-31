@@ -1,16 +1,62 @@
 import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-export const users = sqliteTable("users", {
-  id: text("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  displayName: text("display_name").notNull(),
-  defaultLedgerId: text("default_ledger_id"),
-  currentLedgerId: text("current_ledger_id"),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    phone: text("phone").notNull().unique(), // +86 E.164，全局唯一业务身份（仅本人接口可见）
+    nickname: text("nickname"), // 公开昵称；NULL=未完成昵称设置
+    nicknameKey: text("nickname_key"), // NFKC+大小写不敏感判重键（部分唯一）
+    phoneVerifiedAt: text("phone_verified_at"),
+    nicknameChangedAt: text("nickname_changed_at"),
+    profileCompletedAt: text("profile_completed_at"),
+    defaultLedgerId: text("default_ledger_id"),
+    currentLedgerId: text("current_ledger_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("uniq_users_nickname_key").on(t.nicknameKey).where(sql`${t.nicknameKey} IS NOT NULL`),
+    index("idx_users_phone").on(t.phone),
+    index("idx_users_profile").on(t.profileCompletedAt),
+  ],
+);
+
+// 一次性 onboarding ticket：完成昵称设置前用于“证明刚通过短信验证”。
+// 令牌只存哈希、10 分钟过期、仅可使用一次。
+export const onboardingTickets = sqliteTable(
+  "onboarding_tickets",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_onboarding_user").on(t.userId),
+    index("idx_onboarding_token").on(t.tokenHash),
+  ],
+);
+
+// 昵称历史保留表：改名后旧昵称保留 30 天（供恢复/审计）。
+export const nicknameHistory = sqliteTable(
+  "nickname_history",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    nickname: text("nickname").notNull(),
+    nicknameKey: text("nickname_key").notNull(),
+    changedAt: text("changed_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => [
+    index("idx_nickname_history_user").on(t.userId),
+    index("idx_nickname_history_key").on(t.nicknameKey),
+  ],
+);
 
 export const authSessions = sqliteTable(
   "auth_sessions",
@@ -80,11 +126,16 @@ export const familyMembers = sqliteTable(
     id: text("id").primaryKey(),
     familyId: text("family_id").notNull(),
     userId: text("user_id").notNull(),
-    role: text("role").notNull().default("member"), // owner | admin | member | viewer
+    role: text("role").notNull().default("member"), // owner | member（角色已收敛）
     isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
     joinedAt: text("joined_at").notNull(),
   },
-  (t) => [uniqueIndex("uniq_family_member").on(t.familyId, t.userId)],
+  (t) => [
+    uniqueIndex("uniq_family_member").on(t.familyId, t.userId),
+    // 每个账号最多属于一个 active 家庭
+    uniqueIndex("uniq_family_single_active").on(t.userId).where(sql`${t.isActive} = 1`),
+    uniqueIndex("uniq_family_member_active").on(t.familyId, t.userId).where(sql`${t.isActive} = 1`),
+  ],
 );
 
 export const familyInvitations = sqliteTable(
@@ -93,9 +144,8 @@ export const familyInvitations = sqliteTable(
     id: text("id").primaryKey(),
     familyId: text("family_id").notNull(),
     inviterUserId: text("inviter_user_id").notNull(),
-    targetAccountHash: text("target_account_hash").notNull(),
+    targetUserId: text("target_user_id").notNull(),
     role: text("role").notNull().default("member"),
-    tokenHash: text("token_hash").notNull(),
     status: text("status").notNull().default("pending"), // pending | accepted | declined | revoked
     expiresAt: text("expires_at").notNull(),
     acceptedAt: text("accepted_at"),
@@ -104,8 +154,9 @@ export const familyInvitations = sqliteTable(
   },
   (t) => [
     index("idx_family_invites_family").on(t.familyId),
-    index("idx_family_invites_target").on(t.targetAccountHash),
-    index("idx_family_invites_token").on(t.tokenHash),
+    index("idx_family_invites_target").on(t.targetUserId),
+    // 同一家庭不能重复邀请同一用户（待处理）
+    uniqueIndex("uniq_family_invite_pending").on(t.familyId, t.targetUserId).where(sql`${t.status} = "pending"`),
   ],
 );
 

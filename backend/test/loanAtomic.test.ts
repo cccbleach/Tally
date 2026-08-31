@@ -10,6 +10,7 @@ import { buildApp } from "../src/server.js";
 import { todayStr } from "../src/lib/date.js";
 import { and, asc, eq } from "drizzle-orm";
 import { accounts, loans, loanPayments, loanPaymentIdempotency, transactions, auditLogs } from "../src/db/schema.js";
+import { smsRegister, authHeaders } from "./helpers.js";
 
 process.env.ALIYUN_SMS_ENABLED = "false";
 process.env.ALIYUN_ACCESS_KEY_ID = "";
@@ -43,12 +44,8 @@ before(async () => {
   runMigrations(sqlite, resolve("./migrations"));
   app = await buildApp({ db, jwtSecret: "test-secret" });
 
-  const reg = await req("POST", "/api/v1/auth/register", {
-    email: "loan-atomic@test.com",
-    password: "password123",
-    displayName: "贷款测试",
-  });
-  headers = { authorization: "Bearer " + reg.json().token };
+  const reg = await smsRegister(app, "13841000001", "贷款测试");
+  headers = authHeaders(reg);
   // 取默认/当前账本作为 ledgerId
   const ledgersResp = await req("GET", "/api/v1/ledgers");
   const def = (ledgersResp.json().items as Array<{ id: string; isCurrent: boolean }>).find((l) => l.isCurrent);

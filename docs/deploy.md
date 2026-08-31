@@ -8,8 +8,8 @@ Tally 后端为单文件 SQLite + Node.js 服务，部署极简。任选其一�
 
 ```bash
 cd backend
-export TALLY_DOMAIN=api.tallyapp.cn              # 必填：已解析的域名
-export ACME_EMAIL=ops@tallyapp.cn                # 必填：证书联系邮箱 + 备用 CA 回退
+export TALLY_DOMAIN=your-domain.cn                   # 必填：已解析的域名（正式生产唯一域名）
+export ACME_EMAIL=ops@example.com                 # 必填：证书联系邮箱 + 备用 CA 回退
 export JWT_SECRET=$(openssl rand -hex 32)        # 必填：强随机
 docker compose -f docker-compose.caddy.yml up -d --build
 docker compose -f docker-compose.caddy.yml config --quiet   # 上线前校验
@@ -68,16 +68,16 @@ pm2 save
 | `TRUST_PROXY` | 0 | 可信反向代理层数；部署在反代后才设置，用于从 `X-Forwarded-For` 还原客户端 IP 做限流。默认不信任客户端伪造的 XFF |
 | `LOG_LEVEL` | warn | Fastify(pino) 日志级别；生产建议 `info`，`off` 关闭 |
 | `DISABLE_RATE_LIMIT` | false | 关闭认证限流（不建议生产） |
-| `AUTH_RATE_MAX`（预留） | 60/分钟 | 登录/注册/验证码/忘记密码接口限流阈值（IP + 账号双维度；当前默认 60） |
+| `AUTH_RATE_MAX`（预留） | 60/分钟 | 短信验证码相关接口限流阈值（IP + 账号双维度；当前默认 60） |
 | `ACCESS_TOKEN_TTL` | 15m | 访问令牌有效期（如 `15m`、`1h`） |
 | `REFRESH_TOKEN_TTL` | 30d | 刷新令牌有效期（如 `30d`、`90d`） |
 | `ALIYUN_SMS_ENABLED` | false | 开启阿里云短信验证码；未开启时验证码直接返回（开发模式） |
 | `ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` | - | 阿里云 AccessKey（也可用 `ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET`） |
 | `ALIYUN_SMS_SIGN_NAME` / `ALIYUN_SMS_TEMPLATE_CODE` | - | 短信签名与模板 code（模板参数用 `{"code","min"}`） |
 
-> **生产必须配置短信**：登录验证码与「找回密码」（`POST /auth/reset-code`）都靠短信投递。
-> 未配置时生产返回 `503 SMS_SEND_FAILED` —— 刻意不返回「成功但拿不到验证码」。
-> 本项目没有邮件投递（未接 SMTP），也没有邮件找回入口，见 [docs/api.md](api.md) 的「账号恢复」一节。
+> **生产必须配置短信**：手机号 + 短信验证码是本项目唯一登录/认证通道（无密码、无密码重置、无邮箱认证）。
+> 未配置时生产登录接口返回 `503 SMS_SEND_FAILED` —— 刻意不返回「成功但拿不到验证码」。
+> 新账号登录后会强制设置**全局唯一公开昵称**；旧邮箱/密码路由已下线（后端返回 410），见 [docs/api.md](api.md)。
 
 ## 数据备份
 
@@ -110,8 +110,8 @@ App 端 ATS 已收紧（不再使用全局 `NSAllowsArbitraryLoads`，仅保留 
 - Release 构建带一个 pre-build Run Script，调用 `ios/scripts/validate-api-url.sh`：
   地址为空/未展开、非 HTTPS、`localhost`/`127.x`/私网 IP/裸 IP、单标签主机名、
   `example.com`/`.test`/`.invalid`、`your-*`/`placeholder` 等占位词 → **构建立即失败**。
-- CI 会显式注入非占位地址：`xcodebuild ... TALLY_API_BASE_URL=https://staging-api.tallyapp.cn`
-  （由 workflow 的 `STAGING_API_BASE_URL` 控制，手动触发时可覆盖），并用
+- CI 会显式注入正式生产域名：`xcodebuild ... TALLY_API_BASE_URL=https://your-domain.cn`
+  （由 workflow 的 `PROD_API_BASE_URL` 控制，默认即 `https://your-domain.cn`，手动触发时可覆盖），并用
   `validate-api-url.sh --plist Tally.app` 复核**产物 Info.plist**。
 - `Info.plist` 的 `TallyAPIBaseURL` 引用 `$(TALLY_API_BASE_URL)`，由 Xcode 构建时替换；`APIClient` 读取该键，
   Release 下再兜一层（非 HTTPS 或本机/示例/占位域名直接 `fatalError`）。

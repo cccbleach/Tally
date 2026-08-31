@@ -39,7 +39,7 @@ fail() {
   echo "❌ API 地址不合规：$1" >&2
   echo "   当前值：${URL:-<空>}" >&2
   echo "   Release 构建必须显式注入真实 HTTPS 域名，例如：" >&2
-  echo "     xcodebuild ... -configuration Release TALLY_API_BASE_URL=https://api.tallyapp.cn" >&2
+  echo "     xcodebuild ... -configuration Release TALLY_API_BASE_URL=https://your-domain.cn" >&2
   exit 1
 }
 

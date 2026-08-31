@@ -21,7 +21,7 @@
 | iOS | SwiftUI + Swift 5（语言模式），iOS 17+，MVVM（`@Observable` + async/await），Swift Charts |
 | 后端 | Node.js 24 + TypeScript + Fastify |
 | 数据库 | SQLite（单文件）+ Drizzle ORM |
-| 认证 | 手机号 + 短信验证码（iOS 客户端唯一登录方式），或邮箱/手机号 + 密码；JWT（`jose`），密码用 `crypto.scrypt` 加盐哈希。**账号恢复只有短信一条路，没有邮件找回**（见 docs/api.md） |
+| 认证 | 手机号 + 短信验证码统一登录；新账号强制设置**全局唯一公开昵称**。无密码、无密码重置、无邮箱认证（旧邮箱/密码流程已下线，后端统一返回 410）；JWT（`jose`）。恢复只有短信这一条路（见 docs/api.md） |
 | 校验 | zod |
 | 工程 | XcodeGen 声明式生成 `.xcodeproj` |
 
@@ -91,7 +91,7 @@ open ios/Tally.xcodeproj   # 直接用 Xcode 打开（.xcodeproj 已生成）
   ```bash
   xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
     -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO \
-    TALLY_API_BASE_URL=https://api.tallyapp.cn
+    TALLY_API_BASE_URL=https://your-domain.cn
   ```
   校验规则见 `ios/scripts/validate-api-url.sh`（禁止 localhost / 私网 IP / `example.com` / `your-*` 等占位）。
 - 若改动了 `ios/project.yml` 或源文件增删，可重新生成工程：
@@ -99,16 +99,22 @@ open ios/Tally.xcodeproj   # 直接用 Xcode 打开（.xcodeproj 已生成）
 ```bash
 brew install xcodegen        # 或下载二进制
 cd ios && xcodegen generate
+cd .. && ./scripts/check-ios-build-settings.sh ios/Tally.xcodeproj Tally
 ```
+
+`ios/project.yml` 显式保存 Debug/Release 的关键编译设置，不依赖 XcodeGen 的外部
+setting presets。生成过程不应出现 `No "... settings found"`，校验脚本会阻止
+`DEBUG` 条件或 Release 优化被重生成过程静默删除。
 
 ## 测试
 
 ```bash
 cd backend
 pnpm typecheck
-pnpm test        # 105 个测试：认证/账号恢复（短信）/账户/分类/流水/统计/预算/周期账单/家庭/贷款/去重
+pnpm test        # 140 个测试：手机号+短信验证码认证/强制唯一昵称/家庭/账户/分类/流水/统计/预算/周期账单/贷款/去重
                  # （含幂等、OpenAPI 契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、
-                 #  迁移校验、乐观锁、限流与 TRUST_PROXY、生产模式安全策略、账单导入去重等回归）
+                 #  迁移校验（22 个迁移）、乐观锁、并发回归、故障注入、限流与 TRUST_PROXY、
+                 #  生产模式安全策略、账单导入去重等回归，全部 0 fail）
 ```
 
 iOS 侧（需 Xcode）：
@@ -151,12 +157,11 @@ CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / bui
 
 ## 安全说明
 
-- 密码使用 `scrypt` 加盐哈希，不存明文
+- 无密码体系：账号身份为手机号（E.164）+ **全局唯一公开昵称**，不存 `password_hash`；旧邮箱/密码、找回密码路由已整体下线（后端统一返回 `410 AUTH_METHOD_REMOVED`）
 - JWT 密钥来自环境变量，生产务必改为强随机值（占位/过短密钥**生产模式拒绝启动**）
 - App 开发期放行本地 HTTP 仅用于调试（ATS 只开 `NSAllowsLocalNetworking`），上线必须 HTTPS
-- **账号恢复只有短信通道**：服务端未接入 SMTP，邮件 reset-token 契约（旧 `POST /auth/forgot-password`）
-  已整体下线；生产环境短信发不出去就返回 503，绝不出现「返回成功但用户拿不到验证码」
-- 生产模式验证码/重置凭证永不经响应回传；限流按「IP + 账号」双维度，反代后需设 `TRUST_PROXY`
+- **账号恢复只有短信验证码这一条路**：无 SMTP、无邮件找回；生产环境短信发不出去就返回 503，绝不出现「返回成功但用户拿不到验证码」
+- 生产模式验证码永不经响应回传；限流按「IP + 账号」双维度，反代后需设 `TRUST_PROXY`
 - 每个响应带 `x-request-id`，关键写操作进 `audit_logs` 审计表
 
 ## 发布前自检（最小集）
@@ -164,7 +169,7 @@ CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / bui
 ```bash
 cd backend
 pnpm typecheck && pnpm test && pnpm build && node scripts/smoke-dist-xlsx.mjs
-JWT_SECRET=$(openssl rand -hex 32) TALLY_DOMAIN=api.tallyapp.cn ACME_EMAIL=ops@tallyapp.cn \
+JWT_SECRET=$(openssl rand -hex 32) TALLY_DOMAIN=your-domain.cn ACME_EMAIL=ops@example.com \
   docker compose -f docker-compose.caddy.yml config --quiet
 docker build -t tally-backend:latest .
 cd .. && ./scripts/check-ios-release-assets.sh ios Tally && ./scripts/check-ios-release-assets.sh ios-local Tally

@@ -8,6 +8,8 @@ struct RootView: View {
         Group {
             if appState.isLoading {
                 ProgressView("加载中…")
+            } else if appState.needsNicknameSetup {
+                NicknameOnboardingView()
             } else if appState.isAuthenticated {
                 MainTabView()
             } else {
@@ -21,6 +23,97 @@ struct RootView: View {
             } else {
                 dataStore.setContext(userId: nil, ledgerId: nil)
             }
+        }
+    }
+}
+
+// 新账号/旧“用户”账号：短信验证通过后必须完成公开昵称设置（一次性 onboarding ticket）
+struct NicknameOnboardingView: View {
+    @Environment(AppState.self) private var appState
+    @State private var nickname = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+    // 可用性检查防抖 + 可取消（快速连续输入时只发最后一次请求）
+    @State private var availabilityTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "person.text.rectangle")
+                .font(.system(size: 56))
+                .foregroundColor(.accentColor)
+            Text("设置公开昵称").font(.title2.bold())
+            Text("昵称仅用于家庭邀请与成员展示，2–20 个中文/字母/数字/下划线，不能是纯数字")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            TextField("公开昵称", text: $nickname)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: nickname) { _, value in
+                    availabilityTask?.cancel()
+                    if value.count < 2 {
+                        errorMessage = nil
+                        return
+                    }
+                    availabilityTask = Task { await checkAvailability(value) }
+                }
+                .onDisappear { availabilityTask?.cancel() }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            Button {
+                Task { await submit() }
+            } label: {
+                if isSubmitting {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else {
+                    Text("完成并进入").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isSubmitting || nickname.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+
+            Spacer()
+        }
+        .padding()
+        .errorAlert($errorMessage)
+    }
+
+    private func checkAvailability(_ value: String) async {
+        // 300ms 防抖：避免每敲一个字都打接口
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        if Task.isCancelled { return }
+        do {
+            let res = try await APIService.shared.checkNicknameAvailability(value)
+            guard !Task.isCancelled else { return }
+            if !res.available, let reason = res.reason {
+                errorMessage = reason
+            } else {
+                errorMessage = nil
+            }
+        } catch let error as APIError {
+            // 不能吞掉 401：认证类错误要提示，避免用户以为昵称可用
+            if case .unauthorized = error {
+                errorMessage = "登录状态已失效，请重新登录"
+            }
+            // 其它错误（网络/限流）不阻塞提交，静默保留当前输入
+        } catch {
+            // 非 APIError 的底层错误同样不阻塞
+        }
+    }
+
+    private func submit() async {
+        isSubmitting = true
+        defer { isSubmitting = false }
+        do {
+            try await appState.completeProfile(nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
@@ -38,9 +39,9 @@ test("默认不信任客户端伪造的 X-Forwarded-For：伪造不同 XFF 仍�
     attempts.push(
       await app.inject({
         method: "POST",
-        url: "/api/v1/auth/login",
-        headers: { "x-forwarded-for": `10.0.0.${i + 100}` },
-        payload: { email: "xff@example.com", password: "wrong" },
+        url: "/api/v1/auth/login-code",
+        headers: { "x-forwarded-for": `10.0.0.${i + 100}`, "content-type": "application/json" },
+        payload: { phone: "13800000001", code: "000000" },
       }),
     );
   }

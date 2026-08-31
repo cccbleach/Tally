@@ -4,10 +4,8 @@ info:
   version: 0.1.0
   description: 家庭记账后端契约。金额统一为整数（分），日期为 YYYY-MM-DD，时间为 ISO-8601。
 servers:
-  - url: https://api.tallyapp.cn
-    description: 生产（HTTPS，由 Caddy 终结 TLS；域名须真实解析并签发证书）
-  - url: https://staging-api.tallyapp.cn
-    description: 预发/staging（CI Release 构建注入的地址）
+  - url: https://your-domain.cn
+    description: 生产（正式生产唯一域名；HTTPS，由 Caddy 终结 TLS）
 security:
   - bearerAuth: []
 tags:
@@ -63,38 +61,16 @@ paths:
     post:
       tags: [auth]
       operationId: register
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      summary: 旧邮箱注册（已下线，统一 410 AUTH_METHOD_REMOVED）
       responses:
-        "200":
-          description: 注册成功
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AuthResponse" }
-        "409":
-          $ref: "#/components/responses/Error"
+        "410": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login:
     post:
       tags: [auth]
       operationId: login
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email, password]
-              properties:
-                email: { type: string }
-                password: { type: string }
+      summary: 旧密码登录（已下线，统一 410 AUTH_METHOD_REMOVED）
       responses:
-        "200":
-          description: 登录成功
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AuthResponse" }
-        "401": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
   /api/v1/auth/refresh:
     post:
       tags: [auth]
@@ -117,15 +93,15 @@ paths:
     post:
       tags: [auth]
       operationId: requestCode
-      summary: 发送短信验证码（开发模式回传 code，生产不返回）
+      summary: 发送登录短信验证码（开发模式回传 code，生产不返回）
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [email]
+              required: [phone]
               properties:
-                email: { type: string }
+                phone: { type: string, description: 中国大陆 11 位手机号（允许 138… / +86138…） }
       responses:
         "200":
           description: 已发送
@@ -142,88 +118,119 @@ paths:
     post:
       tags: [auth]
       operationId: loginWithCode
+      summary: 验证码登录：完整账号直接登录；新账号或旧“用户”账号返回 nickname_required
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [email, code]
+              required: [phone, code]
               properties:
-                email: { type: string }
+                phone: { type: string }
                 code: { type: string }
       responses:
         "200":
-          description: 登录成功
+          description: 判别联合（authenticated | nickname_required）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginCodeResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/complete-profile:
+    post:
+      tags: [auth]
+      operationId: completeProfile
+      summary: 完成强制昵称设置（新账号/旧“用户”账号），成功后返回会话
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [onboardingToken, nickname]
+              properties:
+                onboardingToken: { type: string, description: 一次性 onboarding 令牌（10 分钟） }
+                nickname: { type: string, description: 2-20 个中文/字母/数字/_，非纯数字，非保留词 }
+      responses:
+        "200":
+          description: 完成并登录
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
-  # 账号恢复：本项目确定采用「短信恢复」，不提供邮件找回。
-  # 服务端未接入 SMTP，原先的「邮件找回」入口（提交邮箱、返回重置令牌）
-  # 在生产环境只会返回「已受理」而用户永远拿不到 token，属于不可用契约，已整体移除
-  # （后端路由 / OpenAPI / iOS 入口三处同步删除）。邮箱账号请改用手机号账号，
-  # 或由管理员人工核实身份后重置，服务端对此明确返回 400 而不是假成功。
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  # 无密码、无密码重置、无邮箱认证：本项目唯一认证通道是手机号 + 短信验证码（新账号强制唯一昵称）。
+  # 旧的邮箱/密码 register / login / reset-code / reset-password 已整体下线，
+  # 后端保留路由但统一返回 410 AUTH_METHOD_REMOVED（没有旧的“邮件找回/重置”语义）。
   /api/v1/auth/reset-code:
     post:
       tags: [auth]
       operationId: requestPasswordResetCode
-      summary: 发送「找回密码」短信验证码（与登录验证码不同命名空间）
-      description: >-
-        仅支持已注册手机号。生产环境验证码只通过短信投递、绝不经响应返回；
-        短信发送失败返回 503（不会出现“返回成功但用户拿不到验证码”）。
-        开发模式（AUTH_MODE=development 且未配置短信）才在响应中回传验证码便于联调。
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [account]
-              properties:
-                account: { type: string, description: 已注册手机号（提交邮箱返回 400 EMAIL_RECOVERY_UNAVAILABLE） }
+      summary: 旧找回密码验证码（已下线，统一 410 AUTH_METHOD_REMOVED）
       responses:
-        "200":
-          description: 验证码已真实投递到手机；开发模式额外回传 code
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok]
-                properties:
-                  ok: { type: boolean }
-                  code: { type: string, nullable: true, description: 仅开发模式存在 }
-        "400": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "429": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
   /api/v1/auth/reset-password:
     post:
       tags: [auth]
       operationId: resetPassword
-      summary: 用短信验证码直接设置新密码（无需邮件重置令牌）
-      description: >-
-        验证码校验通过即证明手机号所有权：设置新密码并吊销该账号全部会话。
-        旧邮件契约的重置令牌字段已移除，缺少 account/code 的旧请求会被直接拒绝。
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [account, code, newPassword]
-              properties:
-                account: { type: string, description: 已注册手机号 }
-                code: { type: string, minLength: 4, maxLength: 8 }
-                newPassword: { type: string, minLength: 8 }
+      summary: 旧密码重置（已下线，统一 410 AUTH_METHOD_REMOVED）
+      responses:
+        "410": { $ref: "#/components/responses/Error" }
+
+  /api/v1/users/me:
+    get:
+      tags: [auth]
+      operationId: getMyProfile
+      summary: 本人资料（手机号仅在本接口返回，含脱敏）
       responses:
         "200":
-          description: 重置成功（全部会话已吊销，需重新登录）
+          description: OK
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  ok: { type: boolean }
-        "400": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "429": { $ref: "#/components/responses/Error" }
+                  user: { $ref: "#/components/schemas/User" }
+  /api/v1/users/nickname-availability:
+    get:
+      tags: [auth]
+      operationId: checkNicknameAvailability
+      security: []
+      parameters:
+        - { name: nickname, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 是否可用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available]
+                properties:
+                  available: { type: boolean }
+                  reason: { type: string, nullable: true }
+  /api/v1/users/me/nickname:
+    patch:
+      tags: [auth]
+      operationId: changeNickname
+      summary: 修改昵称（30 天冷却 + 全局判重 + 旧昵称保留 30 天）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname]
+              properties:
+                nickname: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/accounts:
     get:
       tags: [accounts]
@@ -391,33 +398,42 @@ paths:
     post:
       tags: [families]
       operationId: addFamilyMember
+      summary: 旧直接加人（已下线，统一 410 FAMILY_FLOW_REMOVED，请改用精确昵称邀请）
+      responses:
+        "410": { $ref: "#/components/responses/Error" }
   /api/v1/families/{id}/members/{memberUserId}:
     delete:
       tags: [families]
       operationId: removeFamilyMember
+    patch:
+      tags: [families]
+      operationId: changeFamilyMemberRole
+      summary: 旧多级角色修改（已下线，统一 410 FAMILY_FLOW_REMOVED，仅保留 owner/member）
+      responses:
+        "410": { $ref: "#/components/responses/Error" }
   /api/v1/families/{id}/invitations:
     post:
       tags: [families]
       operationId: createFamilyInvitation
-    get:
-      tags: [families]
-      operationId: listFamilyInvitations
+      summary: Owner 按精确昵称邀请成员
   /api/v1/families/{id}/invitations/{inviteId}:
     delete:
       tags: [families]
       operationId: revokeFamilyInvitation
-  /api/v1/families/invitations/{token}/accept:
+  /api/v1/families/invitations/pending:
+    get:
+      tags: [families]
+      operationId: listPendingInvitations
+      summary: 我的待处理邀请箱（App 启动/回前台/手动刷新拉取）
+  /api/v1/families/invitations/{id}/accept:
     post:
       tags: [families]
       operationId: acceptFamilyInvitation
-  /api/v1/families/invitations/{token}/decline:
+      summary: 接受邀请（单家庭约束 + 撤销其他待处理邀请）
+  /api/v1/families/invitations/{id}/decline:
     post:
       tags: [families]
       operationId: declineFamilyInvitation
-  /api/v1/families/{id}/members/{memberUserId}:
-    patch:
-      tags: [families]
-      operationId: changeFamilyMemberRole
   /api/v1/families/{id}/exit:
     post:
       tags: [families]
@@ -616,18 +632,34 @@ components:
             message: { type: string }
     AuthResponse:
       type: object
-      required: [user, token, refreshToken]
+      description: complete-profile / 已有账号直接登录的返回
+      required: [status, user, token, refreshToken]
       properties:
+        status: { type: string, enum: [authenticated] }
         user: { $ref: "#/components/schemas/User" }
         token: { type: string }
         refreshToken: { type: string }
+    LoginCodeResponse:
+      type: object
+      description: 验证码登录判别联合
+      oneOf:
+        - $ref: "#/components/schemas/AuthResponse"
+        - type: object
+          required: [status, onboardingToken, expiresAt]
+          properties:
+            status: { type: string, enum: [nickname_required] }
+            onboardingToken: { type: string }
+            expiresAt: { type: string, format: date-time }
     User:
       type: object
-      required: [id, email, displayName, createdAt]
+      description: 手机号仅在本人接口返回；他人视角不返回手机号
+      required: [id, phone, nickname, createdAt]
       properties:
-        id: { type: string }
-        email: { type: string }
-        displayName: { type: string }
+        id: { type: string, description: 内部不可变 UUID（JWT subject/关联/审计） }
+        phone: { type: string, description: +86 E.164（仅本人接口可见） }
+        nickname: { type: string, description: 公开昵称（家庭邀请/成员展示） }
+        nicknameChangeAvailableAt: { type: string, format: date-time, nullable: true }
+        phoneMasked: { type: string, nullable: true, description: 脱敏手机号，仅本人资料接口返回 }
         createdAt: { type: string }
     RegisterRequest:
       type: object
@@ -670,6 +702,7 @@ components:
         sourceType: { type: string, nullable: true }
         transferToAccountId: { type: string, nullable: true }
         paymentGroupId: { type: string, nullable: true, description: 一次还款拆分流水（本金+利息）的分组 ID }
+        recorderNickname: { type: string, nullable: true, description: 记账人昵称（家庭流水展示，不含手机号） }
     Loan:
       type: object
       required: [id, name, type, currency, principal, remainingPrincipal]

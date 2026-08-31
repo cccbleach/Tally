@@ -15,48 +15,45 @@
 - 客户端多端同步建议：拉取 → 记录 `updatedAt` → 修改时带上 → 遇 409 提示冲突并拉取最新。
 - 服务端不提供合并/三方合并；冲突由客户端引导用户处理（或按策略直接覆盖）。
 
-## 认证
+## 认证（手机号 + 唯一昵称身份）
+
+- 手机号仅用于验证码登录，限定中国大陆 11 位，统一存为 `+86` E.164（`138…` / `+86138…` 等同账号）。
+- 昵称是公开账号身份，用于家庭邀请与成员展示；手机号不向其他用户公开（仅本人接口返回）。
+- 邮箱/密码登录、找回密码已彻底下线：旧接口保留路由但统一返回 `410 AUTH_METHOD_REMOVED`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | /auth/register | 注册，入参 `{account, password(≥8), displayName?}`，账号可为邮箱或手机号；成功自动播种默认分类，返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
-| POST | /auth/login | 登录，入参 `{account, password}`，账号可为邮箱或手机号；返回 `{user, token, refreshToken}`（字段名兼容保留为 `email`） |
+| POST | /auth/request-code | 请求登录验证码，入参 `{phone}`。生产环境短信真实投递只返回 `{ok:true}`；开发模式回传 `{ok, code}` |
+| POST | /auth/login-code | 验证码登录，入参 `{phone, code}`。返回判别联合：`{status:"authenticated", user, token, refreshToken}`（完整账号）或 `{status:"nickname_required", onboardingToken, expiresAt}`（新账号/旧“用户”账号，需先完成强制昵称设置） |
+| POST | /auth/complete-profile | 完成强制昵称设置，入参 `{onboardingToken, nickname}`。onboarding 令牌 10 分钟、一次性；成功后创建/恢复会话并确保默认账本与分类 |
 | POST | /auth/refresh | 刷新，入参 `{refreshToken}`，返回 `{token, refreshToken}` |
-| POST | /auth/request-code | 请求登录验证码，入参 `{email}`（字段名保留为 `email`，实际接受手机号）。已配置阿里云短信时发送短信并返回 `{ok}`；未配置时返回 `{ok, code}`（开发/降级模式） |
-| POST | /auth/login-code | 验证码登录，入参 `{email, code}`（字段名保留为 `email`，实际接受手机号）；未注册的手机号自动注册并投产默认分类，返回 `{user, token, refreshToken}` |
-| POST | /auth/reset-code | **找回密码**：入参 `{account}`（已注册手机号）。短信真实投递成功才返回 `{ok}`；开发模式额外回传 `code`。邮箱账号→`400 EMAIL_RECOVERY_UNAVAILABLE`；未注册→`404 ACCOUNT_NOT_FOUND`；短信发不出去→`503 SMS_SEND_FAILED` |
-| POST | /auth/reset-password | **找回密码**：入参 `{account, code, newPassword(≥8)}`，验证码通过即设置新密码并吊销该账号全部会话，返回 `{ok}` |
-| GET | /auth/me | 当前用户，返回 `{user}` |
+| GET | /auth/me | 当前用户，返回 `{user}`（含本人手机号） |
+| GET | /users/me | 本人资料，返回 `{user}`（含脱敏手机号 `phoneMasked`） |
+| GET | /users/nickname-availability?nickname= | 昵称可用性，返回 `{available, reason?}` |
+| PATCH | /users/me/nickname | 修改昵称，入参 `{nickname}`（30 天冷却 + 全局判重 + 旧昵称 30 天内不可被他人占用，到期后释放） |
+| POST | /auth/register | **旧邮箱注册（已下线）→ 410 AUTH_METHOD_REMOVED** |
+| POST | /auth/login | **旧密码登录（已下线）→ 410 AUTH_METHOD_REMOVED** |
+| POST | /auth/reset-code | **旧找回密码验证码（已下线）→ 410 AUTH_METHOD_REMOVED** |
+| POST | /auth/reset-password | **旧密码重置（已下线）→ 410 AUTH_METHOD_REMOVED** |
 
-- `token` 为短期访问令牌（HS256，默认 15 分钟）；`refreshToken` 为刷新令牌（默认 30 天）。
-- 访问令牌过期后，客户端用 `refreshToken` 调用 /auth/refresh 换新；刷新令牌不能用作访问令牌（受保护接口返回 401）。
-- 验证码为 6 位、5 分钟有效、最多错 3 次；未配置短信服务时直接回传 `code`（开发模式），配置阿里云短信后发送短信并仅返回 `{ok:true}`。
-- 验证码登录未注册时自动创建账号（密码置空），之后可用 `/auth/reset-code` + `/auth/reset-password` 用短信验证码设置/重设密码。
+`User` 类型：`{ id, phone, nickname, nicknameChangeAvailableAt, createdAt }`。
+`id` 为内部不可变 UUID（JWT subject / 关联 / 审计）；手机号与昵称是两个全局唯一的业务身份。
 
-### 账号恢复：只做短信，不做邮件（生产可用性契约）
+### 昵称规则
 
-本项目**未接入 SMTP**，因此不存在可用的邮件投递通道。历史上存在的
-`POST /auth/forgot-password`（提交邮箱 → 生成 reset token → 声称“已受理”）在生产环境
-**永远无法把 token 交给用户**（生产模式禁止回传 token），属于“返回成功但用户拿不到凭证”的
-不可用契约，已整体下线：后端路由、OpenAPI 契约、iOS 入口三处同时移除。
+- 2–20 个中文、Unicode 字母、数字或下划线；禁止空格、emoji、纯数字。
+- NFKC + 大小写不敏感判重（`Abc` 与 `abc` 冲突）。
+- 保留系统词：`tally/admin/system/官方/管理员/系统/用户`。
+- 每人每 30 天最多改名一次；旧昵称 30 天内不可被他人占用，到期后释放。
 
-现存的唯一自助恢复路径（短信）：
+### 登录与强制昵称
 
-1. `POST /auth/reset-code {account}` → 阿里云短信真实下发 6 位验证码（与登录验证码使用不同命名空间，互不通用）；
-2. `POST /auth/reset-password {account, code, newPassword}` → 校验验证码 → 设置新密码 → 吊销全部会话。
+- 输入手机号 → 验证码：已有完整账号直接登录；新账号或旧“用户”账号进入强制昵称设置页。
+- 完成昵称需要一次性 onboarding ticket（只存哈希、10 分钟过期、仅可使用一次；完成昵称后才创建/恢复会话）。
 
-生产环境的错误语义（可由 `backend/test/prodSecurity.test.ts` 回归）：
+### 冲突错误
 
-| 情况 | 响应 |
-|---|---|
-| 短信下发成功 | `200 {ok:true}`（验证码只走短信，绝不出现在响应里） |
-| 短信下发失败/未配置短信 | `503 SMS_SEND_FAILED`（不是 200） |
-| 提交邮箱账号 | `400 EMAIL_RECOVERY_UNAVAILABLE`（明确告知走不通，不假装已发送） |
-| 手机号未注册 | `404 ACCOUNT_NOT_FOUND`（明确告知，不假装已发送） |
-| 验证码错误/过期/次数用尽 | `400 CODE_EXPIRED / CODE_EXHAUSTED / INVALID_CODE`，旧密码继续可用 |
-
-> 邮箱账号目前没有自助找回通道：请改用手机号账号注册/登录，或由管理员人工核实身份后
-> 直接改库重置密码并吊销会话（见 docs/production-checklist.md）。
+- `PHONE_EXISTS` / `NICKNAME_TAKEN` / `NICKNAME_CHANGE_COOLDOWN` / `ALREADY_IN_FAMILY` / `INVITATION_EXISTS` / `INVALID_ONBOARDING_TOKEN`。
 
 ## 账户 Accounts
 

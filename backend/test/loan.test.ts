@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { amortizationSchedule, monthlyPayment } from "../src/lib/loan.js";

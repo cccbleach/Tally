@@ -119,15 +119,52 @@ struct FamilyLedgerView: View {
     @State private var isLoading = false
     @State private var selectedFamilyId = ""
     @State private var memberUserId = ""
+    @State private var pending: [PendingInvitation] = []
+    @State private var members: [FamilyMember] = []
+    @State private var currentFamilyDetail: FamilyDetail?
+    @State private var renameText = ""
+    @State private var transferTarget: String?
+    @State private var confirmTransfer = false
+    @State private var confirmRemove: String?
+    @State private var confirmDeleteFamily = false
+    @State private var pendingConfirm: PendingInvitation?
     @State private var message: String?
     @State private var errorMessage: String?
 
+    private var isOwner: Bool {
+        currentFamilyDetail?.ownerUserId == appState.user?.id
+    }
+
+    private var selector: String {
+        selectedFamilyId.isEmpty ? (families.first?.id ?? "") : selectedFamilyId
+    }
+
     var body: some View {
         Form {
-            Section("创建家庭") {
-                TextField("家庭名称", text: $newFamilyName)
-                Button("创建家庭并切换") { Task { await createFamily() } }
-                    .disabled(newFamilyName.isEmpty || isLoading)
+            // 无家庭时才展示创建家庭（单家庭模型：有家庭即隐藏）
+            if families.isEmpty {
+                Section("创建你的家庭") {
+                    TextField("家庭名称", text: $newFamilyName)
+                    Button("创建家庭并切换") { Task { await createFamily() } }
+                        .disabled(newFamilyName.isEmpty || isLoading)
+                }
+            }
+            Section("待处理邀请（邀请箱）") {
+                if pending.isEmpty {
+                    Text("暂无待处理邀请").foregroundColor(.secondary)
+                }
+                ForEach(pending) { inv in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(inv.familyName).font(.subheadline.weight(.semibold))
+                        Text("由 \(inv.inviterNickname) 邀请").font(.caption).foregroundColor(.secondary)
+                        HStack {
+                            Button("接受") { pendingConfirm = inv }
+                                .buttonStyle(.borderedProminent)
+                            Button("拒绝") { Task { await declineInvite(inv.id) } }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                }
             }
             Section("我的家庭") {
                 if families.isEmpty {
@@ -137,15 +174,64 @@ struct FamilyLedgerView: View {
                     Text(family.name)
                 }
             }
-            Section("添加成员（输入对方手机号/邮箱）") {
-                Picker("家庭", selection: $selectedFamilyId) {
-                    ForEach(families) { family in
-                        Text(family.name).tag(family.id)
+            if currentFamilyDetail != nil {
+                Section("家庭成员") {
+                    if members.isEmpty {
+                        Text("暂无成员").foregroundColor(.secondary)
+                    }
+                    ForEach(members) { m in
+                        HStack {
+                            Text(m.nickname)
+                            Spacer()
+                            if m.role == "owner" {
+                                Text("创建者").font(.caption).foregroundColor(.secondary)
+                            } else if isOwner {
+                                Button("移除") { confirmRemove = m.userId }
+                                    .font(.caption)
+                            }
+                        }
                     }
                 }
-                TextField("成员手机号/邮箱", text: $memberUserId)
-                Button("添加成员") { Task { await addMember() } }
-                    .disabled(selectedFamilyId.isEmpty || memberUserId.isEmpty || isLoading)
+                Section("家庭操作") {
+                    if isOwner {
+                        TextField("新家庭名", text: $renameText)
+                        Button("改家庭名") { Task { await renameFamily() } }
+                            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if members.filter({ $0.role != "owner" }).count > 1 {
+                            // 多成员：可选择目标，不固定第一个；选好后用独立按钮发起确认弹窗
+                            Picker("转移给", selection: $transferTarget) {
+                                ForEach(members.filter { $0.role != "owner" }) { m in
+                                    Text(m.nickname).tag(Optional(m.userId))
+                                }
+                            }
+                            if transferTarget != nil {
+                                Button("执行转移所有权") { confirmTransfer = true }
+                            }
+                        } else if let only = members.filter({ $0.role != "owner" }).first {
+                            Button("转移所有权给 \(only.nickname)") {
+                                transferTarget = only.userId
+                                confirmTransfer = true
+                            }
+                        }
+                        Button("删除家庭", role: .destructive) { confirmDeleteFamily = true }
+                    } else {
+                        Button("退出家庭", role: .destructive) { Task { await exitFamily() } }
+                    }
+                }
+                if let message {
+                    Section { Text(message).foregroundColor(.green) }
+                }
+            }
+            if isOwner {
+                Section("邀请成员（输入对方精确昵称）") {
+                    TextField("对方昵称", text: $memberUserId)
+                    Button("发送邀请") { Task { await addMember() } }
+                        .disabled(memberUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
+                }
+            } else if !families.isEmpty {
+                Section {
+                    Text("作为成员你可共同记账，退出家庭可回到个人账本").font(.caption).foregroundColor(.secondary)
+                }
             }
             Section("账本（点击切换当前账本）") {
                 ForEach(ledgers) { ledger in
@@ -155,7 +241,7 @@ struct FamilyLedgerView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(ledger.name)
-                                if let fid = ledger.familyId {
+                                if ledger.familyId != nil {
                                     Text("家庭账本").font(.caption).foregroundColor(.secondary)
                                 } else {
                                     Text("个人账本").font(.caption).foregroundColor(.secondary)
@@ -175,6 +261,55 @@ struct FamilyLedgerView: View {
         }
         .navigationTitle("家庭与账本")
         .task { await load() }
+        // 接受邀请前二次确认
+        .confirmationDialog(
+            "加入家庭",
+            isPresented: Binding(
+                get: { pendingConfirm != nil },
+                set: { if !$0 { pendingConfirm = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let inv = pendingConfirm {
+                Button("加入 \(inv.familyName)") { Task { await acceptInvite(inv.id) } }
+                Button("取消", role: .cancel) { pendingConfirm = nil }
+            }
+        }
+        // 移除成员二次确认
+        .confirmationDialog(
+            "移除成员",
+            isPresented: Binding(
+                get: { confirmRemove != nil },
+                set: { if !$0 { confirmRemove = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let uid = confirmRemove {
+                Button("确定移除") { Task { await removeMember(uid) } }
+                Button("取消", role: .cancel) { confirmRemove = nil }
+            }
+        }
+        // 转移所有权二次确认（真正的 confirmationDialog）
+        .confirmationDialog(
+            "转移所有权",
+            isPresented: $confirmTransfer,
+            titleVisibility: .visible
+        ) {
+            if let target = transferTarget {
+                let name = members.first(where: { $0.userId == target })?.nickname ?? "所选成员"
+                Button("确认转移给 \(name)") { Task { await confirmTransfer() } }
+            }
+            Button("取消", role: .cancel) { confirmTransfer = false }
+        }
+        // 删除家庭二次确认
+        .confirmationDialog(
+            "删除家庭",
+            isPresented: $confirmDeleteFamily,
+            titleVisibility: .visible
+        ) {
+            Button("删除家庭（软删除账本，成员回个人账本）", role: .destructive) { Task { await deleteFamily() } }
+            Button("取消", role: .cancel) { confirmDeleteFamily = false }
+        }
         .errorAlert($errorMessage)
     }
 
@@ -184,10 +319,119 @@ struct FamilyLedgerView: View {
         do {
             async let f = APIService.shared.families()
             async let l = APIService.shared.ledgers()
-            (families, ledgers) = try await (f, l)
-            if selectedFamilyId.isEmpty, let first = families.first {
-                selectedFamilyId = first.id
+            async let p = APIService.shared.pendingInvitations()
+            (families, ledgers, pending) = try await (f, l, p)
+            await appState.refreshPendingInvitations()
+            // 单家庭模型：每次 load 都把选中家庭同步为唯一家庭（无家庭则为空），
+            // 保证退出/删除后立即清空，加入/创建 C 后能正常加载 C 的成员与 Owner 控件。
+            selectedFamilyId = families.first?.id ?? ""
+            if !selector.isEmpty {
+                await refreshFamilyDetail(selector)
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func renameFamily() async {
+        guard !selector.isEmpty else { return }
+        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            try await APIService.shared.renameFamily(id: selector, name: name)
+            renameText = ""
+            message = "家庭名已更新"
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func removeMember(_ memberUserId: String) async {
+        confirmRemove = nil
+        guard !selector.isEmpty else { return }
+        do {
+            try await APIService.shared.removeMember(familyId: selector, memberUserId: memberUserId)
+            message = "已移除成员"
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func confirmTransfer() async {
+        guard let target = transferTarget, !selector.isEmpty else { return }
+        confirmTransfer = false
+        do {
+            try await APIService.shared.transferOwnership(familyId: selector, toMemberUserId: target)
+            transferTarget = nil
+            message = "所有权已转移"
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshFamilyDetail(_ id: String) async {
+        do {
+            let detail = try await APIService.shared.familyDetail(id: id)
+            currentFamilyDetail = detail
+            members = detail.members
+        } catch {
+            currentFamilyDetail = nil
+            members = []
+        }
+    }
+
+    private func acceptInvite(_ id: String) async {
+        pendingConfirm = nil
+        do {
+            try await APIService.shared.acceptInvitation(id: id)
+            await appState.refreshPendingInvitations()
+            message = "已加入家庭并切换账本"
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func declineInvite(_ id: String) async {
+        do {
+            try await APIService.shared.declineInvitation(id: id)
+            await appState.refreshPendingInvitations()
+            message = "已拒绝邀请"
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func exitFamily() async {
+        guard !selector.isEmpty else { return }
+        do {
+            try await APIService.shared.exitFamily(id: selector)
+            message = "已退出家庭，切回个人账本"
+            // 退出后立即清空选中家庭，确保不会残留旧家庭导致误加载
+            selectedFamilyId = ""
+            currentFamilyDetail = nil
+            members = []
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func deleteFamily() async {
+        confirmDeleteFamily = false
+        guard !selector.isEmpty else { return }
+        do {
+            try await APIService.shared.deleteFamily(id: selector)
+            message = "家庭已删除"
+            // 删除后立即清空选中家庭，确保不会残留旧家庭导致误加载
+            selectedFamilyId = ""
+            currentFamilyDetail = nil
+            members = []
+            await load()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -210,9 +454,9 @@ struct FamilyLedgerView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            try await APIService.shared.addFamilyMember(familyId: selectedFamilyId, account: memberUserId)
+            let item = try await APIService.shared.inviteByNickname(familyId: selector, nickname: memberUserId)
             memberUserId = ""
-            message = "成员已添加"
+            message = "已向 \(item.targetNickname) 发送邀请"
             await load()
         } catch {
             errorMessage = error.localizedDescription
@@ -222,7 +466,6 @@ struct FamilyLedgerView: View {
     private func switchLedger(_ id: String) async {
         do {
             try await APIService.shared.switchLedger(id: id)
-            // 切换上下文：清空内存并切换缓存分区，再重新拉取新账本数据
             dataStore.setContext(userId: appState.user?.id, ledgerId: id)
             message = "已切换账本"
             await load()
@@ -430,15 +673,23 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section("账号") {
-                    LabeledContent("邮箱", value: appState.user?.email ?? "-")
-                    LabeledContent("昵称", value: appState.user?.displayName ?? "-")
+                    NavigationLink { NicknameEditView() } label: { LabeledContent("公开昵称", value: appState.user?.nickname ?? "-") }
+                    LabeledContent("手机号", value: appState.user?.phoneMasked ?? "-")
+                    if let next = appState.user?.nicknameChangeAvailableAt {
+                        LabeledContent("下次可改昵称", value: String(next.prefix(10)))
+                    }
                 }
 
                 Section("管理") {
                     NavigationLink("分类管理") { CategoryListView() }
                     NavigationLink("周期账单") { RecurringView() }
                     NavigationLink("转入账单（预览确认）") { StagedImportView() }
-                    NavigationLink("家庭与账本") { FamilyLedgerView() }
+                    if appState.pendingInvitationCount > 0 {
+                        NavigationLink("家庭与账本") { FamilyLedgerView() }
+                            .badge(appState.pendingInvitationCount)
+                    } else {
+                        NavigationLink("家庭与账本") { FamilyLedgerView() }
+                    }
                     NavigationLink("负债中心") { LiabilitiesView() }
                 }
 
@@ -452,7 +703,59 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .task { await refreshBadge() }
+            .refreshable { await refreshBadge() }
             .errorAlert($errorMessage)
+        }
+    }
+
+    private func refreshBadge() async {
+        // 刷新本人资料（脱敏手机号）与邀请箱数量；角标由 AppState 全局维护
+        if let profile = try? await APIService.shared.myProfile() {
+            appState.user = profile
+        }
+        await appState.refreshPendingInvitations()
+    }
+}
+
+
+// 修改公开昵称：30 天冷却 + 全局判重
+struct NicknameEditView: View {
+    @Environment(AppState.self) private var appState
+    @State private var nickname = ""
+    @State private var isSaving = false
+    @State private var message: String?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Form {
+            Section("公开昵称") {
+                TextField("昵称", text: $nickname)
+                    .onAppear { nickname = appState.user?.nickname ?? "" }
+            }
+            if let message {
+                Section { Text(message).foregroundColor(.green) }
+            }
+            Section {
+                Button("保存") {
+                    Task { await save() }
+                }
+                .disabled(isSaving || nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .navigationTitle("修改昵称")
+        .errorAlert($errorMessage)
+    }
+
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            let updated = try await APIService.shared.changeNickname(nickname.trimmingCharacters(in: .whitespacesAndNewlines))
+            appState.user = updated
+            message = "昵称已更新"
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

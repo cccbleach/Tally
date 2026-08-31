@@ -8,8 +8,8 @@
 
 | 项 | 值 | 说明 |
 |---|---|---|
-| 生产 API 域名 | `https://api.tallyapp.cn` | 本仓库文档与 CI 默认约定；实际以此为准并全文替换 |
-| 预发/staging API 域名 | `https://staging-api.tallyapp.cn` | CI 的 Release 构建注入地址（`STAGING_API_BASE_URL`） |
+| 生产 API 域名 | `https://your-domain.cn` | 正式生产唯一域名；本仓库文档 / CI（`PROD_API_BASE_URL`）/ iOS Release 均使用它 |
+| 预发/staging API 域名 | 无（不保留 staging） | CI 的 Release 构建 / 主干 Archive / 产物校验统一注入 `https://your-domain.cn` |
 | 部署方式 | `docker compose -f docker-compose.caddy.yml` | Caddy 仅暴露 80/443，后端 8080 只在 Docker 内网 |
 | 单实例约束 | 1 个后端进程 | 周期账单调度与限流都是进程内的；SQLite 不可多实例共享。多实例前必须先换 PG/MySQL |
 
@@ -17,10 +17,10 @@
 
 ## 1. 域名 / DNS
 
-- [ ] 生产域名与 staging 域名的 **A 记录**指向服务器公网 IP（有 IPv6 再加 AAAA）。
-- [ ] `dig +short <domain>` 返回预期 IP；TTL 在切流窗口内先调低（如 300s）。
+- [ ] 生产域名 `your-domain.cn` 的 **A 记录**指向服务器公网 IP（有 IPv6 再加 AAAA）。
+- [ ] `dig +short your-domain.cn` 返回预期 IP；TTL 在切流窗口内先调低（如 300s）。
 - [ ] 云厂商解析里没有遗留指向旧机器/已释放 IP 的记录。
-- [ ] **判据**：`dig +short api.tallyapp.cn` 与 `curl -sS https://api.tallyapp.cn/health/live` 都指向新实例。
+- [ ] **判据**：`dig +short your-domain.cn` 与 `curl -sS https://your-domain.cn/health/live` 都指向新实例。
 - [ ] 不要用裸 IP 作为 App 的 API 地址：Let's Encrypt 不给纯 IP 签证书，且
       `ios/scripts/validate-api-url.sh` 会直接拒绝 IP/单标签主机名。
 
@@ -40,9 +40,9 @@
       cd backend
       docker compose -f docker-compose.caddy.yml config --quiet         # 配置可渲染
       docker compose -f docker-compose.caddy.yml ps                     # 两个服务 healthy
-      curl -sSI https://api.tallyapp.cn/health/live | head -1           # 200
-      curl -sS  https://api.tallyapp.cn/health/ready                    # migrationsApplied > 0
-      echo | openssl s_client -connect api.tallyapp.cn:443 -servername api.tallyapp.cn 2>/dev/null \
+      curl -sSI https://your-domain.cn/health/live | head -1           # 200
+      curl -sS  https://your-domain.cn/health/ready                    # migrationsApplied > 0
+      echo | openssl s_client -connect your-domain.cn:443 -servername your-domain.cn 2>/dev/null \
         | openssl x509 -noout -dates -issuer                            # 证书未过期、签发者为受信任公网 CA
       ```
 - [ ] 证书到期前 30 天内有告警（见第 9 节）。
@@ -54,7 +54,7 @@
 - [ ] 密钥只存在服务器的 `/etc/tally/env`（或密钥管理服务）里，**不进 Git**、不进镜像层。
       `backend/.env` 已在 `.gitignore` 内。
 - [ ] 访问令牌 15m / 刷新令牌 30d（`ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL`）按需收紧；
-      刷新令牌落库为 SHA-256 哈希，重设密码会吊销全部会话。
+      刷新令牌落库为 SHA-256 哈希；旧会话通过刷新链路轮换（无密码体系，无需“重置密码吊销”）。
 - [ ] 轮换流程（密钥泄漏或例行轮换）：
       1. 公告 → 2. 新密钥写入环境变量 → 3. 重启后端（全部 JWT 立即失效，用户需重新登录）
       → 4. 观察 401 峰值与登录成功率。轮换必须与备份（第 5 节）分开做，别叠加风险。
@@ -67,7 +67,7 @@
       iOS 客户端不受影响；这是刻意的默认收紧，不要为了省事写成 `*`。
 - [ ] **判据**：
       ```bash
-      curl -sS -H 'Origin: https://evil.tld' -o /dev/null -D - https://api.tallyapp.cn/health \
+      curl -sS -H 'Origin: https://evil.tld' -o /dev/null -D - https://your-domain.cn/health \
         | grep -i 'access-control-allow-origin' || echo "未放行任意源（符合预期）"
       ```
 
@@ -81,19 +81,21 @@
       回归测试：`cd backend && pnpm test`（`test/trustProxy.test.ts`、`test/rateLimitTrust.test.ts`）。
 - [ ] Caddy 已透传 `X-Forwarded-For`（`reverse_proxy` 默认行为，无需额外配置）。
 
-## 6. 账号恢复（只有短信这一条路）
+## 6. 无密码认证与短信验证码（唯一通道；无重置、无邮箱）
 
-- [ ] 明确记录：**本项目没有邮件投递（未接 SMTP），不存在邮件 reset-token 找回**。
-      旧接口 `POST /auth/forgot-password` 已从后端路由 / OpenAPI / iOS 三处下线。
-- [ ] 生产必须配好阿里云短信，否则 `/auth/reset-code` 会返回 `503 SMS_SEND_FAILED`
+- [ ] 明确记录：**本项目无密码、无密码重置、无邮箱认证**。没有 `password_hash`，没有 SMTP，
+      没有邮件 reset-token。身份 = 手机号（E.164）+ 全局唯一公开昵称。
+- [ ] 旧 `POST /auth/register`、`/auth/login`、`/auth/reset-code`、`/auth/reset-password` 已下线，
+      后端保留路由但统一返回 `410 AUTH_METHOD_REMOVED`，不要再调用它们。
+- [ ] 生产必须配好阿里云短信，否则登录接口（`/auth/login-code` 路径）会返回 `503 SMS_SEND_FAILED`
       （这是刻意行为：绝不「返回成功但用户拿不到验证码」）：
       `ALIYUN_SMS_ENABLED=true`、`ALIYUN_ACCESS_KEY_ID/SECRET`、`ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`。
-- [ ] 用真机跑一遍恢复闭环：`/auth/reset-code` 收到短信 → `/auth/reset-password` 改密 →
-      旧密码登录失败 / 新密码成功 → 其它设备会话已被吊销（refresh 返回 401）。
-- [ ] 运维侧预案：邮箱账号或短信不可用时的**人工重置 SOP**
-      （核实身份 → `sqlite3` 事务内更新 `users.password_hash` → 删除该用户 `auth_sessions`）；
-      操作前必须先做第 7 节的迁移前备份。
-- [ ] **判据**：`cd backend && pnpm test`（`test/prodSecurity.test.ts` 断言生产模式不会假成功，`test/api.test.ts` 覆盖短信恢复闭环）。
+- [ ] 用真机跑一遍完整闭环：`/auth/request-code` 收到短信 → `/auth/login-code` 登录 →
+      新账号走 `/auth/complete-profile` 强制设置唯一昵称 → 家庭/账本可用。
+- [ ] 运维侧预案：短信不可用时的**人工运维 SOP**（核实用户身份 → 核对/修正 `users.phone` 或
+      `users.nickname_key` → 视需要删除该用户 `auth_sessions` 让其重新登录）；操作前必须先做第 7 节的迁移前备份。
+- [ ] **判据**：`cd backend && pnpm test`（`test/prodSecurity.test.ts` 断言生产模式不会假成功，
+      `test/api.test.ts` + `completeProfileAtomic.test.ts` 覆盖短信登录与强制昵称闭环）。
 
 ## 7. 迁移前备份（**执行任何 migration 之前**）
 
@@ -110,7 +112,7 @@
       sha256sum /srv/tally-backups/pre-migration/tally-*.db | tail -1
       sqlite3 <备份文件> "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;"
       ```
-- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新 `backend/migrations/0020_*.sql`）；
+- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0022_*.sql`，共 22 个）；
       已上线的迁移文件与数据库里已应用的记录一律不许改（`test/migration.test.ts` 会校验）。
 - [ ] 回滚预案：SQLite 无 down migration —— 回滚 = 停服 → `scripts/restore.sh <迁移前备份> backend/data` →
       起旧镜像 tag。演练过一次才算有预案（见第 8 节）。
@@ -158,7 +160,7 @@
       用镜像自带的 busybox `nc -z` 探活 80/443），`restart: unless-stopped`，
       `caddy` 通过 `depends_on: condition: service_healthy` 等后端就绪。
 - [ ] 外部拨测（独立于本机，能区分「服务器挂」与「网络挂」）：每 60s 打一次
-      `https://api.tallyapp.cn/health/ready`，连续 3 次失败告警。
+      `https://your-domain.cn/health/ready`，连续 3 次失败告警。
 - [ ] 反代层加探活：Caddy 挂了也要能发现（`docker compose ps` / `systemctl` 级监控）。
 
 ## 10. 日志
@@ -207,7 +209,7 @@
       ```bash
       xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
         -destination 'generic/platform=iOS' -allowProvisioningUpdates \
-        TALLY_API_BASE_URL=https://api.tallyapp.cn ...
+        TALLY_API_BASE_URL=https://your-domain.cn ...
       # 产物复核（禁止 localhost / 示例域 / 占位 / http）
       ios/scripts/validate-api-url.sh --plist "<...>/Release-iphoneos/Tally.app"
       ```
@@ -237,6 +239,28 @@
 
 ---
 
+## 15. 手机号 + 唯一昵称 / 单家庭迁移（0021-0022）上线步骤
+
+> 本迁移将 `users` 身份重建为 `phone`（+86 E.164）与唯一公开 `nickname`，并新增
+> `onboarding_tickets` / `nickname_history` 表；家庭模型收敛为单家庭 + 昵称邀请
+> （`family_invitations.target_user_id`，无外部 token）。**部署顺序不可颠倒：先后端后 iOS。**
+
+- [ ] 上线前确认生产库满足迁移前提：**只有大陆手机号账号、无邮箱账号**（当前生产库为
+      `1` 个手机号账号、`0` 个邮箱账号），且无旧家庭/成员/邀请数据（0022 不迁移旧邀请）。
+- [ ] 发布前对生产 SQLite 做一致备份并保留到观察期结束（`scripts/backup.sh` +
+      `sqlite3 ... PRAGMA integrity_check`）。
+- [ ] 先部署支持新协议的后端，启动后确认 `schema_migrations` 共 **22** 个迁移
+      （`0001` → `0022` 全部应用），再安装新版 iOS；如迁移中途失败（含 0021 守门触发），
+      SQLite 会整体回滚到 0020，可用备份直接恢复。
+- [ ] 每次应用 0021 都会吊销全部旧会话：旧客户端必须重新登录；旧“用户”昵称账号
+      下次通过短信验证后进入强制昵称设置页。
+- [ ] 上线后依次验证：短信登录（新/旧账号）、强制昵称设置、个人账本、创建/邀请/接受/
+      退出/删除家庭、账本切换；并抽查家庭响应与日志均不出现明文手机号。
+- [ ] 保留备份进入观察期（≥24h），按第 14 节观察 401 比例 / 5xx / 验证码服务成功率。
+
+
+---
+
 ## 附：本仓库的本地/CI 验收命令
 
 ```bash
@@ -251,11 +275,12 @@ docker compose -f docker-compose.caddy.yml config --quiet
 docker build -t tally-backend:latest .
 
 # iOS
+./scripts/check-ios-build-settings.sh ios/Tally.xcodeproj Tally
 xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Debug \
   -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
 xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
   -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-  build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL=https://staging-api.tallyapp.cn
+  build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL=https://your-domain.cn
 ios/scripts/validate-api-url.sh --plist <Release Tally.app 路径>
 xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
   -destination 'platform=iOS Simulator,name=iPhone 16' test

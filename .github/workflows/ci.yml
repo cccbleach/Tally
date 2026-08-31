@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: "Release 构建注入的 HTTPS API 地址（禁止 localhost/example.com/占位域名）"
+        description: "Release 构建/Archive 注入的 HTTPS API 地址；正式生产默认 https://your-domain.cn（禁止 localhost/example.com/占位域名）"
         required: false
-        default: "https://staging-api.tallyapp.cn"
+        default: "https://your-domain.cn"
 
-# Release 构建注入的 API 地址：必须是真实可解析的 HTTPS 域名。
+# Release 构建/Archive 注入的 API 地址：正式生产唯一使用 https://your-domain.cn（必须是真实可解析的 HTTPS 域名）。
 # 这里刻意不使用 localhost / example.com / your-* 等占位形式；
 # ios/scripts/validate-api-url.sh 会拒绝占位值，Release 构建也会因此直接失败。
 env:
-  STAGING_API_BASE_URL: ${{ inputs.api_base_url || 'https://staging-api.tallyapp.cn' }}
+  PROD_API_BASE_URL: ${{ inputs.api_base_url || 'https://your-domain.cn' }}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
-          export TALLY_DOMAIN="staging-api.tallyapp.cn"
+          export TALLY_DOMAIN="your-domain.cn"
           export ACME_EMAIL="ci@example.com"
           docker compose -f docker-compose.caddy.yml config --quiet
           docker compose -f docker-compose.caddy.yml config --format json > /tmp/rendered.json
@@ -207,6 +207,10 @@ jobs:
         with:
           xcode-version: "16.0"
 
+      - name: Debug / Release 核心构建设置防回归
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/check-ios-build-settings.sh ios/Tally.xcodeproj Tally
+
       - name: 发布资产检查（图标/版本号/Bundle ID/签名）
         working-directory: ${{ github.workspace }}
         run: ./scripts/check-ios-release-assets.sh ios Tally
@@ -219,15 +223,15 @@ jobs:
             -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-debug" \
             build CODE_SIGNING_ALLOWED=NO
 
-      - name: Release 构建（显式注入非占位 HTTPS staging URL）
+      - name: Release 构建（显式注入正式生产域名 https://your-domain.cn）
         run: |
           set -euo pipefail
-          echo "注入 API 地址：$STAGING_API_BASE_URL"
+          echo "注入正式生产 API 地址：$PROD_API_BASE_URL"
           xcodebuild -project Tally.xcodeproj -scheme Tally \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-release" \
             build CODE_SIGNING_ALLOWED=NO \
-            TALLY_API_BASE_URL="$STAGING_API_BASE_URL"
+            TALLY_API_BASE_URL="$PROD_API_BASE_URL"
 
       - name: 校验 Release 产物 Info.plist 是非占位 HTTPS 地址
         run: |
@@ -245,7 +249,7 @@ jobs:
             grep -a -o -E 'http://[^" ]{0,40}' "$APP/Tally" | sort -u | head
             exit 1
           fi
-          echo "✅ Release 产物 API 地址合规：$STAGING_API_BASE_URL"
+          echo "✅ Release 产物 API 地址合规：$PROD_API_BASE_URL"
 
       - name: 无效 URL 时 Release 构建必须失败（守门人回归）
         run: |
@@ -272,7 +276,7 @@ jobs:
             -archivePath "$RUNNER_TEMP/Tally.xcarchive" \
             -allowProvisioningUpdates \
             archive CODE_SIGNING_ALLOWED=NO \
-            TALLY_API_BASE_URL="$STAGING_API_BASE_URL"
+            TALLY_API_BASE_URL="$PROD_API_BASE_URL"
           APP="$RUNNER_TEMP/Tally.xcarchive/Products/Applications/Tally.app"
           test -d "$APP"
           echo "版本号: $(plutil -extract CFBundleShortVersionString raw -o - "$APP/Info.plist")" \
@@ -345,7 +349,7 @@ jobs:
           xcodebuild -project ios/Tally.xcodeproj -scheme Tally \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -configuration Release -derivedDataPath "$RUNNER_TEMP/dd-clean" \
-            build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL="$STAGING_API_BASE_URL" >/dev/null
+            build CODE_SIGNING_ALLOWED=NO TALLY_API_BASE_URL="$PROD_API_BASE_URL" >/dev/null
           xcodebuild -project ios-local/TallyLocal.xcodeproj -scheme Tally \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-clean2" \

@@ -15,10 +15,10 @@
 
 ```bash
 cd backend
-export TALLY_DOMAIN=api.tallyapp.cn               # 必填：已解析到本机的域名（不给纯 IP 签证书）
-export ACME_EMAIL=ops@tallyapp.cn                 # 必填：证书联系邮箱 + ZeroSSL 备用签发
+export TALLY_DOMAIN=your-domain.cn                    # 必填：已解析到本机的正式生产域名（不给纯 IP 签证书）
+export ACME_EMAIL=ops@example.com                  # 必填：证书联系邮箱 + ZeroSSL 备用签发
 export JWT_SECRET=$(openssl rand -hex 32)         # 必填：≥32 位强随机，占位值会被拒绝启动
-export CORS_ORIGINS=https://api.tallyapp.cn       # 可选：有 Web 端才需要
+export CORS_ORIGINS=https://your-domain.cn            # 可选：有 Web 端才需要
 docker compose -f docker-compose.caddy.yml config --quiet   # 先校验渲染结果
 docker compose -f docker-compose.caddy.yml up -d --build
 docker compose -f docker-compose.caddy.yml ps               # 两个服务都应 healthy
@@ -55,7 +55,7 @@ server {
 3. API 地址由**构建配置注入**，Release **故意没有默认值**（占位域名不允许进产物）：
    ```bash
    xcodebuild -project ios/Tally.xcodeproj -scheme Tally -configuration Release \
-     ... TALLY_API_BASE_URL=https://api.tallyapp.cn
+     ... TALLY_API_BASE_URL=https://your-domain.cn
    ```
    - 构建期由 Run Script 调 `ios/scripts/validate-api-url.sh` 校验：空值、`$(...)` 未展开、
      `http://`、`localhost`/`127.x`/私网 IP/裸 IP、单标签主机名（容器服务名）、
@@ -76,5 +76,5 @@ server {
 - [ ] 生产 `JWT_SECRET` 为 ≥32 位强随机且非占位值
 - [ ] 生产 `CORS_ORIGINS` 已显式列出前端域名（或确认无需放行任何浏览器 Origin）
 - [ ] 后端位于反代之后时 `TRUST_PROXY=1`
-- [ ] 短信（`ALIYUN_SMS_*`）已配置：否则生产 `/auth/reset-code` 返回 503，用户无法找回密码
+- [ ] 短信（`ALIYUN_SMS_*`）已配置：短信验证码是唯一登录通道，否则生产登录返回 503（无密码/无重置/无邮箱）
 - [ ] 仅 22/80/443 对外开放

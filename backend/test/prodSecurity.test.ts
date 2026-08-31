@@ -56,21 +56,25 @@ const created = createDb(join(dir, "t.db"));
 runMigrations(created.sqlite, resolve("./migrations"));
 const app = await buildApp({ db: created.db, jwtSecret: process.env.JWT_SECRET! });
 
-// 注册手机号账号
-await app.inject({ method: "POST", url: "/api/v1/auth/register", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "13800000001", password: "password123", displayName: "P" }) });
+// 直接插入一个已完成昵称的手机号账号（生产模式短信不可用，无法通过 API 完成注册）
+const now = new Date().toISOString();
+created.sqlite.prepare("INSERT INTO users (id, phone, nickname, nickname_key, phone_verified_at, nickname_changed_at, profile_completed_at, default_ledger_id, current_ledger_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+  "prod-user", "+8613800000001", "生产用户", "生产用户", now, now, now, "prod-ledger", "prod-ledger", now, now
+);
+created.sqlite.prepare("INSERT INTO ledgers (id, user_id, name, currency, is_default, created_at, updated_at) VALUES ('prod-ledger', 'prod-user', '默认账本', 'CNY', 1, ?, ?)").run(now, now);
 
-// 1) 生产模式 + 短信未配置：找回密码必须是 503，不能是 200（否则用户永远收不到验证码）
-const res = await app.inject({ method: "POST", url: "/api/v1/auth/reset-code", headers: { "content-type": "application/json" }, payload: JSON.stringify({ account: "13800000001" }) });
+// 1) 生产模式 + 短信未配置：申请验证码必须是 503，不能是 200（否则用户永远收不到验证码）
+const res = await app.inject({ method: "POST", url: "/api/v1/auth/request-code", headers: { "content-type": "application/json" }, payload: JSON.stringify({ phone: "13800000001" }) });
 const body = JSON.parse(res.body);
 console.log("RESULT_RESETCODE_STATUS=" + res.statusCode);
 console.log("RESULT_RESETCODE_HAS_CODE=" + ("code" in body));
 console.log("RESULT_RESETCODE_FAKE_OK=" + (res.statusCode === 200 && body.ok === true));
 
-// 2) 用随意验证码改密码必须失败（旧密码仍可用）
+// 2) 旧密码找回/密码登录整体下线：统一 410
 const badReset = await app.inject({ method: "POST", url: "/api/v1/auth/reset-password", headers: { "content-type": "application/json" }, payload: JSON.stringify({ account: "13800000001", code: "000000", newPassword: "attacker123" }) });
 console.log("RESULT_BADRESET_STATUS=" + badReset.statusCode);
 const stillOk = await app.inject({ method: "POST", url: "/api/v1/auth/login", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "13800000001", password: "password123" }) });
-console.log("RESULT_OLDPASSWORD_STILL_WORKS=" + (stillOk.statusCode === 200));
+console.log("RESULT_OLDPASSWORD_STILL_WORKS=" + stillOk.statusCode);
 
 // 3) 旧邮件找回入口应已下线
 const legacy = await app.inject({ method: "POST", url: "/api/v1/auth/forgot-password", headers: { "content-type": "application/json" }, payload: JSON.stringify({ email: "prod@test.com" }) });
@@ -92,8 +96,8 @@ created.sqlite.close();
   assert.match(stdout, /RESULT_RESETCODE_STATUS=503/, "短信不可用时生产模式必须 503: " + stdout);
   assert.match(stdout, /RESULT_RESETCODE_HAS_CODE=false/, "生产模式不得回传验证码");
   assert.match(stdout, /RESULT_RESETCODE_FAKE_OK=false/, "不得出现“返回成功但用户无法取得凭证”");
-  assert.match(stdout, /RESULT_BADRESET_STATUS=400/, "无有效验证码不得改密码");
-  assert.match(stdout, /RESULT_OLDPASSWORD_STILL_WORKS=true/, "改密码失败时旧密码必须仍可用");
+  assert.match(stdout, /RESULT_BADRESET_STATUS=410/, "密码找回已下线应 410");
+  assert.match(stdout, /RESULT_OLDPASSWORD_STILL_WORKS=410/, "旧密码登录已下线应 410");
   assert.match(stdout, /RESULT_LEGACY_FORGOT_STATUS=404/, "邮件找回入口必须已从契约移除");
   assert.match(stdout, /RESULT_CORS_ALLOW=false/, "生产无白名单时 CORS 不应放行任意 Origin");
 });

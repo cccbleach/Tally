@@ -31,7 +31,7 @@ actor APIClient {
     private var refreshTask: Task<Void, Error>?
 
     // API 地址由构建配置（TALLY_API_BASE_URL → Info.plist 的 TallyAPIBaseURL）注入，
-    // 源码不写死任何“看起来像生产”的地址（曾经的 https://api.example.com 兜底已删除：
+    // 源码不写死任何“看起来像生产”的地址（曾经的示例域名兜底已删除：
     // 它会让占位域名被打进 Release 产物并静默联网失败）。
     // Debug 未配置时回落本机 127.0.0.1（仅开发用）；Release 必须是非占位 HTTPS 域名，否则拒绝启动。
     nonisolated var baseURL: String {
@@ -112,7 +112,6 @@ actor APIClient {
         try await perform(method, path, bodyData: try JSONEncoder().encode(body), query: query)
     }
 
-    @discardableResult
     private func refreshTokens() async throws {
         if let refreshTask { return try await refreshTask.value }
         let task = Task { try await self.performRefresh() }

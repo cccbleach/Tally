@@ -1,3 +1,4 @@
+process.env.ALIYUN_SMS_ENABLED = "false";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
@@ -55,8 +56,9 @@ test("登录接口超出阈值返回 429", async () => {
     attempts.push(
       await app.inject({
         method: "POST",
-        url: "/api/v1/auth/login",
-        payload: { email: "x@example.com", password: "wrong" },
+        url: "/api/v1/auth/login-code",
+        headers: { "content-type": "application/json" },
+        payload: { phone: "13800000001", code: "000000" },
       }),
     );
   }
