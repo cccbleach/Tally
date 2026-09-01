@@ -18,7 +18,7 @@
 ## 认证（手机号 + 唯一昵称身份）
 
 - 手机号仅用于验证码登录，限定中国大陆 11 位，统一存为 `+86` E.164（`138…` / `+86138…` 等同账号）。
-- 昵称是公开账号身份，用于家庭邀请与成员展示；手机号不向其他用户公开（仅本人接口返回）。
+- 昵称是公开账号身份，用于共享账本邀请与成员展示；手机号不向其他用户公开（仅本人接口返回）。
 - 邮箱/密码登录、找回密码已彻底下线：旧接口保留路由但统一返回 `410 AUTH_METHOD_REMOVED`。
 
 | 方法 | 路径 | 说明 |
@@ -149,21 +149,25 @@
 - 汇率：优先用户级 → 全局 → 内置兜底；未知币种按 1:1 兜底。内置常见币种（USD/EUR/GBP/JPY/HKD/KRW/SGD/AUD/CAD）为人民币视角的近似参考值。
 - `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
 
-## 家庭 / 账本（共享）
+## 共享账本（内部兼容 `/families` 路径）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | /families | 创建家庭，自动创建家庭共享账本并切换为当前 |
-| GET | /families | 我加入的家庭列表 |
-| GET | /families/:id | 家庭详情（成员 + 账本） |
-| POST | /families/:id/members | 添加成员 `{userId}` |
-| PATCH | /families/:id | 修改家庭名称 |
+| POST | /families | 一键创建共享账本并切换为当前；同一事务内作废创建者的全部待处理邀请 |
+| GET | /families | 当前共享账本的成员关系（最多一项） |
+| GET | /families/:id | 共享账本详情（成员 + 账本） |
+| POST | /families/:id/invitations | Owner 按精确昵称邀请成员 |
+| GET | /families/invitations/pending | 当前用户可处理的共享账本邀请 |
+| POST | /families/invitations/:id/accept | 接受邀请并自动进入共享账本，同时撤销其他邀请 |
+| POST | /families/invitations/:id/decline | 拒绝邀请 |
+| PATCH | /families/:id | 修改共享账本名称 |
 | DELETE | /families/:id/members/:memberUserId | 移除成员 |
-| GET | /ledgers | 我可见的账本（个人 + 家庭） |
+| GET | /ledgers | 我可见的账本（个人 + 共享） |
 | POST | /ledgers/switch | 切换当前账本 `{ledgerId}` |
 
-- 账户/分类/流水/预算/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定家庭共享账本
-- 访问控制：个人账本仅创建者；家庭账本仅活跃成员；越权返回 403
+- 产品界面只暴露“个人账本 / 共享账本”；`family` 仅作为后端兼容的成员关系命名。
+- 账户/分类/流水/预算/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
+- 访问控制：个人账本仅创建者；共享账本仅活跃成员；越权返回 403。
 
 ## 贷款 / 负债
 

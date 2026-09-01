@@ -25,7 +25,7 @@ export function getAccessibleLedger(db: DB, userId: string, ledgerId?: string): 
       .from(familyMembers)
       .where(and(eq(familyMembers.familyId, ledger.familyId), eq(familyMembers.userId, userId), eq(familyMembers.isActive, true)))
       .get();
-    if (!member) throw forbidden("LEDGER_FORBIDDEN", "无权访问该家庭账本");
+    if (!member) throw forbidden("LEDGER_FORBIDDEN", "无权访问该共享账本");
   } else {
     if (ledger.userId !== userId) throw forbidden("LEDGER_FORBIDDEN", "无权访问该账本");
   }

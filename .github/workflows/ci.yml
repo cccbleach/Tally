@@ -229,6 +229,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./scripts/check-ios-release-assets.sh ios Tally
 
+      - name: 共享账本状态机单元测试
+        run: |
+          set -euo pipefail
+          xcodebuild -project Tally.xcodeproj -scheme Tally \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-test" \
+            -resultBundlePath "$RUNNER_TEMP/tally-test.xcresult" \
+            test CODE_SIGNING_ALLOWED=NO 2>&1 | tee /tmp/tally-test.log
+          grep -q "\*\* TEST SUCCEEDED \*\*" /tmp/tally-test.log
+
       - name: Debug 构建（允许本机 HTTP 联调）
         run: |
           set -euo pipefail

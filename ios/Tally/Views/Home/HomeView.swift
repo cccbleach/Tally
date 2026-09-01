@@ -8,7 +8,10 @@ struct TransactionGroup: Identifiable {
 
 struct HomeView: View {
     @Environment(DataStore.self) private var store
+    @Environment(SharedLedgerStore.self) private var ledgerStore
     @State private var showAdd = false
+    @State private var showLedgerSwitcher = false
+    @State private var ledgerSheetDetent: PresentationDetent = .medium
 
     private var grouped: [TransactionGroup] {
         let dict = Dictionary(grouping: store.transactions, by: { $0.date })
@@ -62,10 +65,61 @@ struct HomeView: View {
             .navigationTitle("明细")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { MonthSwitcher() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        ledgerSheetDetent = .medium
+                        showLedgerSwitcher = true
+                    } label: {
+                        ledgerToolbarLabel
+                    }
+                    .accessibilityLabel("当前账本：\(ledgerStore.currentLedgerName)")
+                    .accessibilityValue(
+                        ledgerStore.invitationCount > 0
+                            ? "有 \(ledgerStore.invitationCount) 条待处理邀请"
+                            : "没有待处理邀请"
+                    )
+                }
             }
             .sheet(isPresented: $showAdd) { AddTransactionView() }
-            .refreshable { await store.loadAll() }
+            .sheet(isPresented: $showLedgerSwitcher) {
+                SharedLedgerSwitcherSheet(selectedDetent: $ledgerSheetDetent)
+                    .presentationDetents([.medium, .large], selection: $ledgerSheetDetent)
+                    .presentationDragIndicator(.visible)
+            }
+            .refreshable {
+                let ledgerChangeReloadedData = await ledgerStore.refresh()
+                if !ledgerChangeReloadedData {
+                    await store.loadAll()
+                }
+            }
             .errorAlert(Binding(get: { store.errorMessage }, set: { store.errorMessage = $0 }))
+        }
+    }
+
+    private var ledgerToolbarLabel: some View {
+        HStack(spacing: 5) {
+            Image(systemName: ledgerStore.currentLedgerIcon)
+            Text(ledgerStore.currentLedgerName)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: 118)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.12), in: Capsule())
+        .overlay(alignment: .topTrailing) {
+            if ledgerStore.invitationCount > 0 {
+                Text(ledgerStore.invitationBadgeText)
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, ledgerStore.invitationCount > 9 ? 4 : 3)
+                    .frame(minWidth: 16, minHeight: 16)
+                    .background(.red, in: Capsule())
+                    .offset(x: 6, y: -7)
+                    .accessibilityHidden(true)
+            }
         }
     }
 

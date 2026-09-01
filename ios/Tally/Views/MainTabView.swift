@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct MainTabView: View {
+    @Environment(AppState.self) private var appState
     @Environment(DataStore.self) private var store
+    @Environment(SharedLedgerStore.self) private var sharedLedgerStore
 
     var body: some View {
         TabView {
@@ -16,6 +18,13 @@ struct MainTabView: View {
             SettingsView()
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
-        .task { await store.loadAll() }
+        .task(id: appState.user?.id) {
+            sharedLedgerStore.bind(userId: appState.user?.id, dataManager: store)
+            // 先确认服务端当前账本，再加载对应缓存，避免启动时短暂展示另一个账本的数据。
+            let didReload = await sharedLedgerStore.refresh()
+            if !didReload {
+                await store.loadAll()
+            }
+        }
     }
 }

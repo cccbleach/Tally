@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(DataStore.self) private var dataStore
+    @Environment(SharedLedgerStore.self) private var sharedLedgerStore
 
     var body: some View {
         Group {
@@ -21,6 +22,7 @@ struct RootView: View {
             if appState.isAuthenticated {
                 dataStore.setContext(userId: newUser, ledgerId: dataStore.ledgerId)
             } else {
+                sharedLedgerStore.reset()
                 dataStore.setContext(userId: nil, ledgerId: nil)
             }
         }
@@ -43,7 +45,7 @@ struct NicknameOnboardingView: View {
                 .font(.system(size: 56))
                 .foregroundColor(.accentColor)
             Text("设置公开昵称").font(.title2.bold())
-            Text("昵称仅用于家庭邀请与成员展示，2–20 个中文/字母/数字/下划线，不能是纯数字")
+            Text("昵称仅用于共享账本邀请与成员展示，2–20 个中文/字母/数字/下划线，不能是纯数字")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

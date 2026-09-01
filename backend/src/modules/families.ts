@@ -16,7 +16,7 @@ type Role = "owner" | "member";
 const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // 邀请 7 天有效
 
 const createFamilySchema = z.object({
-  name: z.string().min(1, "家庭名称不能为空").max(40, "家庭名称过长"),
+  name: z.string().min(1, "共享账本名称不能为空").max(40, "共享账本名称过长"),
 });
 
 const inviteSchema = z.object({
@@ -68,7 +68,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .from(familyMembers)
       .where(and(eq(familyMembers.familyId, familyId), eq(familyMembers.userId, userId), eq(familyMembers.isActive, true)))
       .get();
-    if (!m) throw forbidden("FAMILY_FORBIDDEN", "你不是该家庭成员");
+    if (!m) throw forbidden("FAMILY_FORBIDDEN", "你不是该共享账本成员");
     if (roles && !roles.includes(m.role as Role)) {
       throw forbidden("FAMILY_FORBIDDEN", "没有该操作的权限");
     }
@@ -113,23 +113,30 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const body = createFamilySchema.parse(req.body);
     const now = new Date().toISOString();
     if (activeFamilyOf(userId)) {
-      throw conflict("ALREADY_IN_FAMILY", "每个账号最多属于一个家庭");
+      throw conflict("ALREADY_IN_FAMILY", "每个账号最多加入一个共享账本");
     }
     const familyId = randomUUID();
-    db.transaction(() => {
+    const ledgerId = db.transaction(() => {
       db.insert(families).values({ id: familyId, name: body.name, ownerUserId: userId, createdAt: now, updatedAt: now }).run();
       db.insert(familyMembers)
         .values({ id: randomUUID(), familyId, userId, role: "owner", isActive: true, joinedAt: now })
         .run();
       const ledgerId = randomUUID();
       db.insert(ledgers)
-        .values({ id: ledgerId, userId, familyId, name: body.name + "账本", currency: "CNY", isDefault: false, createdAt: now, updatedAt: now })
+        .values({ id: ledgerId, userId, familyId, name: body.name, currency: "CNY", isDefault: false, createdAt: now, updatedAt: now })
         .run();
       db.update(users).set({ currentLedgerId: ledgerId, updatedAt: now }).where(eq(users.id, userId)).run();
+
+      // 创建自己的共享账本后，其他家庭发来的邀请已经不可再接受。
+      // 必须与家庭、成员、账本和 current_ledger 的写入处于同一事务：
+      // 任一步失败时，邀请仍保持 pending，用户可以继续处理原邀请。
+      db.update(familyInvitations)
+        .set({ status: "revoked", updatedAt: now })
+        .where(and(eq(familyInvitations.targetUserId, userId), eq(familyInvitations.status, "pending")))
+        .run();
       seedDefaultCategories(db, userId, ledgerId);
       return ledgerId;
     });
-    const ledgerId = db.select().from(ledgers).where(eq(ledgers.familyId, familyId)).get()?.id;
     return { item: { ...familyDto({ id: familyId, name: body.name, ownerUserId: userId, createdAt: now, updatedAt: now }), ledgerId } };
   });
 
@@ -150,7 +157,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const { id } = req.params as { id: string };
     requireMember(id, userId);
     const f = db.select().from(families).where(eq(families.id, id)).get();
-    if (!f) throw notFound("FAMILY_NOT_FOUND", "家庭不存在");
+    if (!f) throw notFound("FAMILY_NOT_FOUND", "共享账本不存在");
     const memberRows = db
       .select()
       .from(familyMembers)
@@ -201,12 +208,12 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .from(familyMembers)
       .where(and(eq(familyMembers.familyId, id), eq(familyMembers.userId, target.id), eq(familyMembers.isActive, true)))
       .get();
-    if (inThis) throw conflict("ALREADY_IN_FAMILY", "该用户已是家庭成员");
+    if (inThis) throw conflict("ALREADY_IN_FAMILY", "该用户已是共享账本成员");
 
     // 已属于另一个家庭：不再创建新邀请
     const otherFamily = activeFamilyOf(target.id);
     if (otherFamily && otherFamily.familyId !== id) {
-      throw conflict("ALREADY_IN_FAMILY", "该用户已属于另一个家庭，请先退出再加入");
+      throw conflict("ALREADY_IN_FAMILY", "该用户已加入另一个共享账本，请先退出再加入");
     }
 
     const pending = db
@@ -317,7 +324,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     }
     const myFamily = activeFamilyOf(userId);
     if (myFamily && myFamily.familyId !== invite.familyId) {
-      throw conflict("ALREADY_IN_FAMILY", "你已属于另一个家庭");
+      throw conflict("ALREADY_IN_FAMILY", "你已加入另一个共享账本");
     }
     const now = new Date().toISOString();
     try {
@@ -365,7 +372,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
         });
       });
     } catch (e) {
-      if (isSingleActiveFamilyViolation(e)) throw conflict("ALREADY_IN_FAMILY", "你已属于另一个家庭");
+      if (isSingleActiveFamilyViolation(e)) throw conflict("ALREADY_IN_FAMILY", "你已加入另一个共享账本");
       throw e;
     }
     return { ok: true };
@@ -392,10 +399,16 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     requireMember(id, userId, ["owner"]);
     const body = patchFamilySchema.parse(req.body);
     const f = db.select().from(families).where(eq(families.id, id)).get();
-    if (!f) throw notFound("FAMILY_NOT_FOUND", "家庭不存在");
-    const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+    if (!f) throw notFound("FAMILY_NOT_FOUND", "共享账本不存在");
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { updatedAt: now };
     if (body.name !== undefined) patch.name = body.name;
-    db.update(families).set(patch).where(eq(families.id, id)).run();
+    db.transaction(() => {
+      db.update(families).set(patch).where(eq(families.id, id)).run();
+      if (body.name !== undefined) {
+        db.update(ledgers).set({ name: body.name, updatedAt: now }).where(and(eq(ledgers.familyId, id), isNull(ledgers.deletedAt))).run();
+      }
+    });
     const updated = db.select().from(families).where(eq(families.id, id)).get();
     return { item: familyDto(updated as typeof families.$inferSelect) };
   });
@@ -405,7 +418,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const { id } = req.params as { id: string };
     const me = requireMember(id, userId);
-    if (me.role === "owner") throw badRequest("OWNER_CANNOT_EXIT", "家庭创建者请使用删除家庭或转移所有权");
+    if (me.role === "owner") throw badRequest("OWNER_CANNOT_EXIT", "共享账本所有者请删除共享账本或先转移所有权");
     db.transaction(() => {
       db.update(familyMembers)
         .set({ isActive: false })
@@ -429,7 +442,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const userId = getUserId(req);
     const { id, memberUserId } = req.params as { id: string; memberUserId: string };
     requireMember(id, userId, ["owner"]);
-    if (memberUserId === userId) throw badRequest("CANNOT_REMOVE_SELF", "不能移除自己，请使用退出家庭");
+    if (memberUserId === userId) throw badRequest("CANNOT_REMOVE_SELF", "不能移除自己，请使用退出共享账本");
     db.transaction(() => {
       db.update(familyMembers)
         .set({ isActive: false })
@@ -460,7 +473,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
       .where(and(eq(familyMembers.familyId, id), eq(familyMembers.userId, body.memberUserId), eq(familyMembers.isActive, true)))
       .get();
     if (!target) throw notFound("MEMBER_NOT_FOUND", "成员不存在");
-    if (target.userId === userId) throw badRequest("ALREADY_OWNER", "你已是家庭创建者");
+    if (target.userId === userId) throw badRequest("ALREADY_OWNER", "你已是共享账本所有者");
     const now = new Date().toISOString();
     db.transaction(() => {
       db.update(families).set({ ownerUserId: body.memberUserId, updatedAt: now }).where(eq(families.id, id)).run();
@@ -518,7 +531,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     throw new AppError(410, "FAMILY_FLOW_REMOVED", "直接添加成员已下线，请使用精确昵称邀请");
   });
   app.patch("/api/v1/families/:id/members/:memberUserId", { preHandler: auth }, async () => {
-    throw new AppError(410, "FAMILY_FLOW_REMOVED", "多级角色已下线，家庭仅保留 owner/member");
+    throw new AppError(410, "FAMILY_FLOW_REMOVED", "多级角色已下线，共享账本仅保留 owner/member");
   });
 
   // ---------------- 账本 ----------------

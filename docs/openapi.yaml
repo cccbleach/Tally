@@ -394,6 +394,7 @@ paths:
     post:
       tags: [families]
       operationId: createFamily
+      summary: 一键创建共享账本并切换为当前账本；原子作废创建者的其他待处理邀请
   /api/v1/families/{id}/members:
     post:
       tags: [families]
@@ -657,7 +658,7 @@ components:
       properties:
         id: { type: string, description: 内部不可变 UUID（JWT subject/关联/审计） }
         phone: { type: string, description: +86 E.164（仅本人接口可见） }
-        nickname: { type: string, description: 公开昵称（家庭邀请/成员展示） }
+        nickname: { type: string, description: 公开昵称（共享账本邀请/成员展示） }
         nicknameChangeAvailableAt: { type: string, format: date-time, nullable: true }
         phoneMasked: { type: string, nullable: true, description: 脱敏手机号，仅本人资料接口返回 }
         createdAt: { type: string }

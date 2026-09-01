@@ -7,8 +7,8 @@ import type { FastifyInstance } from "fastify";
 import { createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/runner.js";
 import { buildApp } from "../src/server.js";
-import { familyInvitations, familyMembers } from "../src/db/schema.js";
-import { eq } from "drizzle-orm";
+import { families, familyInvitations, familyMembers, ledgers, users } from "../src/db/schema.js";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { smsRegister, authHeaders } from "./helpers.js";
 import { isSingleActiveFamilyViolation } from "../src/modules/families.js";
 
@@ -100,6 +100,81 @@ test("接受邀请后撤销该用户所有其他家庭的 pending 邀请（不�
 
   const pendingAfter = await api(target.headers, "GET", "/api/v1/families/invitations/pending");
   assert.equal(pendingAfter.json().items.length, 0, "接受后应无待处理邀请");
+});
+
+test("创建自己的共享账本：原子撤销本人全部 pending 邀请、自动切换，且不影响他人邀请", async () => {
+  const ownerA = await makeUser("13872100001", "创邀甲");
+  const ownerB = await makeUser("13872100002", "创邀乙");
+  const creator = await makeUser("13872100003", "自建目标");
+  const otherTarget = await makeUser("13872100004", "无关目标");
+  const familyA = await createFamily(ownerA.headers, "邀请甲账本");
+  const familyB = await createFamily(ownerB.headers, "邀请乙账本");
+  const inviteA = await invite(ownerA.headers, familyA, "自建目标");
+  const inviteB = await invite(ownerB.headers, familyB, "自建目标");
+  const unrelatedInvite = await invite(ownerA.headers, familyA, "无关目标");
+
+  const created = await api(creator.headers, "POST", "/api/v1/families", { name: "自建目标的共享账本" });
+  assert.equal(created.statusCode, 200, created.body);
+  const item = created.json().item as { id: string; ledgerId: string };
+
+  assert.equal(await inviteStatus(inviteA), "revoked");
+  assert.equal(await inviteStatus(inviteB), "revoked");
+  assert.equal(await inviteStatus(unrelatedInvite), "pending", "其他用户的邀请不能被误撤销");
+
+  const currentUser = db.select().from(users).where(eq(users.id, creator.id)).get()!;
+  assert.equal(currentUser.currentLedgerId, item.ledgerId, "创建后应自动切换到新共享账本");
+  const currentLedger = db.select().from(ledgers).where(eq(ledgers.id, item.ledgerId)).get()!;
+  assert.equal(currentLedger.familyId, item.id);
+  assert.equal(currentLedger.name, "自建目标的共享账本", "共享账本名不应被重复追加“账本”后缀");
+
+  const renamed = await api(creator.headers, "PATCH", `/api/v1/families/${item.id}`, { name: "改名后的共享账本" });
+  assert.equal(renamed.statusCode, 200, renamed.body);
+  assert.equal(
+    db.select().from(ledgers).where(eq(ledgers.id, item.ledgerId)).get()?.name,
+    "改名后的共享账本",
+    "改名必须同步到账本列表使用的名称",
+  );
+
+  const pendingAfter = await api(creator.headers, "GET", "/api/v1/families/invitations/pending");
+  assert.equal(pendingAfter.statusCode, 200, pendingAfter.body);
+  assert.equal(pendingAfter.json().items.length, 0);
+
+  const acceptRevoked = await api(creator.headers, "POST", `/api/v1/families/invitations/${inviteA}/accept`);
+  assert.equal(acceptRevoked.statusCode, 409, acceptRevoked.body);
+  assert.equal(acceptRevoked.json().error.code, "INVITATION_EXISTS");
+});
+
+test("创建共享账本故障回滚：邀请保持 pending，家庭/成员/账本/current_ledger 均不落库", async () => {
+  const inviter = await makeUser("13872200001", "回滚邀主");
+  const creator = await makeUser("13872200002", "回滚目标");
+  const inviterFamily = await createFamily(inviter.headers, "回滚邀请账本");
+  const pendingInvite = await invite(inviter.headers, inviterFamily, "回滚目标");
+  const beforeUser = db.select().from(users).where(eq(users.id, creator.id)).get()!;
+
+  // seedDefaultCategories 位于邀请撤销之后；在这里失败可以同时验证
+  // 家庭、成员、账本、current_ledger 和已经执行的邀请撤销都会整体回滚。
+  sqlite.exec("CREATE TRIGGER inject_family_create_fail BEFORE INSERT ON categories BEGIN SELECT RAISE(ABORT, 'injected family create failure'); END;");
+  try {
+    const failed = await api(creator.headers, "POST", "/api/v1/families", { name: "不会落库的共享账本" });
+    assert.equal(failed.statusCode, 500, failed.body);
+    assert.equal(failed.json().error.code, "INTERNAL");
+  } finally {
+    sqlite.exec("DROP TRIGGER inject_family_create_fail");
+  }
+
+  assert.equal(await inviteStatus(pendingInvite), "pending", "事务失败后邀请仍应可处理");
+  assert.equal(
+    db.select().from(familyMembers).where(and(eq(familyMembers.userId, creator.id), eq(familyMembers.isActive, true))).all().length,
+    0,
+  );
+  assert.equal(db.select().from(families).where(eq(families.ownerUserId, creator.id)).all().length, 0);
+  assert.equal(
+    db.select().from(ledgers).where(and(eq(ledgers.userId, creator.id), isNotNull(ledgers.familyId))).all().length,
+    0,
+    "失败后不能留下共享账本",
+  );
+  const afterUser = db.select().from(users).where(eq(users.id, creator.id)).get()!;
+  assert.equal(afterUser.currentLedgerId, beforeUser.currentLedgerId, "失败后必须仍停留在原个人账本");
 });
 
 test("重复接受 / 重复拒绝 / 已处理撤销 → 统一 409", async () => {

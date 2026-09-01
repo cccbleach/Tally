@@ -179,3 +179,35 @@ targets:
         # 生产用 HTTPS 不再全局放行任意 HTTP；仅允许本地/局域网 HTTP 便于开发联调
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+  TallyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - TallyTests
+    dependencies:
+      - target: Tally
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tally.logan.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Tally.app/Tally"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  Tally:
+    build:
+      targets:
+        Tally: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: TallyTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
