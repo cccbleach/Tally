@@ -142,7 +142,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
       configs:
         # API 地址由构建配置注入：Debug 允许本地 HTTP，Release 必须显式注入真实 HTTPS 域名。
-        # Release 故意【不设默认值】：任何占位域名（example.com / your-production-domain 等）
+        # Release 故意【不设默认值】：任何示例域或占位域名
         # 都可能被误打进产物，因此无有效 URL 时 preBuild 校验会让构建直接失败。
         Debug:
           TALLY_API_BASE_URL: http://localhost:8080
