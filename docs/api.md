@@ -92,10 +92,21 @@
 | DELETE | /transactions/:id | 删除 |
 | POST | /transactions/import | 账单导入，见下 |
 
-**账单导入（微信/支付宝等）**
-- 方式一（原始文件，推荐客户端上传）：
+**统一账单导入（推荐）**
+
+- `POST /imports/jobs/upload`，multipart 字段 `file`；`source` 可不传（或为 `auto`），按文件内容识别微信、支付宝、银行。仍兼容旧客户端显式传 `wechat/alipay/bank`，但不允许来源与内容不符。
+- 可传查询参数 `ledgerId`，将上传、预览、确认和提交固定在同一个账本。
+- 支持 TXT/CSV/XLSX，以及银行导出的文字版 PDF；XLSX ≤5MB，其余 ≤20MB，单次 ≤5000 条。ZIP 请先解压，加密 PDF 请先解密，扫描件暂不支持。
+- 银行 CSV/XLSX 当前支持标准表头：记账日期/交易日期、交易金额/发生额、余额/联机余额/账户余额，可附币种、收支、摘要和流水号；不是所有银行的任意导出格式都能解析。
+- 返回 `{item,counts}` 暂存结果，`item.source` 是识别结果；经 `/imports/jobs/{id}` 预览、`/imports/items/{id}` 确认后，再 `POST /imports/jobs/{id}/commit` 正式入账。
+- 需要当前账本至少一个非归档账户；iOS 在选文件前提供“添加账户”入口，不会自动创建或猜测账户。
+- iOS 从“设置 → 导入账单”进入，不再手动选择微信/支付宝/银行；文件选择器授权在协调读取结束后释放，multipart 上传与普通请求共用登录续期。
+
+**旧 JSON 账单导入（兼容保留）**
+
+- 方式一（原始文件）：
   `{mode:"raw", source:"wechat"|"alipay"|"bank", content:"<文本内容>" 或 contentBase64:"<文件base64>"}`
-  - 微信：支持 txt / xlsx（自动识别）；支付宝：csv；银行：pdf / csv（当前按招商银行等常见“日期 币种 金额 余额 摘要”格式）
+  - 微信：支持 txt / xlsx；支付宝：csv；银行：文字版 pdf。银行 CSV/XLSX 请使用上面的统一上传接口。
   - 后端自动识别 UTF-8 / GBK 编码
 - 方式二（客户端已解析）：
   `{mode:"items", items:[{date, amount, type, note?, externalId?}]}`

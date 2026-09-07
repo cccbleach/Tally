@@ -22,6 +22,7 @@ import {
   type ParsedBill,
 } from "../lib/billParser.js";
 import type { Jwt } from "../auth/jwt.js";
+import { parseBillFile } from "../lib/billFile.js";
 
 // xlsx 解析错误统一转为 400，避免把内部解析异常暴露为 500。
 async function safeParseWechatXlsx(buf: Uint8Array): Promise<import("../lib/billParser.js").ParsedBill[]> {
@@ -81,7 +82,7 @@ async function createStagedJob(
   if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
 
   const accts = listAccountsForUser(db, userId, ledgerId);
-  const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
+  const defaultAccount = accts.find((a) => !a.isArchived);
   if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
   const cats = listCategoriesForUser(db, userId, ledgerId);
   const incomeCat = cats.find((c) => c.type === "income");
@@ -225,33 +226,21 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (buf.length > MAX_SIZE) throw badRequest("FILE_TOO_LARGE", "文件不能超过 20MB");
     if (buf.length === 0) throw badRequest("FILE_EMPTY", "文件为空");
 
-    const filename = (data.filename ?? "").toLowerCase();
-    if (!/\.(txt|csv|xlsx|pdf)$/.test(filename)) throw badRequest("FILE_EXT_NOT_ALLOWED", "仅支持 txt/csv/xlsx/pdf 文件");
-
     const fieldSource = (data.fields?.source as { value?: string } | undefined)?.value;
-    const source = fieldSource || (req.query as Record<string, string | undefined>).source;
-    const src = source === "wechat" || source === "alipay" || source === "bank" ? source : "items";
-    if (src === "items") throw badRequest("SOURCE_REQUIRED", "请指定账单来源");
+    const source = z.enum(["auto", "wechat", "alipay", "bank"]).optional().parse(
+      fieldSource || (req.query as Record<string, string | undefined>).source,
+    );
 
     const ledgerId = getAccessibleLedger(db, userId, (req.query as Record<string, string | undefined>).ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
-    let items: ParsedBill[];
-    if (src === "bank") {
-      items = await parseBankPdf(buf);
-    } else if (src === "wechat") {
-      items = buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b ? await safeParseWechatXlsx(buf) : parseWechat(decodeBillBuffer(buf));
-    } else {
-      items = parseAlipay(decodeBillBuffer(buf));
-    }
-    if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单");
-    if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
+    const parsed = await parseBillFile(buf, data.filename ?? "", source);
 
     const counts = await createStagedJob(db, {
       userId,
       ledgerId,
-      items,
-      source: src,
+      items: parsed.items,
+      source: parsed.source,
       filename: data.filename ?? null,
       fileHash: fileHashOf(buf),
     });

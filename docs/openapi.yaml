@@ -343,18 +343,27 @@ paths:
     post:
       tags: [imports]
       operationId: uploadImportFile
-      summary: multipart 上传账单文件（txt/csv/xlsx/pdf，≤20MB）
+      summary: 统一上传账单并自动识别来源（txt/csv/xlsx/pdf）
+      description: >-
+        未传 source 或传 auto 时按文件内容与表头识别微信、支付宝、银行，不依赖文件名。
+        XLSX 最大 5MB，其他文件最大 20MB，最多 5000 条；ZIP 需先解压，不支持扫描 PDF。
+        银行表格支持记账日期/交易日期、交易金额/发生额、余额等标准表头；PDF 支持文字版“日期 币种 金额 余额 摘要”。
+        创建暂存任务，不直接写正式流水；当前账本需至少一个非归档账户。
+      parameters:
+        - { name: ledgerId, in: query, required: false, schema: { type: string }, description: 固定导入所属账本，缺省使用当前账本 }
       requestBody:
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [source, file]
+              required: [file]
               properties:
-                source: { type: string, enum: [wechat, alipay, bank] }
+                source: { type: string, enum: [auto, wechat, alipay, bank], default: auto, description: 兼容旧客户端的显式来源；与内容不一致返回 BILL_SOURCE_MISMATCH }
                 file: { type: string, format: binary }
       responses:
         "200": { description: 已创建暂存任务 }
+        "400": { description: 文件为空、格式未识别、来源不匹配、需解压/解密或未创建账户；error.code 和 message 给出原因 }
+        "413": { description: multipart 文件超过 20MB，FILE_TOO_LARGE }
   /api/v1/imports/jobs/{id}:
     get:
       tags: [imports]

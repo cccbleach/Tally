@@ -23,6 +23,7 @@
 		51A795CEF78D1F0D56AC4FDA /* RecurringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06310F711F4FEFBA429E1B31 /* RecurringView.swift */; };
 		59F2AC3004F8BBA5A7C14447 /* SharedLedgerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36810BB7B46C56BEDF90540D /* SharedLedgerStore.swift */; };
 		645FD11014CDAE745CBD6021 /* BudgetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E7347CB4B2A04DD32C15BDF /* BudgetsView.swift */; };
+		818F8243D8F5C66B5CD7472B /* BillImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35DACDD96A1B95B82A1BF84 /* BillImportTests.swift */; };
 		82EF2FCF43AEBBFD00D70E9E /* StagedImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198156EF0288AD47531542F4 /* StagedImportView.swift */; };
 		8B82A74FE8BAE701AD66D112 /* AddTransactionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5995C8DEF9BF2C7F6A5D40EA /* AddTransactionView.swift */; };
 		917D462F542D8E7FAA3F9473 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6342E892EBE5BEB778A07EE4 /* HomeView.swift */; };
@@ -30,6 +31,7 @@
 		A520BBCF15BCF92B91B2BFA7 /* SharedLedgerSwitcherSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5053DE17F5127EBACD3DE0C5 /* SharedLedgerSwitcherSheet.swift */; };
 		D2D47FE492168B5BD5332232 /* TallyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C459C89EA7705BE5561E7FB8 /* TallyApp.swift */; };
 		D50864228F236B8075C75B32 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF996E1B698CC64A9AE0760F /* LoginView.swift */; };
+		D705C9C9901A1D97B70BCBE8 /* BillImportFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D38E2D96EBD0F38E08BAA679 /* BillImportFile.swift */; };
 		D7EE5F4D73DF8AC3CA326A7A /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73FCE09AE18EE3B81AA586A /* MainTabView.swift */; };
 		EADA31B4C874E3C20A19F2FA /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54782358AF5CE7F3BAD98E06 /* AccountsView.swift */; };
 		EAF917C9C1E68B4E119288DB /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE08867B8DEAB77A713CFF6E /* Models.swift */; };
@@ -75,7 +77,9 @@
 		BD07A89C9EF367D0B3BF4C56 /* TallyTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TallyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C459C89EA7705BE5561E7FB8 /* TallyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TallyApp.swift; sourceTree = "<group>"; };
 		CFE90039DFE7B302A6FEAE6B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		D38E2D96EBD0F38E08BAA679 /* BillImportFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillImportFile.swift; sourceTree = "<group>"; };
 		D9487F191BBA698B3FC93F5B /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
+		E35DACDD96A1B95B82A1BF84 /* BillImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillImportTests.swift; sourceTree = "<group>"; };
 		FE2202435550B5C2E28900D5 /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -94,6 +98,7 @@
 			children = (
 				8668BA29E65D6E3B2826CA53 /* APIClient.swift */,
 				FE2202435550B5C2E28900D5 /* APIService.swift */,
+				D38E2D96EBD0F38E08BAA679 /* BillImportFile.swift */,
 				21204D627D4C8710391424BA /* KeychainStore.swift */,
 			);
 			path = Networking;
@@ -119,6 +124,7 @@
 		34EE4265E10AB09688EA4F1A /* TallyTests */ = {
 			isa = PBXGroup;
 			children = (
+				E35DACDD96A1B95B82A1BF84 /* BillImportTests.swift */,
 				9D11F056F5CBE54B0BB73A62 /* SharedLedgerStoreTests.swift */,
 			);
 			path = TallyTests;
@@ -375,6 +381,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				818F8243D8F5C66B5CD7472B /* BillImportTests.swift in Sources */,
 				4632E17EF1200A8843BD4340 /* SharedLedgerStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -388,6 +395,7 @@
 				EADA31B4C874E3C20A19F2FA /* AccountsView.swift in Sources */,
 				8B82A74FE8BAE701AD66D112 /* AddTransactionView.swift in Sources */,
 				A32674C9FF582790F5FEBFDC /* AppState.swift in Sources */,
+				D705C9C9901A1D97B70BCBE8 /* BillImportFile.swift in Sources */,
 				645FD11014CDAE745CBD6021 /* BudgetsView.swift in Sources */,
 				38D8930ECE127B52B0160F08 /* CategoryListView.swift in Sources */,
 				286BD23E07C78B2FD353C28F /* Components.swift in Sources */,

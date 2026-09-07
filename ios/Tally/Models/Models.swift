@@ -384,6 +384,7 @@ struct CreditCardBillItem: Codable, Identifiable, Hashable {
 
 struct ImportJob: Codable, Identifiable, Hashable {
     let id: String
+    let ledgerId: String
     let source: String
     let filename: String?
     let fileHash: String?

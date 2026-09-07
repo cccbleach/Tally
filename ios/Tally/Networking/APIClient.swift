@@ -22,6 +22,20 @@ enum APIError: LocalizedError {
     }
 }
 
+protocol APITokenStoring: Sendable {
+    func loadToken() -> String?
+    func loadRefreshToken() -> String?
+    func saveTokens(token: String, refreshToken: String)
+    func deleteTokens()
+}
+
+struct KeychainAPITokenStore: APITokenStoring {
+    func loadToken() -> String? { KeychainStore.loadToken() }
+    func loadRefreshToken() -> String? { KeychainStore.loadRefreshToken() }
+    func saveTokens(token: String, refreshToken: String) { KeychainStore.saveTokens(token: token, refreshToken: refreshToken) }
+    func deleteTokens() { KeychainStore.deleteTokens() }
+}
+
 actor APIClient {
     static let shared = APIClient()
     private static var didNotifySessionExpired = false
@@ -29,12 +43,22 @@ actor APIClient {
     // 单飞刷新：同一时刻只允许一个刷新任务，其余并发请求等待同一个结果，
     // 避免首页多个请求同时遇到 401 时并发刷新 token。
     private var refreshTask: Task<Void, Error>?
+    private let session: URLSession
+    private let tokenStore: any APITokenStoring
+    private let baseURLOverride: String?
+
+    init(session: URLSession = .shared, tokenStore: any APITokenStoring = KeychainAPITokenStore(), baseURLOverride: String? = nil) {
+        self.session = session
+        self.tokenStore = tokenStore
+        self.baseURLOverride = baseURLOverride
+    }
 
     // API 地址由构建配置（TALLY_API_BASE_URL → Info.plist 的 TallyAPIBaseURL）注入，
     // 源码不写死任何“看起来像生产”的地址（曾经的示例域名兜底已删除：
     // 它会让占位域名被打进 Release 产物并静默联网失败）。
     // Debug 未配置时回落本机 127.0.0.1（仅开发用）；Release 必须是非占位 HTTPS 域名，否则拒绝启动。
     nonisolated var baseURL: String {
+        if let baseURLOverride { return baseURLOverride }
         let configured = (Bundle.main.object(forInfoDictionaryKey: "TallyAPIBaseURL") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         #if DEBUG
@@ -85,14 +109,14 @@ actor APIClient {
     }
 
     nonisolated var token: String? {
-        KeychainStore.loadToken()
+        tokenStore.loadToken()
     }
 
     // 认证彻底失效：清理令牌并广播一次，让 AppState 统一登出
-    private static func expireSession() {
-        KeychainStore.deleteTokens()
-        if !didNotifySessionExpired {
-            didNotifySessionExpired = true
+    private func expireSession() {
+        tokenStore.deleteTokens()
+        if !APIClient.didNotifySessionExpired {
+            APIClient.didNotifySessionExpired = true
             NotificationCenter.default.post(name: .tallySessionExpired, object: nil)
         }
     }
@@ -112,6 +136,11 @@ actor APIClient {
         try await perform(method, path, bodyData: try JSONEncoder().encode(body), query: query)
     }
 
+    // 文件上传复用 JSON 请求的认证、单飞续期与一次重试；重试保持相同文件字节与 boundary。
+    func upload<T: Decodable>(_ path: String, bodyData: Data, contentType: String, query: [URLQueryItem] = []) async throws -> T {
+        try await perform("POST", path, bodyData: bodyData, query: query, contentType: contentType)
+    }
+
     private func refreshTokens() async throws {
         if let refreshTask { return try await refreshTask.value }
         let task = Task { try await self.performRefresh() }
@@ -122,25 +151,25 @@ actor APIClient {
 
     // 真正的刷新逻辑：换一组新令牌并落库；失败则清理会话。
     private func performRefresh() async throws {
-        guard let refresh = KeychainStore.loadRefreshToken() else {
-            APIClient.expireSession()
+        guard let refresh = tokenStore.loadRefreshToken() else {
+            expireSession()
             throw APIError.unauthorized
         }
         var req = URLRequest(url: URL(string: baseURL + "/api/v1/auth/refresh")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(["refreshToken": refresh])
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            APIClient.expireSession()
+            expireSession()
             throw APIError.unauthorized
         }
         let res = try JSONDecoder().decode(RefreshResponse.self, from: data)
-        KeychainStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
+        tokenStore.saveTokens(token: res.token, refreshToken: res.refreshToken)
         APIClient.didNotifySessionExpired = false
     }
 
-    private func makeRequest(_ method: String, _ path: String, bodyData: Data?, query: [URLQueryItem]) throws -> URLRequest {
+    private func makeRequest(_ method: String, _ path: String, bodyData: Data?, query: [URLQueryItem], contentType: String? = nil) throws -> URLRequest {
         guard var components = URLComponents(string: baseURL + path) else {
             throw APIError.invalidURL
         }
@@ -154,7 +183,7 @@ actor APIClient {
         // 仅当存在 body 时才设置 JSON Content-Type；
         // 无 body 的 POST（如 /auth/logout /ledgers/switch 等）不发送空 JSON 头，避免服务端按空 body 解析。
         if bodyData != nil {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(contentType ?? "application/json", forHTTPHeaderField: "Content-Type")
         }
         if let token {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -163,26 +192,26 @@ actor APIClient {
         return req
     }
 
-    private func perform<T: Decodable>(_ method: String, _ path: String, bodyData: Data?, query: [URLQueryItem]) async throws -> T {
-        let (data, code) = try await execute(makeRequest(method, path, bodyData: bodyData, query: query))
+    private func perform<T: Decodable>(_ method: String, _ path: String, bodyData: Data?, query: [URLQueryItem], contentType: String? = nil) async throws -> T {
+        let (data, code) = try await execute(makeRequest(method, path, bodyData: bodyData, query: query, contentType: contentType))
         if (200..<300).contains(code) {
             return try JSONDecoder().decode(T.self, from: data)
         }
         // 401 时单飞刷新后重试一次
         if code == 401 {
             try await refreshTokens()
-            let retry = try await execute(makeRequest(method, path, bodyData: bodyData, query: query))
+            let retry = try await execute(makeRequest(method, path, bodyData: bodyData, query: query, contentType: contentType))
             if (200..<300).contains(retry.1) {
                 return try JSONDecoder().decode(T.self, from: retry.0)
             }
-            APIClient.expireSession()
+            if retry.1 == 401 { expireSession() }
             return try decodeError(retry.0, status: retry.1)
         }
         return try decodeError(data, status: code)
     }
 
     private func execute(_ req: URLRequest) async throws -> (Data, Int) {
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         return (data, http.statusCode)
     }

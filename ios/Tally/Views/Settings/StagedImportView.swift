@@ -1,11 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 暂存导入（阶段 3）：上传 → 预览明细 → 逐项 accept/skip → 批量提交
+/// 统一账单导入：选择文件 → 自动识别来源 → 预览确认 → 入账。
 struct StagedImportView: View {
     @Environment(DataStore.self) private var store
-    @State private var source: BillSource = .wechat
     @State private var showPicker = false
+    @State private var showAddAccount = false
     @State private var job: ImportJob?
     @State private var items: [ImportItem] = []
     @State private var isLoading = false
@@ -14,26 +14,30 @@ struct StagedImportView: View {
 
     var body: some View {
         Form {
-            Section("账单来源") {
-                Picker("来源", selection: $source) {
-                    ForEach(BillSource.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .disabled(isLoading || job != nil)
-            }
-
             if job == nil {
-                Section("上传文件") {
+                Section("导入账单") {
+                    Text("微信、支付宝、银行账单都从这里导入，自动识别来源。预览确认后才会记入账本。")
+                        .font(.subheadline)
+                    if !hasActiveAccount {
+                        Text("当前账本还没有入账账户，请先添加一个账户。")
+                            .foregroundStyle(.secondary)
+                        Button("添加账户") { showAddAccount = true }
+                    }
                     Button {
                         showPicker = true
                     } label: {
                         if isLoading {
                             ProgressView()
                         } else {
-                            Label("选择账单文件（txt / csv / xlsx / pdf）", systemImage: "square.and.arrow.up")
+                            Label("选择账单文件", systemImage: "doc.badge.plus")
                         }
                     }
-                    .disabled(isLoading)
+                    .disabled(isLoading || !hasActiveAccount)
+                    Text("支持 TXT、CSV、XLSX、文字版 PDF。Excel 最大 5MB，其余文件最大 20MB；ZIP 请先解压，扫描件暂不支持。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section("如何导出账单") {
                     Text("微信：我 → 服务 → 钱包 → 账单 → 导出账单\n支付宝：我的 → 账单 → … → 开具交易流水\n银行：App 导出交易流水")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -41,10 +45,18 @@ struct StagedImportView: View {
             }
 
             if let job {
-                Section("任务 \(job.id.prefix(8)) · \(job.status)") {
-                    LabeledContent("来源", value: job.source)
+                Section(job.status == "staged" ? "账单已识别" : "导入结果") {
+                    LabeledContent("来源", value: sourceName(job.source))
                     LabeledContent("文件", value: job.filename ?? "-")
                     LabeledContent("明细", value: "\(items.count) 条")
+                    if items.isEmpty {
+                        Button("重新加载预览") {
+                            Task {
+                                do { try await loadDetail(job.id, ledgerId: job.ledgerId) }
+                                catch { errorMessage = error.localizedDescription }
+                            }
+                        }
+                    }
                 }
 
                 Section("预览与确认") {
@@ -79,7 +91,7 @@ struct StagedImportView: View {
                         .padding(.vertical, 2)
                     }
                 }
-                .disabled(job.status != "staged")
+                .disabled(job.status != "staged" || isLoading)
 
                 Section {
                     Button {
@@ -92,6 +104,9 @@ struct StagedImportView: View {
                         }
                     }
                     .disabled(isLoading || job.status != "staged" || acceptedCount == 0)
+                    if job.status != "staged" {
+                        Button("继续导入其他账单") { reset() }
+                    }
                 }
             }
 
@@ -99,8 +114,8 @@ struct StagedImportView: View {
                 Section { Text(message).foregroundColor(.green) }
             }
         }
-        .navigationTitle("暂存导入")
-        .fileImporter(isPresented: $showPicker, allowedContentTypes: [.item]) { result in
+        .navigationTitle("导入账单")
+        .fileImporter(isPresented: $showPicker, allowedContentTypes: BillImportFile.contentTypes) { result in
             switch result {
             case .success(let url):
                 Task { await upload(url) }
@@ -108,7 +123,28 @@ struct StagedImportView: View {
                 errorMessage = error.localizedDescription
             }
         }
+        .sheet(isPresented: $showAddAccount) { AccountFormView() }
+        .task { await store.refreshAccounts() }
+        .onChange(of: store.ledgerId) { _, _ in reset() }
         .errorAlert($errorMessage)
+    }
+
+    private var hasActiveAccount: Bool { store.accounts.contains { !$0.isArchived } }
+
+    private func sourceName(_ source: String) -> String {
+        switch source {
+        case "wechat": return "微信"
+        case "alipay": return "支付宝"
+        case "bank": return "银行"
+        default: return "账单文件"
+        }
+    }
+
+    private func reset() {
+        job = nil
+        items = []
+        message = nil
+        errorMessage = nil
     }
 
     private var acceptedCount: Int {
@@ -122,29 +158,39 @@ struct StagedImportView: View {
     private func upload(_ url: URL) async {
         isLoading = true
         defer { isLoading = false }
+        let ledgerId = store.ledgerId
+        message = nil
         do {
-            let created = try await APIService.shared.uploadImportFile(source: source.apiValue, fileURL: url)
+            let created = try await APIService.shared.uploadImportFile(fileURL: url, ledgerId: ledgerId)
+            guard store.ledgerId == ledgerId else { return }
             job = created
-            await loadDetail(created.id)
-            message = "已解析并暂存，请确认明细后提交"
+            try await loadDetail(created.id, ledgerId: created.ledgerId)
+            message = "已识别账单，请确认明细后导入"
         } catch {
-            errorMessage = "上传失败：" + error.localizedDescription
+            guard store.ledgerId == ledgerId else { return }
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoPermissionError {
+                errorMessage = "无法读取所选文件，请先保存到“文件”App，下载完成后重新选择。"
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
-    private func loadDetail(_ id: String) async {
-        do {
-            let detail = try await APIService.shared.importJob(id: id)
-            job = detail.job
-            items = detail.items
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    private func loadDetail(_ id: String, ledgerId: String) async throws {
+        let detail = try await APIService.shared.importJob(id: id, ledgerId: ledgerId)
+        guard store.ledgerId == ledgerId else { return }
+        job = detail.job
+        items = detail.items
     }
 
     private func decide(_ id: String, decision: String) async {
+        guard let job else { return }
+        isLoading = true
+        defer { isLoading = false }
         do {
-            try await APIService.shared.decideImportItem(id: id, decision: decision)
+            try await APIService.shared.decideImportItem(id: id, decision: decision, ledgerId: job.ledgerId)
+            guard store.ledgerId == job.ledgerId else { return }
             items = items.map { $0.id == id ? ImportItem(id: $0.id, jobId: $0.jobId, externalId: $0.externalId, occurredAt: $0.occurredAt, type: $0.type, amount: $0.amount, currency: $0.currency, merchant: $0.merchant, rawDescription: $0.rawDescription, duplicateStatus: $0.duplicateStatus, matchedTransactionId: $0.matchedTransactionId, decision: decision) : $0 }
         } catch {
             errorMessage = error.localizedDescription
@@ -156,10 +202,11 @@ struct StagedImportView: View {
         defer { isLoading = false }
         guard let job else { return }
         do {
-            let res = try await APIService.shared.commitImportJob(id: job.id)
+            let res = try await APIService.shared.commitImportJob(id: job.id, ledgerId: job.ledgerId)
+            guard store.ledgerId == job.ledgerId else { return }
             message = "导入成功 \(res.imported) 条，跳过 \(res.skipped) 条"
             await store.loadAll()
-            await loadDetail(job.id)
+            try await loadDetail(job.id, ledgerId: job.ledgerId)
         } catch {
             errorMessage = error.localizedDescription
         }

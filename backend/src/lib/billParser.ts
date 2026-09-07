@@ -58,7 +58,7 @@ function yuanToCents(val: string | undefined): number | null {
 }
 
 // 微信支付明细通用行解析（txt 和 xlsx 共用）
-function parseWechatRows(rows: string[][]): ParsedBill[] {
+export function parseWechatRows(rows: string[][]): ParsedBill[] {
   const headerIdx = rows.findIndex(
     (r) => r.some((h) => h.includes("交易时间")) && r.some((h) => h.includes("金额")),
   );
@@ -100,9 +100,11 @@ function parseWechatRows(rows: string[][]): ParsedBill[] {
 
 // 微信支付明细 txt
 export function parseWechat(text: string): ParsedBill[] {
-  const lines = text.split(/\r?\n/);
-  const rows = lines.map((l) => splitCsvLine(l));
-  return parseWechatRows(rows);
+  return parseWechatRows(parseTextRows(text));
+}
+
+export function parseTextRows(text: string): string[][] {
+  return text.replace(/^\uFEFF/, "").split(/\r?\n/).map(splitCsvLine);
 }
 
 // xlsx 解析：在独立 worker 线程中以受限内存/超时解析（改用安全解析器 exceljs，
@@ -154,6 +156,11 @@ export function getXlsxQueueState(): { active: number; queued: number } {
 
 // 微信支付明细 xlsx（微信“导出账单”实际生成的是 xlsx）
 export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
+  return parseWechatRows(await readXlsxRows(buf));
+}
+
+// 同一受限 worker 读取表格，再按表头识别来源；不在主线程重复解压。
+export async function readXlsxRows(buf: Uint8Array): Promise<string[][]> {
   if (buf.byteLength > XLSX_MAX_FILE_SIZE) {
     throw new Error("XLSX_TOO_LARGE: 微信 xlsx 账单超过 5MB 上限");
   }
@@ -171,7 +178,7 @@ export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
       execArgv: [],
     });
 
-    return await new Promise<ParsedBill[]>((resolve, reject) => {
+    return await new Promise<string[][]>((resolve, reject) => {
       let settled = false;
       const fail = (msg: string) => {
         if (settled) return;
@@ -195,7 +202,7 @@ export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
         // MessagePort 拆除竞态，触发 uv_async_send → SIGABRT（macOS 并行测试崩源）。
         if (msg.ok) {
           try {
-            resolve(parseWechatRows((msg.rows ?? []).map((r) => r ?? [])));
+            resolve((msg.rows ?? []).map((r) => r ?? []));
           } catch (e) {
             reject(e);
           }
@@ -221,10 +228,13 @@ export async function parseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
 
 // 支付宝交易明细 csv
 export function parseAlipay(text: string): ParsedBill[] {
-  const lines = text.split(/\r?\n/);
-  const headerIdx = lines.findIndex((l) => l.includes("金额") && l.includes("收/支"));
+  return parseAlipayRows(parseTextRows(text));
+}
+
+export function parseAlipayRows(rows: string[][]): ParsedBill[] {
+  const headerIdx = rows.findIndex((r) => r.some((h) => h.includes("金额")) && r.some((h) => h.includes("收/支")));
   if (headerIdx < 0) return [];
-  const headers = splitCsvLine(lines[headerIdx]!);
+  const headers = rows[headerIdx]!;
   const col = (name: string): number => headers.findIndex((h) => h.includes(name));
 
   const diRaw =
@@ -242,10 +252,8 @@ export function parseAlipay(text: string): ParsedBill[] {
   const si = col("交易状态");
 
   const items: ParsedBill[] = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (!line.trim()) continue;
-    const cols = splitCsvLine(line);
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const cols = rows[i]!;
     const typeRaw = cols[ti] ?? "";
     const type = typeRaw === "收入" ? "income" : typeRaw === "支出" ? "expense" : null;
     if (!type) continue;
@@ -271,7 +279,8 @@ export async function parseBankPdf(buf: Uint8Array): Promise<ParsedBill[]> {
   const { PDFParse } = require("pdf-parse") as {
     PDFParse: new (opt: { data: Uint8Array }) => { getText(): Promise<{ text: string }>; destroy(): Promise<void> };
   };
-  const parser = new PDFParse({ data: buf });
+  // pdf.js 不接受 Node Buffer；必须复制成普通 Uint8Array。
+  const parser = new PDFParse({ data: new Uint8Array(buf) });
   let text = "";
   try {
     const result = await parser.getText();

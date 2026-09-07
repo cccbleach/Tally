@@ -447,52 +447,29 @@ struct APIService {
     // ---- 暂存导入（阶段 3）----
 
     // multipart 上传账单文件，返回创建的暂存任务（不直接写流水）
-    func uploadImportFile(source: String, fileURL: URL) async throws -> ImportJob {
-        let boundary = "TallyBoundary-\(UUID().uuidString)"
-        var body = Data()
-        func appendStr(_ s: String) { body.append(Data(s.utf8)) }
-
-        appendStr("--\(boundary)\r\n")
-        appendStr("Content-Disposition: form-data; name=\"source\"\r\n\r\n\(source)\r\n")
-
-        let fileData = try Data(contentsOf: fileURL)
-        appendStr("--\(boundary)\r\n")
-        appendStr("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n")
-        appendStr("Content-Type: application/octet-stream\r\n\r\n")
-        body.append(fileData)
-        appendStr("\r\n--\(boundary)--\r\n")
-
-        var req = URLRequest(url: URL(string: APIClient.shared.baseURL + "/api/v1/imports/jobs/upload")!)
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if let token = APIClient.shared.token {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        req.httpBody = body
-
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            if let err = try? JSONDecoder().decode(APIErrorResponse.self, from: data) {
-                throw APIError.server(code: err.error.code, message: err.error.message)
-            }
-            throw APIError.http(status: (response as? HTTPURLResponse)?.statusCode ?? -1)
-        }
+    func uploadImportFile(fileURL: URL, ledgerId: String?) async throws -> ImportJob {
+        let file = try await Task.detached(priority: .userInitiated) {
+            try BillImportFile.read(fileURL)
+        }.value
+        let multipart = file.multipart(boundary: "TallyBoundary-\(UUID().uuidString)")
         struct UploadResponse: Decodable { let item: ImportJob }
-        return try JSONDecoder().decode(UploadResponse.self, from: data).item
+        let query = ledgerId.map { [URLQueryItem(name: "ledgerId", value: $0)] } ?? []
+        let response: UploadResponse = try await client.upload("/api/v1/imports/jobs/upload", bodyData: multipart.data, contentType: multipart.contentType, query: query)
+        return response.item
     }
 
-    func importJob(id: String) async throws -> ImportJobDetail {
-        let res: ImportJobDetail = try await client.request("GET", "/api/v1/imports/jobs/\(id)")
+    func importJob(id: String, ledgerId: String) async throws -> ImportJobDetail {
+        let res: ImportJobDetail = try await client.request("GET", "/api/v1/imports/jobs/\(id)", query: [URLQueryItem(name: "ledgerId", value: ledgerId)])
         return res
     }
 
-    func decideImportItem(id: String, decision: String) async throws {
+    func decideImportItem(id: String, decision: String, ledgerId: String) async throws {
         struct Body: Encodable { let decision: String }
-        let _: OKResponse = try await client.request("PATCH", "/api/v1/imports/items/\(id)", body: Body(decision: decision))
+        let _: OKResponse = try await client.request("PATCH", "/api/v1/imports/items/\(id)", body: Body(decision: decision), query: [URLQueryItem(name: "ledgerId", value: ledgerId)])
     }
 
-    func commitImportJob(id: String) async throws -> ImportCommitResult {
-        let res: ImportCommitResult = try await client.request("POST", "/api/v1/imports/jobs/\(id)/commit")
+    func commitImportJob(id: String, ledgerId: String) async throws -> ImportCommitResult {
+        let res: ImportCommitResult = try await client.request("POST", "/api/v1/imports/jobs/\(id)/commit", query: [URLQueryItem(name: "ledgerId", value: ledgerId)])
         return res
     }
 }

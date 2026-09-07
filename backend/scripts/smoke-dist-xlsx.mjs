@@ -11,6 +11,7 @@ const backendRoot = join(__dirname, "..");
 
 // 显式从 dist 编译产物导入，模拟生产部署路径
 const billParser = await import(join(backendRoot, "dist/lib/billParser.js"));
+const { parseBillFile } = await import(join(backendRoot, "dist/lib/billFile.js"));
 const ExcelJS = require("exceljs");
 
 // 构造一份最小微信 xlsx
@@ -25,3 +26,9 @@ if (!Array.isArray(items) || items.length !== 1 || items[0].externalId !== "4200
   throw new Error("dist 路径 xlsx 解析结果不符合预期: " + JSON.stringify(items));
 }
 console.log("OK 生产 dist 路径 Excel 解析 smoke test 通过，解析到", items.length, "条");
+
+const automatic = await parseBillFile(Buffer.from(buf), "statement.xlsx");
+if (automatic.source !== "wechat" || automatic.items[0]?.externalId !== "4200301") {
+  throw new Error("dist 路径自动识别 Excel 来源失败");
+}
+console.log("OK 生产 dist 路径自动识别账单来源通过");

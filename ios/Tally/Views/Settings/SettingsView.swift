@@ -1,114 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
-
-enum BillSource: String, CaseIterable, Identifiable {
-    case wechat = "微信"
-    case alipay = "支付宝"
-    case bank = "银行"
-    var id: String { rawValue }
-    var apiValue: String {
-        switch self {
-        case .wechat: return "wechat"
-        case .alipay: return "alipay"
-        case .bank: return "bank"
-        }
-    }
-}
-
-struct BillImportView: View {
-    @Environment(DataStore.self) private var store
-    @State private var source: BillSource = .wechat
-    @State private var showPicker = false
-    @State private var importing = false
-    @State private var lastData: Data?
-    @State private var hasDuplicates = false
-    @State private var message: String?
-    @State private var errorMessage: String?
-
-    var body: some View {
-        Form {
-            Section("账单来源") {
-                Picker("来源", selection: $source) {
-                    ForEach(BillSource.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            }
-            Section("导出文件") {
-                Button {
-                    showPicker = true
-                } label: {
-                    if importing {
-                        ProgressView()
-                    } else {
-                        Text("选择账单文件（txt / csv）")
-                    }
-                }
-                .disabled(importing)
-                Text("微信：我 → 服务 → 钱包 → 账单 → 导出账单（xlsx/txt）\n支付宝：我的 → 账单 → 右上角… → 开具交易流水（csv）\n银行：银行 App 导出交易流水（pdf/csv）")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            if let message {
-                Section {
-                    Text(message).foregroundColor(.green)
-                    if hasDuplicates, let data = lastData {
-                        Button("仍导入这些重复项") {
-                            Task { await forceImport(data) }
-                        }
-                        .disabled(importing)
-                    }
-                }
-            }
-        }
-        .navigationTitle("导入账单")
-        .fileImporter(isPresented: $showPicker, allowedContentTypes: [.item]) { result in
-            switch result {
-            case .success(let url):
-                Task { await importFile(url) }
-            case .failure(let error):
-                errorMessage = error.localizedDescription
-            }
-        }
-        .errorAlert($errorMessage)
-    }
-
-    private func importFile(_ url: URL) async {
-        importing = true
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if accessing { url.stopAccessingSecurityScopedResource() }
-            importing = false
-        }
-        do {
-            let data = try Data(contentsOf: url)
-            lastData = data
-            let res = try await APIService.shared.importBill(source: source.apiValue, data: data)
-            let dups = res.suspectedDuplicates ?? []
-            hasDuplicates = !dups.isEmpty
-            var msg = "导入成功 \(res.imported) 条，重复跳过 \(res.skipped) 条"
-            if hasDuplicates {
-                msg += "，疑似重复 \(dups.count) 条（已自动跳过）"
-            }
-            message = msg
-            await store.loadAll()
-        } catch {
-            errorMessage = "导入失败：" + error.localizedDescription
-        }
-    }
-
-    private func forceImport(_ data: Data) async {
-        importing = true
-        defer { importing = false }
-        do {
-            let res = try await APIService.shared.importBill(source: source.apiValue, data: data, force: true)
-            hasDuplicates = false
-            message = "已强制导入 \(res.imported) 条（重复项保留）"
-            await store.loadAll()
-        } catch {
-            errorMessage = "导入失败：" + error.localizedDescription
-        }
-    }
-}
 
 struct LiabilitiesView: View {
     @Environment(DataStore.self) private var store
@@ -317,7 +207,7 @@ struct SettingsView: View {
                 Section("管理") {
                     NavigationLink("分类管理") { CategoryListView() }
                     NavigationLink("周期账单") { RecurringView() }
-                    NavigationLink("转入账单（预览确认）") { StagedImportView() }
+                    NavigationLink("导入账单") { StagedImportView() }
                     NavigationLink("负债中心") { LiabilitiesView() }
                 }
 
