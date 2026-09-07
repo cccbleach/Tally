@@ -25,7 +25,7 @@
     "better-sqlite3": "^12.2.0",
     "drizzle-orm": "^0.45.2",
     "exceljs": "4.4.0",
-    "fastify": "^5.2.0",
+    "fastify": "^5.12.3",
     "jose": "^5.9.6",
     "node-cron": "^3.0.3",
     "pdf-parse": "^2.4.5",
