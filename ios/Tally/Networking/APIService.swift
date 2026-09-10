@@ -181,6 +181,15 @@ struct APIService {
         return res.revoked
     }
 
+    /// 退出全部设备：吊销该用户在服务端的所有会话，返回被吊销数量。
+    /// 同样必须在删除本地令牌之前调用（接口需要 access token 鉴权）。
+    @discardableResult
+    func logoutAllDevices() async throws -> Int {
+        struct Response: Decodable { let ok: Bool; let revoked: Int }
+        let res: Response = try await client.request("POST", "/api/v1/auth/logout-all")
+        return res.revoked
+    }
+
     /// 昵称可用性
     func checkNicknameAvailability(_ nickname: String) async throws -> NicknameCheckResponse {
         try await client.request("GET", "/api/v1/users/nickname-availability", query: [URLQueryItem(name: "nickname", value: nickname)])
@@ -506,3 +515,6 @@ struct LoanPayResponse: Decodable {
     let interestTransactionId: String
     let paymentGroupId: String
 }
+
+// AppState 通过 AuthServicing 依赖认证能力（便于测试注入替身）
+extension APIService: AuthServicing {}

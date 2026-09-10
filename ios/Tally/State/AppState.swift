@@ -1,6 +1,16 @@
 import Foundation
 import Observation
 
+/// AppState 需要的认证侧能力。
+/// 抽成协议的唯一目的是可测：登出/全端登出必须能在单元测试里注入替身，
+/// 而不是直接依赖 `APIService.shared`（与 `SharedLedgerServing` 同一套路子）。
+protocol AuthServicing: Sendable {
+    /// 吊销当前设备的会话（幂等）。返回是否真的吊销了。
+    func logout(refreshToken: String?) async throws -> Bool
+    /// 吊销该用户全部会话，返回被吊销数量。
+    func logoutAllDevices() async throws -> Int
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -13,7 +23,11 @@ final class AppState {
 
     private var sessionObserver: NSObjectProtocol?
 
-    init() {
+    /// 认证依赖（默认走真实 APIService；测试注入替身）
+    private let auth: any AuthServicing
+
+    init(auth: any AuthServicing = APIService.shared) {
+        self.auth = auth
         // 统一处理认证失效：任何接口最终 401（含刷新失败）都会触发登出
         // 观察者随 App 生命周期存在，无需显式移除
         sessionObserver = NotificationCenter.default.addObserver(
@@ -78,8 +92,8 @@ final class AppState {
         isAuthenticated = true
     }
 
-    /// 退出登录：
-    /// 1) 先调用服务端登出吊销 refresh 会话（best-effort：网络失败也必须完成本地登出）；
+    /// 退出登录（当前设备）：
+    /// 1) 先取到 refresh token 并调用服务端登出吊销会话（best-effort：网络失败也必须完成本地登出）；
     /// 2) 清空本地文件缓存——必须在命名空间仍是当前用户时清理，否则会清错命名空间、
     ///    把该用户的账户/流水/统计缓存长期留在 Application Support 里；
     /// 3) 最后删除 Keychain 令牌并重置内存状态。
@@ -90,15 +104,38 @@ final class AppState {
 
         if hadToken {
             // 不等待结果、不因失败回滚本地登出：服务端吊销是"尽力而为"的加固手段
-            Task {
-                do {
-                    try await APIService.shared.logout(refreshToken: refreshToken)
-                } catch {
-                    // 网络不可用/会话已过期都无需打扰用户，本地登出照常完成
-                }
+            Task { [auth] in
+                _ = try? await auth.logout(refreshToken: refreshToken)
             }
         }
 
+        clearLocalSession()
+    }
+
+    /// 退出全部设备：吊销该用户在所有设备上的会话（令牌可能在别处泄漏时的兜底手段）。
+    /// 返回值表示**服务端是否吊销成功**：
+    /// - true  → 其他设备的 refresh token 已失效；
+    /// - false → 服务端吊销失败（网络不可用等），但本地登出已完成，其他设备会话仍然有效，
+    ///           调用方应提示用户稍后重试（可先改密码类兜底不存在，本项目无密码）。
+    /// 注意：必须在删除本地 Keychain 令牌**之前**调用服务端（需要 access token 鉴权），
+    /// 因此这里先 await 网络调用，再清本地状态。
+    @discardableResult
+    func logoutAllDevices() async -> Bool {
+        var revoked = false
+        if KeychainStore.loadToken() != nil {
+            do {
+                _ = try await auth.logoutAllDevices()
+                revoked = true
+            } catch {
+                revoked = false
+            }
+        }
+        clearLocalSession()
+        return revoked
+    }
+
+    /// 本地登出清理：缓存 → 令牌 → 内存状态（顺序不可调换，见 logout 注释）
+    private func clearLocalSession() {
         LocalCache.clearAll()
         KeychainStore.deleteTokens()
         user = nil
