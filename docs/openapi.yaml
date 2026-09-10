@@ -23,6 +23,7 @@ tags:
 paths:
   /health:
     get:
+      security: []
       tags: [audit]
       summary: 基础健康检查
       operationId: health
@@ -37,6 +38,7 @@ paths:
               schema: { $ref: "#/components/schemas/Health" }
   /health/live:
     get:
+      security: []
       tags: [audit]
       summary: 存活探针（仅进程）
       operationId: healthLive
@@ -44,6 +46,7 @@ paths:
         "200": { description: OK }
   /health/ready:
     get:
+      security: []
       tags: [audit]
       summary: 就绪探针（数据库+迁移）
       operationId: healthReady
@@ -73,6 +76,7 @@ paths:
         "410": { $ref: "#/components/responses/Error" }
   /api/v1/auth/refresh:
     post:
+      security: []
       tags: [auth]
       operationId: refreshToken
       requestBody:
@@ -91,6 +95,7 @@ paths:
               schema: { $ref: "#/components/schemas/AuthResponse" }
   /api/v1/auth/request-code:
     post:
+      security: []
       tags: [auth]
       operationId: requestCode
       summary: 发送登录短信验证码（开发模式回传 code，生产不返回）
@@ -116,6 +121,7 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login-code:
     post:
+      security: []
       tags: [auth]
       operationId: loginWithCode
       summary: 验证码登录：完整账号直接登录；新账号或旧“用户”账号返回 nickname_required
@@ -138,6 +144,7 @@ paths:
         "429": { $ref: "#/components/responses/Error" }
   /api/v1/auth/complete-profile:
     post:
+      security: []
       tags: [auth]
       operationId: completeProfile
       summary: 完成强制昵称设置（新账号/旧“用户”账号），成功后返回会话
@@ -259,7 +266,7 @@ paths:
               required: [name, type, currency, initialBalance]
               properties:
                 name: { type: string }
-                type: { type: string, enum: [cash, bank, wallet, investment, credit_card, credit, loan, other] }
+                type: { type: string, enum: [cash, bank, e-wallet, credit, loan, other] }
                 currency: { type: string }
                 initialBalance: { type: integer }
                 ledgerId: { type: string }
@@ -273,6 +280,19 @@ paths:
                 properties:
                   item: { $ref: "#/components/schemas/Account" }
   /api/v1/categories:
+    post:
+      tags: [categories]
+      operationId: createCategory
+      summary: 新建分类（收入/支出）
+      responses:
+        "200":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/Category" }
     get:
       tags: [categories]
       operationId: listCategories
@@ -422,6 +442,14 @@ paths:
       responses:
         "410": { $ref: "#/components/responses/Error" }
   /api/v1/families/{id}/invitations:
+    get:
+      tags: [families]
+      operationId: listFamilyInvitations
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 该家庭的邀请列表
     post:
       tags: [families]
       operationId: createFamilyInvitation
@@ -453,6 +481,14 @@ paths:
       tags: [families]
       operationId: transferFamilyOwnership
   /api/v1/families/{id}:
+    get:
+      tags: [families]
+      operationId: getFamily
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 家庭详情
     delete:
       tags: [families]
       operationId: deleteFamily
@@ -506,6 +542,22 @@ paths:
                 properties:
                   item: { $ref: "#/components/schemas/Loan" }
   /api/v1/loans/{id}:
+    patch:
+      tags: [loans]
+      operationId: updateLoan
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的贷款
+    delete:
+      tags: [loans]
+      operationId: deleteLoan
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除（关联的负债账户一并清理）
     get:
       tags: [loans]
       operationId: getLoan
@@ -608,6 +660,271 @@ paths:
       responses:
         "200":
           description: 审计记录列表
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: 当前令牌对应的用户与账本上下文
+      responses:
+        "200":
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: 服务端登出（吊销请求携带的 refreshToken 对应会话）
+      description: 幂等：令牌缺失/已吊销/不属于当前用户时返回 ok=true、revoked=false。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: 登出结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean }
+                  revoked: { type: boolean }
+  /api/v1/auth/logout-all:
+    post:
+      tags: [auth]
+      operationId: logoutAll
+      summary: 退出全部设备（吊销该用户所有仍有效的会话）
+      responses:
+        "200":
+          description: 吊销数量
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revoked]
+                properties:
+                  ok: { type: boolean }
+                  revoked: { type: integer, description: 被吊销的会话数 }
+  /api/v1/accounts/{id}:
+    get:
+      tags: [accounts]
+      operationId: getAccount
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 账户详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/Account" }
+    patch:
+      tags: [accounts]
+      operationId: updateAccount
+      summary: 更新账户
+      description: >
+        改 `currency` 受 ACCOUNT_CURRENCY_LOCKED 约束：账户已被流水/贷款/信用卡账单引用时返回 400
+        （否则历史金额会被重新解释成另一种币种）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的账户
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/Account" }
+        "400":
+          description: 参数非法或账户币种被锁定
+    delete:
+      tags: [accounts]
+      operationId: deleteAccount
+      summary: 删除账户（软删除=归档，保留流水关联）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已归档
+  /api/v1/categories/{id}:
+    patch:
+      tags: [categories]
+      operationId: updateCategory
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的分类
+    delete:
+      tags: [categories]
+      operationId: deleteCategory
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+  /api/v1/transactions/{id}:
+    get:
+      tags: [transactions]
+      operationId: getTransaction
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 流水详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/Transaction" }
+    patch:
+      tags: [transactions]
+      operationId: updateTransaction
+      summary: 修改流水（支持乐观锁 expectedUpdatedAt）
+      description: 改 accountId 时目标账户币种必须与流水币种一致，否则 400 CURRENCY_MISMATCH。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的流水
+        "409":
+          description: CONFLICT（expectedUpdatedAt 不匹配）
+    delete:
+      tags: [transactions]
+      operationId: deleteTransaction
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+  /api/v1/transactions/link:
+    post:
+      tags: [transactions]
+      operationId: linkTransactions
+      summary: 关联两笔流水（如退款与原始支出）
+      responses:
+        "200":
+          description: 关联结果
+  /api/v1/budgets:
+    get:
+      tags: [budgets]
+      operationId: listBudgets
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+        - { name: year, in: query, schema: { type: integer }, required: false }
+        - { name: month, in: query, schema: { type: integer }, required: false }
+      responses:
+        "200":
+          description: 预算列表（含已用额度）
+    post:
+      tags: [budgets]
+      operationId: createBudget
+      summary: 新建预算（同账本同月同分类唯一）
+      responses:
+        "200":
+          description: 已创建
+        "409":
+          description: 该月该分类的预算已存在
+  /api/v1/budgets/overview:
+    get:
+      tags: [budgets]
+      operationId: budgetOverview
+      summary: 预算总览（全部预算的执行进度）
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 总览
+  /api/v1/budgets/{id}:
+    patch:
+      tags: [budgets]
+      operationId: updateBudget
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的预算
+    delete:
+      tags: [budgets]
+      operationId: deleteBudget
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+  /api/v1/recurring:
+    get:
+      tags: [recurring]
+      operationId: listRecurring
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+      responses:
+        "200":
+          description: 周期账单列表
+    post:
+      tags: [recurring]
+      operationId: createRecurring
+      summary: 新建周期账单（币种继承所选账户，避免多币种下硬编码 CNY）
+      responses:
+        "200":
+          description: 已创建
+  /api/v1/recurring/{id}:
+    patch:
+      tags: [recurring]
+      operationId: updateRecurring
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 更新后的周期账单
+    delete:
+      tags: [recurring]
+      operationId: deleteRecurring
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已删除
+  /api/v1/stats/summary:
+    get:
+      tags: [stats]
+      operationId: statsSummary
+      summary: 收支与资产负债汇总
+      description: >
+        totalDebt / balance 均为基准币口径，且与 `/liabilities` 的 totalDebt 必须相等
+        （外币贷款与外币信用卡欠款都按汇率折算后再汇总）。
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+        - { name: year, in: query, schema: { type: integer }, required: false }
+        - { name: month, in: query, schema: { type: integer }, required: false }
+      responses:
+        "200":
+          description: 汇总（income/expense/net/balance/totalAssets/totalDebt/byCategory/byAccount/daily）
+  /api/v1/stats/trend:
+    get:
+      tags: [stats]
+      operationId: statsTrend
+      parameters:
+        - { name: ledgerId, in: query, schema: { type: string }, required: false }
+        - { name: months, in: query, schema: { type: integer, minimum: 1, maximum: 60 }, required: false }
+      responses:
+        "200":
+          description: 近 N 个月趋势
 components:
   securitySchemes:
     bearerAuth:

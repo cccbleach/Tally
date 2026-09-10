@@ -90,12 +90,56 @@
 - [ ] 生产必须配好阿里云短信，否则登录接口（`/auth/login-code` 路径）会返回 `503 SMS_SEND_FAILED`
       （这是刻意行为：绝不「返回成功但用户拿不到验证码」）：
       `ALIYUN_SMS_ENABLED=true`、`ALIYUN_ACCESS_KEY_ID/SECRET`、`ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`。
+- [ ] **认证模式必须为 `production`**（生产编排已显式钉住，勿改动）。`AUTH_MODE=development` 会把短信验证码
+      **明文回传给请求方**，任何人只要知道手机号即可调用 `/auth/login-code` 登录该账号（含已注册老用户）。
+
+      `NODE_ENV` / `AUTH_MODE` 组合的启动行为（由 `backend/src/config.ts` 的互锁与
+      `test/prodSecurity.test.ts` 的回归用例共同保证）：
+
+      | `NODE_ENV` | `AUTH_MODE` | 启动 | 验证码回传 |
+      |---|---|---|---|
+      | `production` | 未设置（默认 production） | ✅ 正常 | ❌ 永不回传 |
+      | `production` | `production` / `PRODUCTION`（大小写与首尾空白会归一） | ✅ 正常 | ❌ 永不回传 |
+      | `production` | `development` | ⛔ 拒绝启动 | — |
+      | `production` | 拼错/非法值（如 `develpoment`、`prod`、`1`） | ⛔ 拒绝启动 | — |
+      | `production` | 任意值 + `DISABLE_RATE_LIMIT=true` | ⛔ 拒绝启动 | — |
+      | 未设置 | 未设置（默认 development） | ✅ 正常（本地开发/测试） | ⚠️ **会回传**（有意行为，仅供本机联调） |
+
+      **注意**：裸跑 `node dist/index.js`、systemd 单元等未设 `NODE_ENV` 的场景会落入最后一行，
+      即"能回传验证码的开发模式"。对外部署必须显式 `NODE_ENV=production`（compose 与镜像内均已设）。
+      若开发模式下同时配置了真实短信凭据，启动日志会打印醒目告警。
 - [ ] 用真机跑一遍完整闭环：`/auth/request-code` 收到短信 → `/auth/login-code` 登录 →
       新账号走 `/auth/complete-profile` 强制设置唯一昵称 → 家庭/账本可用。
 - [ ] 运维侧预案：短信不可用时的**人工运维 SOP**（核实用户身份 → 核对/修正 `users.phone` 或
       `users.nickname_key` → 视需要删除该用户 `auth_sessions` 让其重新登录）；操作前必须先做第 7 节的迁移前备份。
-- [ ] **判据**：`cd backend && pnpm test`（`test/prodSecurity.test.ts` 断言生产模式不会假成功，
-      `test/api.test.ts` + `completeProfileAtomic.test.ts` 覆盖短信登录与强制昵称闭环）。
+- [ ] **判据**：`cd backend && pnpm test`（`test/prodSecurity.test.ts` 断言生产模式不会假成功、
+      `AUTH_MODE`/`DISABLE_RATE_LIMIT` 非法组合拒绝启动，
+      `test/api.test.ts` + `completeProfileAtomic.test.ts` 覆盖短信登录与强制昵称闭环）；
+      编排层由 `scripts/check-compose-auth-mode.mjs` 守门（CI 已接入）。
+
+## 6.5 数据审计：币种与负债口径（本次修复后的上线前检查）
+
+- [ ] **币种合法性审计**：历史版本允许写入任意币种字符串（如 `hello`），统计侧对未知币种按 1:1 兜底
+      会静默算错金额。升级后写接口已强校验，存量数据请用下面的 SQL 确认一次：
+      ```bash
+      sqlite3 /app/data/tally.db "
+        SELECT 'accounts' t, currency, COUNT(*) FROM accounts GROUP BY currency
+        UNION ALL SELECT 'transactions', currency, COUNT(*) FROM transactions GROUP BY currency
+        UNION ALL SELECT 'loans', currency, COUNT(*) FROM loans GROUP BY currency;"
+      ```
+      期望：所有 `currency` 都是 3 位大写字母（`CNY`/`USD`…）。小写值（如 `usd`）已被读侧自动归一；
+      非 3 字母的脏值需要人工确认后修正（例如按实际来源改为 `CNY`）。
+- [ ] **负债口径一致性**：同一账本下 `/stats/summary.totalDebt` 与 `/liabilities.totalDebt` 必须相等
+      （外币信用卡欠款与外币贷款都要按汇率折算后再相加）。
+      ```bash
+      curl -sS -H "Authorization: Bearer $TOKEN" https://<域名>/api/v1/liabilities | jq .totalDebt
+      curl -sS -H "Authorization: Bearer $TOKEN" "https://<域名>/api/v1/stats/summary" | jq .totalDebt
+      ```
+- [ ] **账户改币种限制**：升级后，已被流水/贷款/信用卡账单引用的账户改币种会返回
+      400 `ACCOUNT_CURRENCY_LOCKED`。若业务上确需改，请"新建同币种账户 → 迁移流水 → 归档旧账户"。
+- [ ] **短信频控参数**（可用环境变量调，生产建议保留默认）：
+      `SMS_SEND_COOLDOWN_SECONDS`（默认 60）、`SMS_SEND_DAILY_LIMIT`（默认 5/号码/天）、
+      `SMS_SEND_GLOBAL_DAILY_BUDGET`（默认 2000/天）；另建议在阿里云控制台再设一层号码级频控。
 
 ## 7. 迁移前备份（**执行任何 migration 之前**）
 

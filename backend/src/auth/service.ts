@@ -1,5 +1,5 @@
 import { randomUUID, createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, not } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, not, or } from "drizzle-orm";
 import type { DB } from "../db/client.js";
 import { users, authSessions, onboardingTickets, ledgers, categories } from "../db/schema.js";
 import { AppError, badRequest, conflict, unauthorized } from "../lib/errors.js";
@@ -270,10 +270,13 @@ export function makeAuthService(db: DB, jwt: Jwt) {
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + REFRESH_TTL_MS).toISOString();
     db.transaction((tx) => {
-      tx.update(authSessions)
+      // 条件更新：只吊销"仍然有效"的那一行。若 changes === 0，说明并发/重放已经把它用掉了，
+      // 此时必须整体失败（否则同一 refresh token 会被轮换出两个新会话）。
+      const revoked = tx.update(authSessions)
         .set({ revokedAt: now, lastUsedAt: now })
-        .where(eq(authSessions.id, session.id))
+        .where(and(eq(authSessions.id, session.id), isNull(authSessions.revokedAt)))
         .run();
+      if (revoked.changes === 0) throw unauthorized("INVALID_REFRESH_TOKEN", "刷新令牌无效或已失效");
       tx.insert(authSessions)
         .values({
           id: randomUUID(),
@@ -296,11 +299,61 @@ export function makeAuthService(db: DB, jwt: Jwt) {
     return { user: toUserDto(user) };
   }
 
+  // ---------- 会话吊销（服务端登出） ----------
+  // 历史缺陷：没有任何服务端登出入口，AppState.logout() 只删本地 Keychain；
+  // refresh token 默认 30 天有效，且 auth_sessions.revoked_at 从不用于"用户主动登出"，
+  // 令牌一旦泄漏，用户与运维都无法吊销。
+  //
+  // access token 只含 sub（无会话标识），refresh token 才有 jti 且其哈希落库，
+  // 因此"登出当前设备"以客户端提交的 refreshToken 定位会话，无需改动令牌格式。
+  function revokeSessionByRefreshToken(userId: string, refreshToken: string): boolean {
+    const now = new Date().toISOString();
+    const session = db
+      .select()
+      .from(authSessions)
+      .where(eq(authSessions.refreshTokenHash, sha256(refreshToken)))
+      .get();
+    if (!session || session.userId !== userId || session.revokedAt) return false;
+    const res = db
+      .update(authSessions)
+      .set({ revokedAt: now })
+      .where(and(eq(authSessions.id, session.id), isNull(authSessions.revokedAt)))
+      .run();
+    return res.changes > 0;
+  }
+
+  // 退出全部设备：吊销该用户所有仍有效的会话
+  function revokeAllSessions(userId: string): number {
+    const now = new Date().toISOString();
+    const res = db
+      .update(authSessions)
+      .set({ revokedAt: now })
+      .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)))
+      .run();
+    return res.changes;
+  }
+
+  // 定期清理：过期或已吊销的会话、已用/过期的 onboarding ticket（避免表无限增长）
+  function pruneExpiredAuthArtifacts(nowIso = new Date().toISOString()): { sessions: number; tickets: number } {
+    const sessions = db
+      .delete(authSessions)
+      .where(or(lte(authSessions.expiresAt, nowIso), isNotNull(authSessions.revokedAt)))
+      .run().changes;
+    const tickets = db
+      .delete(onboardingTickets)
+      .where(or(lte(onboardingTickets.expiresAt, nowIso), isNotNull(onboardingTickets.usedAt)))
+      .run().changes;
+    return { sessions, tickets };
+  }
+
   return {
     beginLoginByPhone,
     completeProfile,
     createAuthenticatedSession,
     refresh,
     me,
+    revokeSessionByRefreshToken,
+    revokeAllSessions,
+    pruneExpiredAuthArtifacts,
   };
 }

@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AppDb } from "../db/client.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
-import { getLedgerId } from "../lib/ledger.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import {
   assetDebtSummary,

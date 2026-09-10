@@ -46,6 +46,9 @@ services:
       - "8080"
     environment:
       NODE_ENV: "production"
+      # 认证模式必须显式钉住：development 会把短信验证码明文回传给请求方，
+      # 配合 NODE_ENV=production 可导致任意账号接管（config.ts 亦会在启动期硬失败）。
+      AUTH_MODE: "production"
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: "./data/tally.db"

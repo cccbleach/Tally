@@ -9,7 +9,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${1:-$ROOT/backend/data/tally.db}"
 DEST="${2:-$ROOT/backups}"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+# 备份文件名使用 UTC：prune-retention.mjs 按 "...Z"（UTC）解析文件名来分日/分周/分月，
+# 若这里用本地时间，UTC+8 环境下每天 00:00-08:00 生成的备份会被算成"前一天"，
+# 导致保留策略提前或延后清理。
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
 mkdir -p "$DEST"
 sqlite3 "$DB" ".backup '$DEST/tally-$STAMP.db'"
 echo "已备份到 $DEST/tally-$STAMP.db"

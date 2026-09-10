@@ -1,7 +1,7 @@
 process.env.ALIYUN_SMS_ENABLED = "false";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAlipay, parseWechat, parseWechatXlsx, getXlsxQueueState, withXlsxSlot } from "../src/lib/billParser.js";
+import { parseAlipay, parseBankPdf, parseWechat, parseWechatXlsx, getXlsxQueueState, withXlsxSlot } from "../src/lib/billParser.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
@@ -105,4 +105,17 @@ test("xlsx 解析最大返回单元格限制：超过 XLSX_MAX_CELLS 时明确�
   }
   const buf = (await wbook.xlsx.writeBuffer()) as Uint8Array;
   await assert.rejects(() => parseWechatXlsx(buf), /XLSX_TOO_MANY_CELLS|无法解析/);
+});
+
+test("银行 PDF 走独立子进程：超过大小上限明确拒绝，不进入解析", async () => {
+  // 10MB 上限由宿主在 spawn 之前拦截（不进子进程、不占槽位）
+  const tooBig = new Uint8Array(10 * 1024 * 1024 + 1);
+  await assert.rejects(() => parseBankPdf(tooBig), /PDF_TOO_LARGE/);
+});
+
+test("银行 PDF 解析失败/空文件给出可操作错误，且必定结束（不会永久挂起）", async () => {
+  // 空字节：子进程应回报失败而不是让 Promise 永不完成
+  await assert.rejects(() => parseBankPdf(new Uint8Array(0)), /PDF_PARSE_FAILED|无法解析/);
+  // 非 PDF 内容：同样必须失败并返回
+  await assert.rejects(() => parseBankPdf(new TextEncoder().encode("not a pdf at all")), /PDF_PARSE_FAILED|无法解析/);
 });

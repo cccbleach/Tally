@@ -124,3 +124,135 @@ console.log("SHOULD_NOT_REACH");
   assert.match(stderr, /JWT_SECRET/, "占位 JWT_SECRET 应被拒绝: " + stderr);
   assert.ok(!/SHOULD_NOT_REACH/.test(stderr), "不应正常启动");
 });
+
+// ---------------------------------------------------------------------------
+// AUTH_MODE / DISABLE_RATE_LIMIT 生产互锁（Phase 0）
+//
+// 历史缺陷（已实测复现，可导致任意账号接管）：
+//   AUTH_MODE 原先是无校验的强制类型转换，且判定写作 `config.authMode === "production"`，于是
+//     (a) NODE_ENV=production AUTH_MODE=development → 请求验证码直接拿到明文 code；
+//     (b) AUTH_MODE 拼错（如 develpoment）→ 同样退化为开发模式、同样回传明文 code；
+//     (c) 未设 NODE_ENV（裸 node dist/index.js / systemd）→ 默认开发模式，同样回传。
+//   已实测：用回传的 code 调用 login-code，对**已注册老账号**返回 status=authenticated。
+// 修复要求：合法值域 + 生产互锁都在启动期硬失败，绝不静默降级。
+// ---------------------------------------------------------------------------
+const PHASE0_JWT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+// 生产基线 env；额外键可覆盖（不传 NODE_ENV 即为“未设置”，测试进程本身无 NODE_ENV）
+function prodEnv(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    NODE_ENV: "production",
+    JWT_SECRET: PHASE0_JWT_SECRET,
+    ALIYUN_SMS_ENABLED: "false",
+    ALIYUN_ACCESS_KEY_ID: "",
+    ALIYUN_ACCESS_KEY_SECRET: "",
+    ...extra,
+  };
+}
+
+const REFUSE_SCRIPT = `
+import "./src/config.js";
+console.log("SHOULD_NOT_REACH");
+`;
+
+// 失败时把 stdout + stderr 一起带进断言消息：子进程若因环境/资源问题没跑起来，
+// 只看 stdout 会得到空字符串而无法定位（曾出现过一次并行跑全量时的空输出）。
+function both(r: { stdout: string; stderr: string }): string {
+  return "stdout=<" + r.stdout.trim() + "> stderr=<" + r.stderr.trim() + ">";
+}
+
+// 起真实 App 并申请一次验证码，打印认证模式与是否回传 code
+const REQUEST_CODE_PROBE = `
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createDb } from "./src/db/client.js";
+import { runMigrations } from "./src/db/runner.js";
+import { buildApp } from "./src/server.js";
+import { config } from "./src/config.js";
+
+const dir = mkdtempSync(join(tmpdir(), "tally-authmode-"));
+const created = createDb(join(dir, "t.db"));
+runMigrations(created.sqlite, resolve("./migrations"));
+const app = await buildApp({ db: created.db, jwtSecret: config.jwtSecret });
+const res = await app.inject({
+  method: "POST",
+  url: "/api/v1/auth/request-code",
+  headers: { "content-type": "application/json" },
+  payload: JSON.stringify({ phone: "13800000001" }),
+});
+const body = JSON.parse(res.body);
+console.log("RESULT_AUTHMODE=" + config.authMode);
+console.log("RESULT_IS_PRODUCTION=" + config.isProduction);
+console.log("RESULT_STATUS=" + res.statusCode);
+console.log("RESULT_HAS_CODE=" + ("code" in body));
+created.sqlite.close();
+`;
+
+test("生产模式：AUTH_MODE=development 必须拒绝启动（不得静默降级为明文回传验证码）", () => {
+  const { stderr } = runTsx(REFUSE_SCRIPT, prodEnv({ AUTH_MODE: "development" }));
+  assert.match(stderr, /AUTH_MODE/, "生产 + development 必须被拒绝: " + both({ stdout: "", stderr }));
+  assert.ok(!/SHOULD_NOT_REACH/.test(stderr), "该组合不得正常启动");
+});
+
+test("生产模式：AUTH_MODE 拼错（非法值）必须拒绝启动，而不是退化成开发模式", () => {
+  for (const bad of ["develpoment", "prod", "bogus", "1", "development "]) {
+    const { stderr } = runTsx(REFUSE_SCRIPT, prodEnv({ AUTH_MODE: bad }));
+    assert.match(stderr, /AUTH_MODE/, `非法 AUTH_MODE=${JSON.stringify(bad)} 必须被拒绝: ` + both({ stdout: "", stderr }));
+    assert.ok(!/SHOULD_NOT_REACH/.test(stderr), `非法 AUTH_MODE=${JSON.stringify(bad)} 不得启动`);
+  }
+});
+
+test("生产模式：DISABLE_RATE_LIMIT=true 必须拒绝启动（否则登录/验证码完全失去限流）", () => {
+  const { stderr } = runTsx(REFUSE_SCRIPT, prodEnv({ DISABLE_RATE_LIMIT: "true" }));
+  assert.match(stderr, /DISABLE_RATE_LIMIT/, "生产关闭限流必须被拒绝: " + both({ stdout: "", stderr }));
+  assert.ok(!/SHOULD_NOT_REACH/.test(stderr), "生产关闭限流不得启动");
+});
+
+test("生产模式：AUTH_MODE 大小写/空白归一为 production，且验证码不回传", () => {
+  const probe = runTsx(REQUEST_CODE_PROBE, prodEnv({ AUTH_MODE: "  PRODUCTION  " }));
+  const info = both(probe);
+  assert.match(probe.stdout, /RESULT_AUTHMODE=production/, "大小写/空白应归一为 production: " + info);
+  assert.match(probe.stdout, /RESULT_IS_PRODUCTION=true/, "NODE_ENV=production 必须被识别: " + info);
+  assert.match(probe.stdout, /RESULT_HAS_CODE=false/, "生产模式绝不得回传验证码: " + info);
+  assert.match(probe.stdout, /RESULT_STATUS=503/, "未配置短信时申请验证码应为 503（不允许假成功）: " + info);
+});
+
+test("开发模式（未设 NODE_ENV）：验证码回传是有意契约；配置真实短信凭据时必须有醒目告警", () => {
+  // (a) 未设 NODE_ENV → 开发模式，回传验证码（本地联调与测试套件依赖此语义，必须保持）
+  const dev = runTsx(REQUEST_CODE_PROBE, {
+    JWT_SECRET: PHASE0_JWT_SECRET,
+    ALIYUN_SMS_ENABLED: "false",
+    ALIYUN_ACCESS_KEY_ID: "",
+    ALIYUN_ACCESS_KEY_SECRET: "",
+  });
+  const devInfo = both(dev);
+  assert.match(dev.stdout, /RESULT_IS_PRODUCTION=false/, "未设 NODE_ENV 应视为非生产: " + devInfo);
+  assert.match(dev.stdout, /RESULT_AUTHMODE=development/, "非生产默认开发模式: " + devInfo);
+  assert.match(dev.stdout, /RESULT_HAS_CODE=true/, "开发模式回传验证码是既有联调契约: " + devInfo);
+  assert.match(dev.stdout, /RESULT_STATUS=200/, "开发模式申请验证码应成功: " + devInfo);
+
+  // (b) 开发模式 + 真实短信凭据（可真实外呼计费）= 危险组合，启动必须告警。
+  //     只加载 config 并捕获 console.warn，不发起任何短信请求（无外呼、无网络）。
+  const warnScript = `
+const warnings = [];
+const origin = console.warn;
+console.warn = (...args) => { warnings.push(args.map((a) => String(a)).join(" ")); };
+await import("./src/config.js");
+console.warn = origin;
+const hit = warnings.filter((w) => w.includes("开发模式"));
+console.log("WARN_FIRED=" + (hit.length > 0));
+console.log("WARN_MENTIONS_RISK=" + hit.some((w) => w.includes("切勿") || w.includes("生产")));
+`;
+  const warned = runTsx(warnScript, {
+    JWT_SECRET: PHASE0_JWT_SECRET,
+    ALIYUN_SMS_ENABLED: "true",
+    ALIYUN_ACCESS_KEY_ID: "fake-ak-for-warning-test",
+    ALIYUN_ACCESS_KEY_SECRET: "fake-sk-for-warning-test",
+    // 父进程由 node:test 设置 NODE_TEST_CONTEXT，runTsx 会继承；
+    // 告警在测试运行时会静默（避免 25 个测试文件刷屏），这里显式清空以验证告警确实存在。
+    NODE_TEST_CONTEXT: "",
+  });
+  assert.match(warned.stdout, /WARN_FIRED=true/, "开发模式 + 真实短信凭据必须告警: " + both(warned));
+  assert.match(warned.stdout, /WARN_MENTIONS_RISK=true/, "告警必须说明风险");
+});

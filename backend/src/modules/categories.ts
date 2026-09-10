@@ -5,7 +5,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
 import { categories } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import type { Jwt } from "../auth/jwt.js";

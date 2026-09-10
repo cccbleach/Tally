@@ -1,14 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq, or } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts } from "../db/schema.js";
+import { accounts, creditCardBills, loans, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
+import { convert, currencySchema } from "../lib/currency.js";
+import { config } from "../config.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const ACCOUNT_TYPES = ["cash", "bank", "e-wallet", "credit", "loan", "other"] as const;
@@ -16,7 +18,8 @@ const ACCOUNT_TYPES = ["cash", "bank", "e-wallet", "credit", "loan", "other"] as
 const createSchema = z.object({
   name: z.string().min(1, "账户名不能为空").max(40, "账户名过长"),
   type: z.enum(ACCOUNT_TYPES).default("other"),
-  currency: z.string().default("CNY"),
+  // 币种统一走 currencySchema：3 位字母、归一为大写（历史缺陷：裸 z.string() 可写入 "hello"）
+  currency: currencySchema.default("CNY"),
   initialBalance: z.number().int("初始余额必须为整数（分）").default(0),
   icon: z.string().max(100).optional(),
   color: z.string().max(20).optional(),
@@ -26,7 +29,7 @@ const createSchema = z.object({
 const updateSchema = z.object({
   name: z.string().min(1, "账户名不能为空").max(40).optional(),
   type: z.enum(ACCOUNT_TYPES).optional(),
-  currency: z.string().optional(),
+  currency: currencySchema.optional(),
   initialBalance: z.number().int("初始余额必须为整数（分）").optional(),
   icon: z.string().max(100).nullable().optional(),
   color: z.string().max(20).nullable().optional(),
@@ -39,9 +42,44 @@ const updateSchema = z.object({
 
 type AccountRow = typeof accounts.$inferSelect;
 
-function toDto(row: AccountRow, balance: number) {
-  // 信用卡视为负债账户：balance 保持净值口径（负数=欠款），isLiability 标记类型，
-  // debt 为该账户当前未结清欠款（本币正数），便于客户端单独展示“负债”。
+// 统计账户被哪些业务数据引用：用于禁止"已有数据还改币种"（会把历史金额重新解释成另一种币种）。
+// 覆盖所有持有 accountId 的表：流水（转出/转入两侧）、贷款的还款来源与负债账户、信用卡账单。
+function countAccountReferences(
+  db: AppDb["db"],
+  accountId: string,
+): { transactions: number; loans: number; creditCardBills: number; total: number } {
+  const one = (n: number | undefined) => n ?? 0;
+  const tx = one(
+    db
+      .select({ n: count() })
+      .from(transactions)
+      .where(or(eq(transactions.accountId, accountId), eq(transactions.transferToAccountId, accountId)))
+      .get()?.n,
+  );
+  const ln = one(
+    db
+      .select({ n: count() })
+      .from(loans)
+      .where(or(eq(loans.accountId, accountId), eq(loans.liabilityAccountId, accountId)))
+      .get()?.n,
+  );
+  const cc = one(
+    db.select({ n: count() }).from(creditCardBills).where(eq(creditCardBills.accountId, accountId)).get()?.n,
+  );
+  return { transactions: tx, loans: ln, creditCardBills: cc, total: tx + ln + cc };
+}
+
+// 负债金额统一换算为基准币返回（契约口径「本币正数」）。
+// 历史缺陷：debt 返回账户原币金额，而客户端（iOS AccountsView）会把各账户 debt 直接相加
+// 得到"总负债"，与已按汇率折算的总资产相减算净资产，多币种下必然算错。
+function debtBaseOf(db: AppDb["db"], userId: string, row: AccountRow, balance: number): number {
+  if (row.type !== "credit" && row.type !== "loan") return 0;
+  return convert(db, userId, Math.max(0, -balance), row.currency, config.baseCurrency);
+}
+
+function toDto(row: AccountRow, balance: number, debt: number) {
+  // 信用卡视为负债账户：balance 保持账户本位币净额口径（负数=欠款，供账户详情按自身币种展示），
+  // isLiability 标记类型，debt 为该账户当前未结清欠款（已换算为基准币的正数），便于汇总"负债"。
   return {
     id: row.id,
     name: row.name,
@@ -53,7 +91,7 @@ function toDto(row: AccountRow, balance: number) {
     isArchived: row.isArchived,
     isLiability: row.type === "credit" || row.type === "loan",
     balance,
-    debt: row.type === "credit" || row.type === "loan" ? Math.max(0, -balance) : 0,
+    debt,
     creditLimit: row.creditLimit ?? null,
     billingDay: row.billingDay ?? null,
     repaymentDay: row.repaymentDay ?? null,
@@ -75,7 +113,12 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .where(eq(accounts.ledgerId, ledgerId))
       .all();
     const balances = computeAccountBalances(db, userId, ledgerId);
-    return { items: rows.map((r) => toDto(r, balances.get(r.id) ?? r.initialBalance)) };
+    return {
+      items: rows.map((r) => {
+        const bal = balances.get(r.id) ?? r.initialBalance;
+        return toDto(r, bal, debtBaseOf(db, userId, r, bal));
+      }),
+    };
   });
 
   app.post("/api/v1/accounts", { preHandler: auth }, async (req) => {
@@ -100,7 +143,8 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       createdAt: new Date().toISOString(),
     };
     db.insert(accounts).values(row).run();
-    return { item: toDto(row, body.initialBalance) };
+    const bal = body.initialBalance;
+    return { item: toDto(row, bal, debtBaseOf(db, userId, row as AccountRow, bal)) };
   });
 
   app.get("/api/v1/accounts/:id", { preHandler: auth }, async (req) => {
@@ -115,7 +159,8 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .get();
     if (!row) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
     const balances = computeAccountBalances(db, userId, ledgerId);
-    return { item: toDto(row, balances.get(row.id) ?? row.initialBalance) };
+    const bal = balances.get(row.id) ?? row.initialBalance;
+    return { item: toDto(row, bal, debtBaseOf(db, userId, row as AccountRow, bal)) };
   });
 
   app.patch("/api/v1/accounts/:id", { preHandler: auth }, async (req) => {
@@ -133,7 +178,27 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     const patch: Partial<typeof accounts.$inferInsert> = {};
     if (body.name !== undefined) patch.name = body.name;
     if (body.type !== undefined) patch.type = body.type;
-    if (body.currency !== undefined) patch.currency = body.currency;
+    if (body.currency !== undefined) {
+      // 历史缺陷（已实测复现）：账户币种可以直接改，且不做任何前置校验，
+      // 已有流水会被静默"重新解释"成另一种币种（CNY 100 → USD 100），统计随之失真。
+      // 规则：只要账户已被任何业务数据引用，就禁止改币种（需改请新建账户后迁移）。
+      if (body.currency !== existing.currency) {
+        const refs = countAccountReferences(db, id);
+        if (refs.total > 0) {
+          throw badRequest(
+            "ACCOUNT_CURRENCY_LOCKED",
+            "该账户已存在业务数据，无法更改币种：已有流水 " +
+              refs.transactions +
+              " 笔、关联贷款 " +
+              refs.loans +
+              " 笔、信用卡账单 " +
+              refs.creditCardBills +
+              " 期。历史金额会被重新解释为另一种币种，请新建账户后重新记账。",
+          );
+        }
+      }
+      patch.currency = body.currency;
+    }
     if (body.initialBalance !== undefined) patch.initialBalance = body.initialBalance;
     if (body.icon !== undefined) patch.icon = body.icon;
     if (body.color !== undefined) patch.color = body.color;
@@ -151,7 +216,8 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     const balances = computeAccountBalances(db, userId, ledgerId);
-    return { item: toDto(updated as AccountRow, balances.get(id) ?? (updated as AccountRow).initialBalance) };
+    const bal = balances.get(id) ?? (updated as AccountRow).initialBalance;
+    return { item: toDto(updated as AccountRow, bal, debtBaseOf(db, userId, updated as AccountRow, bal)) };
   });
 
   // 删除 = 归档（软删除），保留流水关联
@@ -171,6 +237,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .set({ isArchived: true })
       .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .run();
-    return { ok: true, item: toDto({ ...existing, isArchived: true } as AccountRow, existing.initialBalance) };
+    const archived = { ...existing, isArchived: true } as AccountRow;
+    return { ok: true, item: toDto(archived, existing.initialBalance, debtBaseOf(db, userId, archived, existing.initialBalance)) };
   });
 }

@@ -1,8 +1,5 @@
 // 账单导入解析：支持微信支付明细（txt/xlsx）与支付宝交易明细（csv）。
 // 按常见导出格式解析；行结构与网银/银行 App 导出的 CSV 大同小异，后续可扩展 source。
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
 
 export interface ParsedBill {
   date: string; // YYYY-MM-DD
@@ -210,10 +207,10 @@ export async function readXlsxRows(buf: Uint8Array): Promise<string[][]> {
           reject(new Error(`${msg.error ?? "XLSX_PARSE_FAILED"}: 无法解析该 Excel 文件，请确认是微信导出格式`));
         }
       });
-      worker.once("error", (e: Error) => {
+      worker.once("error", () => {
         fail("XLSX_PARSE_FAILED: 无法解析该 Excel 文件，请确认是微信导出格式");
       });
-      worker.once("exit", (code: number) => {
+      worker.once("exit", () => {
         // 若在收到 message/error 之前 worker 就退出（无论退出码 0/非 0），
         // 都必须 reject，绝不留下永不完成的 Promise。
         if (!settled) {
@@ -222,6 +219,91 @@ export async function readXlsxRows(buf: Uint8Array): Promise<string[][]> {
           reject(new Error("XLSX_PARSE_FAILED: 无法解析该 Excel 文件，请确认是微信导出格式"));
         }
       });
+    });
+  });
+}
+
+// ---------- PDF（银行流水）解析：独立子进程 + 超时 + 内存上限 + 并发槽位 ----------
+// 历史缺口：xlsx 早已 worker 化 + 20s 超时 + 并发上限，PDF 却在服务主线程直接
+// `require("pdf-parse")` 并 await，畸形/超大 PDF 可长时间占用事件循环或吃掉大量内存。
+//
+// 隔离方式选择：此处用 child_process 而不是 worker_threads。
+//   - pdf-parse 经 ESM 加载 pdf.js，而 worker 线程与主进程共享 fd 表，worker 内的
+//     ESM loader 会批量打印 “File descriptor ... opened/closed in unmanaged mode”
+//     （本仓库把 FD 告警 = 0 作为验收标准）；独立进程各有 fd 表，不存在该问题。
+//   - 进程级隔离才是硬隔离：解析崩溃/OOM 不会影响服务进程。
+// 并发仍与 xlsx 共用同一槽位池（withXlsxSlot），因此 xlsx+pdf 的解析并发总量被统一限制。
+const PDF_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const PDF_WORKER_TIMEOUT_MS = 20_000;
+const PDF_STDOUT_MAX_BYTES = 24 * 1024 * 1024;
+
+async function readPdfText(buf: Uint8Array): Promise<string> {
+  if (buf.byteLength > PDF_MAX_FILE_SIZE) {
+    throw new Error("PDF_TOO_LARGE: PDF 超过 10MB 上限");
+  }
+  return withXlsxSlot(async () => {
+    const { spawn } = await import("node:child_process");
+    const script = new URL("./pdfExtract.cjs", import.meta.url);
+    const child = spawn(process.execPath, ["--max-old-space-size=128", script.pathname], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    return await new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const chunks: Buffer[] = [];
+      let stdoutBytes = 0;
+      let stderr = "";
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(() => {
+        finish(() => {
+          child.kill("SIGKILL");
+          reject(new Error("PDF_TIMEOUT: PDF 解析超时"));
+        });
+      }, PDF_WORKER_TIMEOUT_MS);
+
+      child.stdout.on("data", (c: Buffer) => {
+        stdoutBytes += c.length;
+        if (stdoutBytes > PDF_STDOUT_MAX_BYTES) {
+          finish(() => {
+            child.kill("SIGKILL");
+            reject(new Error("PDF_TOO_LARGE: PDF 文本内容过大"));
+          });
+          return;
+        }
+        chunks.push(c);
+      });
+      child.stderr.on("data", (c: Buffer) => {
+        if (stderr.length < 4000) stderr += c.toString("utf8");
+      });
+      child.on("error", () => {
+        finish(() => reject(new Error("PDF_PARSE_FAILED: 无法解析该 PDF 文件")));
+      });
+      child.on("close", () => {
+        finish(() => {
+          const raw = Buffer.concat(chunks).toString("utf8").trim();
+          if (!raw) {
+            reject(new Error("PDF_PARSE_FAILED: 无法解析该 PDF 文件"));
+            return;
+          }
+          try {
+            const parsed = JSON.parse(raw) as { ok: boolean; text?: string; error?: string };
+            if (parsed.ok) resolve(parsed.text ?? "");
+            else reject(new Error(`${parsed.error ?? "PDF_PARSE_FAILED"}: 无法解析该 PDF 文件`));
+          } catch {
+            reject(new Error("PDF_PARSE_FAILED: 无法解析该 PDF 文件"));
+          }
+        });
+      });
+
+      // 写入 PDF 字节并关闭 stdin；子进程侧对写入错误（如提前退出）不应抛到主进程
+      child.stdin.on("error", () => {});
+      child.stdin.end(Buffer.from(buf));
     });
   });
 }
@@ -276,18 +358,8 @@ export function parseAlipayRows(rows: string[][]): ParsedBill[] {
 
 // 招商银行等交易流水 PDF（按“记账日期 币种 交易金额 联机余额 交易摘要 对手信息”行解析）
 export async function parseBankPdf(buf: Uint8Array): Promise<ParsedBill[]> {
-  const { PDFParse } = require("pdf-parse") as {
-    PDFParse: new (opt: { data: Uint8Array }) => { getText(): Promise<{ text: string }>; destroy(): Promise<void> };
-  };
-  // pdf.js 不接受 Node Buffer；必须复制成普通 Uint8Array。
-  const parser = new PDFParse({ data: new Uint8Array(buf) });
-  let text = "";
-  try {
-    const result = await parser.getText();
-    text = result.text ?? "";
-  } finally {
-    await parser.destroy();
-  }
+  // 文本抽取在受限 worker 中完成（超时 + 内存上限 + 并发槽位），主线程不再直接跑 pdf.js
+  const text = await readPdfText(buf);
 
   const lineRe = /^(\d{4}-\d{2}-\d{2})\s+([A-Z]{3})\s+(-?[\d,]+\.\d{2})\s+[\d,]+\.\d{2}\s+(.+)$/;
   const items: ParsedBill[] = [];

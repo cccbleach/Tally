@@ -77,7 +77,7 @@ pnpm dev                      # 开发模式（tsx watch），默认 http://loca
 
 验证：`curl http://localhost:8080/health` 返回 `{"status":"ok",...}`。
 
-> 本机需 Node.js ≥ 22 与 pnpm。首次 `pnpm install` 会构建 `better-sqlite3` 原生模块（已通过 `pnpm-workspace.yaml` 放行）。
+> 本机需 Node.js ≥ 24 与 pnpm（`backend/package.json` 的 `engines` 为 `>=24.0.0 <25`）。首次 `pnpm install` 会构建 `better-sqlite3` 原生模块（已通过 `pnpm-workspace.yaml` 放行）。
 
 ### 2. 运行 iOS App（需 Mac + Xcode）
 
@@ -111,9 +111,10 @@ setting presets。生成过程不应出现 `No "... settings found"`，校验脚
 ```bash
 cd backend
 pnpm typecheck
-pnpm test        # 142 个测试：手机号+短信验证码认证/强制唯一昵称/共享账本/账户/分类/流水/统计/预算/周期账单/贷款/去重
+pnpm test        # 183 个测试：手机号+短信验证码认证/强制唯一昵称/共享账本/账户/分类/流水/统计/预算/周期账单/贷款/去重
                  # （含幂等、OpenAPI 契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、
                  #  迁移校验（22 个迁移）、乐观锁、并发回归、故障注入、限流与 TRUST_PROXY、
+                 #  AUTH_MODE/限流生产互锁、短信节流、跨币种护栏、负债折算、服务端登出与契约集合校验、
                  #  生产模式安全策略、账单导入去重等回归，全部 0 fail）
 ```
 
@@ -175,3 +176,9 @@ docker build -t tally-backend:latest .
 cd .. && ./scripts/check-ios-release-assets.sh ios Tally && ./scripts/check-ios-release-assets.sh ios-local Tally
 git diff --check && git status --porcelain    # 两者都必须为空
 ```
+
+## 许可证
+
+本仓库为**私有项目**，暂未附带任何开源许可证（无 `LICENSE` 文件）。在确定开源/对外协作范围之前，
+请勿假定任何使用、复制或再分发授权；对外协作或发布前需补充明确的许可证文件（并在 `docs/` 记录第三方依赖的
+许可证复核结论）。

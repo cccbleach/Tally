@@ -2,7 +2,16 @@
 
 - 基础路径：`/api/v1`
 - 请求/响应均为 JSON，字符编码 UTF-8
-- 除 `/auth/register`、`/auth/login`、`/health` 外，均需在请求头携带 `Authorization: Bearer <token>`
+- **免鉴权端点**（其余全部需要 `Authorization: Bearer <token>`）：
+  `/health`、`/health/live`、`/health/ready`、`/auth/request-code`、`/auth/login-code`、
+  `/auth/complete-profile`、`/auth/refresh`、`/users/nickname-availability`。
+  注意 `/auth/register`、`/auth/login`、`/auth/reset-code`、`/auth/reset-password` 已下线（统一 410 `AUTH_METHOD_REMOVED`），不要再调用。
+- **服务端登出**：`POST /auth/logout`（携带 `{refreshToken}` 吊销当前设备会话，幂等）、
+  `POST /auth/logout-all`（吊销该用户全部会话）。登出后该 refresh token 立即失效；
+  access token 为无状态 JWT，在其 15 分钟有效期内仍可用。
+- 认证接口限流命中时返回 `429`，并带 `Retry-After` 头。短信相关错误码：
+  `SMS_COOLDOWN`（同号码冷却中）、`SMS_DAILY_LIMIT`（该号码当日配额用尽）、
+  `SMS_GLOBAL_DAILY_LIMIT`（全局日预算用尽）、`RATE_LIMITED`（IP/号码分钟级限流）。
 - **金额一律为整数「分」**（如 12.34 元 = `1234`），避免浮点误差；客户端负责按币种本地化展示
 - 日期（流水 `date`、周期 `startDate/endDate/nextRunDate`）为 `YYYY-MM-DD` 字符串；时间戳（`createdAt/updatedAt`）为 ISO 8601 字符串
 - 错误统一返回 `{ "error": { "code": "...", "message": "..." } }`
@@ -65,9 +74,15 @@
 | PATCH | /accounts/:id | 更新（name/type/currency/initialBalance/icon/color/isArchived） |
 | DELETE | /accounts/:id | **软删除（归档）**，保留流水关联 |
 
-- `type` 取值：`cash | bank | e-wallet | credit | other`
-- 账户余额 = 初始余额 + 收入 − 支出 + 转入 − 转出（账户本位币口径）
-- 信用卡（`credit`）为负债账户：返回 `isLiability=true`，`debt` 为当前未结清欠款（本币正数），`balance` 保持净值口径（欠款为负）
+- `type` 取值：`cash | bank | e-wallet | credit | loan | other`（与后端 `ACCOUNT_TYPES` 一致）
+- `currency` 为 3 位字母代码（`^[A-Za-z]{3}$`，大小写不敏感，落库统一大写）。非法值返回 400。
+- 账户余额 = 初始余额 + 收入 − 支出 + 转入 − 转出（**账户本位币**口径）
+- 信用卡（`credit`）为负债账户：返回 `isLiability=true`，`balance` 为账户本位币净额（欠款为负），
+  `debt` 为当前未结清欠款且**已换算为基准币**（供客户端跨账户求和算净资产）
+- **改币种受限**：账户一旦被流水/贷款/信用卡账单引用，`PATCH /accounts/:id` 改 `currency` 返回
+  400 `ACCOUNT_CURRENCY_LOCKED`（否则历史金额会被重新解释成另一种币种）。需改请新建账户后迁移。
+- **跨币种暂不支持**：流水的 `currency` 必须与目标账户币种一致，否则 400 `CURRENCY_MISMATCH`。
+  该护栏覆盖创建、修改（含改挂账户）、导入、导入暂存与提交，以及贷款/还款币种一致性。
 
 ## 分类 Categories
 
@@ -110,8 +125,11 @@
   - 后端自动识别 UTF-8 / GBK 编码
 - 方式二（客户端已解析）：
   `{mode:"items", items:[{date, amount, type, note?, externalId?}]}`
-- 返回 `{imported, skipped, total}`；按 `(user_id, external_id)` 唯一去重，重复导入自动跳过。
+- 返回 `{imported, skipped, total}`；硬去重唯一索引为 `(ledger_id, source_type, external_id)`
+  （同账本 + 同来源 + 同外部 ID），另有非唯一的 `dedup_key` 软指纹用于"疑似重复"判定。
 - 导入流水的账户/分类取当前账本默认（首个非归档账户 + 匹配收支类型的分类），后续可扩展为逐条指定。
+- **币种语义**：`items` 模式无法携带币种，因此按目标账户币种入账；`raw` 模式使用账单文件里解析出的币种
+  （银行账单带 `币种` 列），与默认账户不一致时整批 400 `CURRENCY_MISMATCH`，不会部分写入。
 
 新建入参按 `type` 区分：
 
@@ -155,7 +173,9 @@
 | GET | /stats/trend?months=6 | `{months:[{year,month,income,expense}]}` |
 
 - `net = income - expense`；`balance` 为各账户余额按汇率折算到基准币种（默认 CNY）后的净值总和。
-- `totalAssets` 为不含负债的资产；`totalDebt` 为信用卡等负债账户的未结清欠款；`balance = totalAssets - totalDebt`（兼容字段，保持净值口径）。
+- `totalAssets` 为不含负债的资产；`totalDebt` 为负债合计（信用卡未结清欠款 + 贷款剩余本金），
+  **两部分均按各自币种汇率折算为基准币后求和**；`balance = totalAssets - totalDebt`（兼容字段，保持净值口径）。
+  不变量：同一账本下 `/stats/summary.totalDebt` 与 `/liabilities.totalDebt` 必须相等。
 - 账户级 `balance`（见账户接口）以该账户本位币计价；跨账户的 `income/expense/net/balance/byCategory/byAccount/daily` 均按汇率折算到基准币种，不再直接相加。
 - 汇率：优先用户级 → 全局 → 内置兜底；未知币种按 1:1 兜底。内置常见币种（USD/EUR/GBP/JPY/HKD/KRW/SGD/AUD/CAD）为人民币视角的近似参考值。
 - `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
@@ -188,10 +208,11 @@
 | GET | /loans | 当前账本贷款列表 |
 | GET | /loans/:id | 贷款详情 + 还款计划 |
 | PATCH | /loans/:id | 更新贷款（名称/利率/扣款账户） |
+| — | — | 创建/还款时贷款币种必须与还款来源账户币种一致（创建期即校验，避免建出一笔无法偿还的贷款） |
 | DELETE | /loans/:id | 删除贷款 |
 | POST | /loans/:id/pay | 标记一期已还，自动更新剩余本金 |
-| GET | /liabilities | 负债总览（信用卡欠款 + 贷款剩余 + 信用卡账单） |
-| POST | /credit-cards/:accountId/bills | 创建信用卡账单 |
+| GET | /liabilities | 负债总览（返回 `baseCurrency` + `totalDebt` + `creditCards[]` + `loans[]` + `creditCardBills[]`；金额均为基准币） |
+| POST | /credit-cards/:accountId/bills | 创建信用卡账单（还款账户币种必须与信用卡一致，否则 400 `CURRENCY_MISMATCH`） |
 | GET | /credit-card-bills | 当前账本信用卡账单列表 |
 | PATCH | /credit-card-bills/:id | 标记账单已还 `{paid}` |
 

@@ -14,6 +14,8 @@ import {
 } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
+import { assertCurrencyCompatible, convert, currencySchema } from "../lib/currency.js";
+import { config } from "../config.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { amortizationSchedule, monthlyPayment } from "../lib/loan.js";
@@ -26,7 +28,7 @@ import type { Jwt } from "../auth/jwt.js";
 const createLoanSchema = z.object({
   name: z.string().min(1).max(40),
   type: z.enum(["car", "mortgage", "other"]).default("other"),
-  currency: z.string().default("CNY"),
+  currency: currencySchema.default("CNY"),
   principal: z.number().int().positive(),
   annualRate: z.number().min(0).max(100).default(0),
   termMonths: z.number().int().min(1).max(600),
@@ -88,6 +90,9 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       if (payFrom.type === "credit" || payFrom.type === "loan") {
         throw badRequest("INVALID_PAY_ACCOUNT", "还款来源账户不能是信用卡或贷款账户");
       }
+      // 币种一致性在创建期就校验：还款路径（POST /loans/:id/pay）本来就会拒绝跨币种，
+      // 但等到还款才报错会让用户先建好一笔无法偿还的贷款，因此这里提前失败。
+      assertCurrencyCompatible(payFrom, body.currency);
     }
 
     // 负债账户创建/更新 + 贷款 INSERT + 还款计划 INSERT + 审计日志必须在同一事务内完成，
@@ -218,7 +223,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
-    const existing = getLoan(id, ledgerId);
+    getLoan(id, ledgerId); // 存在性校验（不存在即 404）
     const patch: Partial<typeof loans.$inferInsert> = { updatedAt: new Date().toISOString() };
     if (body.name !== undefined) patch.name = body.name;
     if (body.annualRate !== undefined) patch.annualRate = body.annualRate;
@@ -553,7 +558,11 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const creditCards = creditAccounts.map((a) => ({
       accountId: a.id,
       name: a.name,
-      debt: Math.max(0, -(balances.get(a.id) ?? 0)),
+      currency: a.currency,
+      // 基准币口径（与 docs/api.md「本币」契约、iOS 端 Money.format 的 CNY 假设一致）。
+      // 历史缺陷：这里返回账户原币金额，却被直接累加进基准币 totalDebt——
+      // 一张 $500 的信用卡欠款会被当成 ¥500 计入总负债。
+      debt: convert(db, userId, Math.max(0, -(balances.get(a.id) ?? 0)), a.currency, config.baseCurrency),
       creditLimit: a.creditLimit ?? null,
       billingDay: a.billingDay ?? null,
       repaymentDay: a.repaymentDay ?? null,
@@ -564,7 +573,9 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       name: l.name,
       type: l.type,
       currency: l.currency,
-      remainingPrincipal: l.remainingPrincipal,
+      // 同上：remainingPrincipal 按贷款币种换算为基准币
+      remainingPrincipal: convert(db, userId, l.remainingPrincipal, l.currency, config.baseCurrency),
+      remainingPrincipalNative: l.remainingPrincipal,
       monthlyPayment: l.monthlyPayment,
       nextPaymentDate: l.nextPaymentDate,
       accountId: l.accountId,
@@ -580,8 +591,9 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
             .where(and(inArray(creditCardBills.accountId, creditBillAccounts), eq(creditCardBills.paid, false)))
             .all()
         : [];
+    // 两张表的金额都已是基准币，可直接相加（不变量：与 /stats/summary.totalDebt 必须相等）
     const totalDebt = creditCards.reduce((s, c) => s + c.debt, 0) + loansOut.reduce((s, l) => s + l.remainingPrincipal, 0);
-    return { totalDebt, creditCards, loans: loansOut, creditCardBills: creditBills };
+    return { totalDebt, baseCurrency: config.baseCurrency, creditCards, loans: loansOut, creditCardBills: creditBills };
   });
 
   app.post("/api/v1/credit-cards/:accountId/bills", { preHandler: auth }, async (req) => {

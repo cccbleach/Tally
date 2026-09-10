@@ -35,7 +35,7 @@ function clientIp(req: FastifyRequest): string {
 
 export function registerUserRoutes(
   app: FastifyInstance,
-  deps: { db: AppDb["db"]; jwt: Jwt; authLimiter: AuthLimiter },
+  deps: { db: AppDb["db"]; jwt: Jwt; userLimiter: AuthLimiter },
 ) {
   const { db } = deps;
   const auth = makeAuth(deps.jwt);
@@ -43,7 +43,7 @@ export function registerUserRoutes(
   // 昵称可用性：公开接口（onboarding 阶段无 token 也可调用），带严格限流。
   // 与 complete-profile / 修改昵称共用同一判重逻辑（包含未过期 nickname_history）。
   app.get("/api/v1/users/nickname-availability", async (req) => {
-    const limiter = deps.authLimiter;
+    const limiter = deps.userLimiter;
     if (config.enableRateLimit) {
       const { allowed } = limiter("np:" + clientIp(req));
       if (!allowed) throw tooManyRequests("RATE_LIMITED", "请求过于频繁，请稍后再试");

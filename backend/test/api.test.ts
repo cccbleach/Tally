@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
 import { setRate } from "../src/lib/currency.js";
 import { smsRegister, smsLogin } from "./helpers.js";
+import YAML from "yaml";
 
 // 测试保持确定：强制走短信“开发模式”（本地生成/校验验证码），不依赖真实短信网络
 process.env.ALIYUN_SMS_ENABLED = "false";
@@ -651,6 +652,8 @@ test("账单导入按 external_id 去重（重复导入不重复入账）", asyn
   assert.equal(first.statusCode, 200, first.body);
   assert.equal(first.json().imported, 2);
   assert.equal(first.json().skipped, 0);
+  // 写入失败必须与"跳过"分开回报（历史缺陷：空 catch 把 FK/CHECK 失败也算成 skipped）
+  assert.deepEqual(first.json().failed, [], "成功导入不应有写入失败明细: " + first.body);
 
   // 重复导入：全部跳过
   const second = await req("POST", "/api/v1/transactions/import", payload);
@@ -1153,53 +1156,108 @@ test("导入 multipart 文件上传：解析建任务且记 SHA-256", async () =
   assert.match(up.json().item.fileHash, /^[a-f0-9]{64}$/, "SHA-256 应为 64 位 hex");
 });
 
-test("OpenAPI 契约覆盖已注册的关键路由", async () => {
-  const openapi = readFileSync(resolve("../docs/openapi.yaml"), "utf8");
+// 契约覆盖：把「已注册路由」与「契约声明的操作」做集合相等校验。
+//
+// 历史缺陷：这里原先是 openapi.includes(path) 的子串断言 + 29 条手写子集，
+// 于是 78 个已注册操作里有 26 个从未出现在契约里（/auth/me、transactions/{id}、
+// 全部 budgets/recurring/stats 等），且 openapi.yaml 改了错枚举也没人发现。
+// 现在改为：解析 YAML → 归一化路径参数 → 与运行时路由表做双向差集，任一侧多出即失败。
+function registeredOperations(): Set<string> {
+  // printRoutes({ commonPrefix: false }) 是一棵树：子节点只打印相对片段，
+  // 每层缩进 4 字符（"│   " 或 "    "），必须按深度重建完整路径——
+  // 直接用正则抓路径会得到 "DELETE /:id" 这类残缺值。
+  const stack: string[] = [];
+  const ops = new Set<string>();
+  for (const line of app.printRoutes({ commonPrefix: false }).split("\n")) {
+    const m = line.match(/^((?:[│ ]   )*)(?:├── |└── )(\S+)\s+\(([A-Z, ]+)\)\s*$/);
+    if (!m) continue;
+    const depth = m[1].length / 4;
+    const full = depth === 0 ? m[2] : stack[depth - 1] + m[2];
+    stack[depth] = full;
+    for (const method of m[3].split(",").map((x) => x.trim())) {
+      if (method === "HEAD" || method === "OPTIONS") continue;
+      ops.add(method + " " + full);
+    }
+  }
+  return ops;
+}
 
-  const endpoints: Array<{ path: string; method: "GET" | "POST" | "PATCH" | "DELETE" }> = [
-    { path: "/api/v1/auth/register", method: "POST" },
-    { path: "/api/v1/auth/request-code", method: "POST" },
-    { path: "/api/v1/auth/login-code", method: "POST" },
-    { path: "/api/v1/auth/complete-profile", method: "POST" },
-    { path: "/api/v1/auth/reset-code", method: "POST" },
-    { path: "/api/v1/auth/reset-password", method: "POST" },
-    { path: "/api/v1/users/nickname-availability", method: "GET" },
-    { path: "/api/v1/users/me/nickname", method: "PATCH" },
-    { path: "/api/v1/accounts", method: "GET" },
-    { path: "/api/v1/transactions", method: "GET" },
-    { path: "/api/v1/imports/jobs", method: "POST" },
-    { path: "/api/v1/imports/jobs/upload", method: "POST" },
-    { path: "/api/v1/imports/jobs/{id}", method: "GET" },
-    { path: "/api/v1/imports/jobs/{id}/commit", method: "POST" },
-    { path: "/api/v1/imports/items/{itemId}", method: "PATCH" },
-    { path: "/api/v1/ledgers", method: "GET" },
-    { path: "/api/v1/families", method: "GET" },
-    { path: "/api/v1/liabilities", method: "GET" },
-    { path: "/api/v1/loans/{id}/pay", method: "POST" },
-    { path: "/api/v1/credit-card-bills/{id}/pay", method: "POST" },
-    { path: "/api/v1/audit-logs", method: "GET" },
-    { path: "/api/v1/families/{id}/invitations", method: "POST" },
-    { path: "/api/v1/families/invitations/pending", method: "GET" },
-    { path: "/api/v1/families/invitations/{id}/accept", method: "POST" },
-    { path: "/api/v1/families/invitations/{id}/decline", method: "POST" },
-    { path: "/api/v1/families/{id}/exit", method: "POST" },
-    { path: "/api/v1/families/{id}/transfer", method: "POST" },
-    { path: "/api/v1/families/{id}", method: "DELETE" },
-    { path: "/api/v1/families/{id}/members/{memberUserId}", method: "PATCH" },
+function specOperations(): Set<string> {
+  const doc = YAML.parse(readFileSync(resolve("../docs/openapi.yaml"), "utf8")) as {
+    paths?: Record<string, Record<string, unknown>>;
+  };
+  const ops = new Set<string>();
+  for (const [path, item] of Object.entries(doc.paths ?? {})) {
+    for (const method of Object.keys(item)) {
+      if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
+      ops.add(method.toUpperCase() + " " + path.replace(/\{([^}]+)\}/g, ":$1"));
+    }
+  }
+  return ops;
+}
+
+test("OpenAPI 契约与已注册路由集合相等（双向差集为空）", async () => {
+  await app.ready();
+  const registered = registeredOperations();
+  const spec = specOperations();
+
+  const missingInSpec = [...registered].filter((k) => !spec.has(k)).sort();
+  const extraInSpec = [...spec].filter((k) => !registered.has(k)).sort();
+
+  assert.deepEqual(
+    missingInSpec,
+    [],
+    "以下已注册路由未写入 docs/openapi.yaml（契约漂移，客户端按契约实现会漏接口）：\n  " +
+      missingInSpec.join("\n  "),
+  );
+  assert.deepEqual(
+    extraInSpec,
+    [],
+    "以下契约端点并未在服务端注册（文档写了不存在的接口）：\n  " + extraInSpec.join("\n  "),
+  );
+  assert.ok(registered.size >= 70, "路由数量异常偏少，可能解析出错: " + registered.size);
+});
+
+test("OpenAPI 关键契约细节：公开端点免鉴权 + 账户类型枚举与实现一致", async () => {
+  const doc = YAML.parse(readFileSync(resolve("../docs/openapi.yaml"), "utf8")) as {
+    security?: unknown[];
+    paths: Record<string, Record<string, { security?: unknown[] }>>;
+  };
+
+  // 顶层 security 是"默认可选"的声明；免鉴权端点必须显式覆盖为 []
+  const publicPaths = [
+    "/health",
+    "/health/live",
+    "/health/ready",
+    "/api/v1/auth/request-code",
+    "/api/v1/auth/login-code",
+    "/api/v1/auth/complete-profile",
+    "/api/v1/auth/refresh",
+    "/api/v1/users/nickname-availability",
   ];
-
-  for (const ep of endpoints) {
-    // 证明路由已注册：发空请求不应得到 Fastify 的“路由不存在”404
-    const res = await app.inject({ method: ep.method, url: ep.path.replace(/\{[^}]+\}/g, "x") });
-    assert.ok(!res.body.includes("not found"), `路由应已注册: ${ep.method} ${ep.path}`);
-
-    // 证明契约文档覆盖该端点
-    assert.ok(openapi.includes(ep.path), `OpenAPI 应包含: ${ep.path}`);
+  for (const p of publicPaths) {
+    const item = doc.paths[p];
+    assert.ok(item, `契约应包含公开端点 ${p}`);
+    const op = item.get ?? item.post ?? {};
+    assert.deepEqual(op.security, [], `${p} 是免鉴权端点，契约必须写 security: []（否则客户端会误加鉴权头）`);
   }
 
-  // 邮件找回入口必须彻底不在契约里（避免客户端误接一个“返回成功但拿不到 token”的接口）
-  assert.ok(!openapi.includes("/api/v1/auth/forgot-password"), "OpenAPI 不应再包含邮件找回入口");
-  assert.ok(!openapi.includes("resetToken"), "OpenAPI 不应再有 resetToken 契约");
+  // 账户类型枚举必须与 accounts.ts 的 ACCOUNT_TYPES 完全一致
+  const accountEnum = (
+    doc.paths["/api/v1/accounts"]!.post!.requestBody as {
+      content: { "application/json": { schema: { properties: { type: { enum: string[] } } } } };
+    }
+  ).content["application/json"].schema.properties.type.enum;
+  assert.deepEqual(
+    [...accountEnum].sort(),
+    ["bank", "cash", "credit", "e-wallet", "loan", "other"].sort(),
+    "账户类型枚举必须与后端 ACCOUNT_TYPES 一致（历史文档写的是 wallet/investment/credit_card）",
+  );
+
+  // 邮件找回入口必须彻底不在契约里
+  const raw = readFileSync(resolve("../docs/openapi.yaml"), "utf8");
+  assert.ok(!raw.includes("/api/v1/auth/forgot-password"), "OpenAPI 不应再包含邮件找回入口");
+  assert.ok(!raw.includes("resetToken"), "OpenAPI 不应再有 resetToken 契约");
 });
 
 test("OpenAPI 文档可解析、operationId 唯一、路径均为合法前缀", async () => {

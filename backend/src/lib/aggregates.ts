@@ -55,8 +55,13 @@ export function assetDebtSummary(db: DB, userId: string, ledgerId: string): Asse
   }
   // 贷款负债：以 remainingPrincipal 为负债口径（计划表缓存，定期与负债账户余额对账）。
   // 不在上方把 loan 账户余额再算一遍，因此不会双重计负债。
+  // 必须按贷款自身币种换算成基准币：历史缺陷是直接原样累加，
+  // 导致一笔 $1000 的贷款被当成 ¥1000 计入 totalDebt/net（净资产虚高）。
   const loanRows = db.select().from(loans).where(eq(loans.ledgerId, ledgerId)).all();
-  const loanDebt = loanRows.reduce((s, l) => s + l.remainingPrincipal, 0);
+  const loanDebt = loanRows.reduce(
+    (s, l) => s + convert(db, userId, l.remainingPrincipal, l.currency, config.baseCurrency),
+    0,
+  );
   return { assets, debts: debts + loanDebt, net: assets - debts - loanDebt };
 }
 

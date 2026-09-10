@@ -144,10 +144,18 @@ export function resolveSmsCredentials(): SmsCredentials {
 }
 
 function enabled(): boolean {
-  return (
-    (process.env.ALIYUN_SMS_ENABLED === "true" || process.env.ALIYUN_SMS_ENABLED === "1") &&
-    resolveSmsCredentials().present
-  );
+  // 先做凭据归一化（保留既有副作用），再判断是否具备真实外呼能力
+  return resolveSmsCredentials().present && isSmsLive();
+}
+
+// 是否具备真实外呼能力：纯环境变量判断，无任何副作用（不写 process.env）。
+// 供 config.ts 启动自检（“开发模式 + 真实凭据”这一危险组合的告警）与 enabled() 复用。
+export function isSmsLive(): boolean {
+  const flag = process.env.ALIYUN_SMS_ENABLED === "true" || process.env.ALIYUN_SMS_ENABLED === "1";
+  if (!flag) return false;
+  const ak = process.env.ALIYUN_ACCESS_KEY_ID ?? process.env.ALIBABA_CLOUD_ACCESS_KEY_ID ?? "";
+  const sk = process.env.ALIYUN_ACCESS_KEY_SECRET ?? process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET ?? "";
+  return !!(ak && sk);
 }
 
 function createRealClient(): SmsClientLike {

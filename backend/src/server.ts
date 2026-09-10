@@ -6,7 +6,7 @@ import { errorHandler } from "./lib/errors.js";
 import type { AppDb } from "./db/client.js";
 import { config } from "./config.js";
 import { makeJwt } from "./auth/jwt.js";
-import { registerAuthRoutes } from "./auth/routes.js";
+import { registerAuthRoutes, type SmsAdapter, type SmsThrottleOptions } from "./auth/routes.js";
 import { registerUserRoutes } from "./modules/users.js";
 import { registerAccountRoutes } from "./modules/accounts.js";
 import { registerCategoryRoutes } from "./modules/categories.js";
@@ -24,6 +24,10 @@ export interface Deps {
   db: AppDb["db"];
   jwtSecret: string;
   rateLimit?: { windowMs?: number; max?: number };
+  /** 短信适配器（测试注入用；缺省走真实阿里云短信模块） */
+  sms?: SmsAdapter;
+  /** 短信节流参数（号码冷却/日配额/全局日预算） */
+  smsThrottle?: SmsThrottleOptions;
 }
 
 export async function buildApp(deps: Deps) {
@@ -65,12 +69,25 @@ export async function buildApp(deps: Deps) {
   });
 
   const jwt = makeJwt(deps.jwtSecret);
-  const authLimiter = createRateLimiter({
+  // 两个独立实例：request-code 与 login-code 各自计桶，避免一方消耗另一方的额度。
+  const limiterOpts = {
     windowMs: deps.rateLimit?.windowMs ?? 60_000,
     max: deps.rateLimit?.max ?? 60,
-  });
+  };
+  const requestCodeLimiter = createRateLimiter(limiterOpts);
+  const loginCodeLimiter = createRateLimiter(limiterOpts);
+  const userLimiter = createRateLimiter(limiterOpts);
   const otp = createOtpStore();
-  const shared = { db: deps.db, jwt, authLimiter, otp };
+  const shared = {
+    db: deps.db,
+    jwt,
+    requestCodeLimiter,
+    loginCodeLimiter,
+    userLimiter,
+    otp,
+    sms: deps.sms,
+    smsThrottle: deps.smsThrottle,
+  };
 
   app.get("/health", async () => {
     deps.db.all(sql`SELECT 1`); // 校验 DB 可达

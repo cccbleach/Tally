@@ -162,6 +162,36 @@ jobs:
           fi
           echo "✅ 缺少必填变量时 compose 按预期拒绝"
 
+      # 生产认证模式必须由编排层显式钉住：AUTH_MODE=development 会把短信验证码明文回传，
+      # 配合 NODE_ENV=production 可导致任意账号接管（backend/src/config.ts 另有一道启动期互锁）。
+      - name: 生产 compose 必须钉住 AUTH_MODE=production
+        run: |
+          set -euo pipefail
+          export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+          export TALLY_DOMAIN="your-domain.cn"
+          export ACME_EMAIL="ci@example.com"
+          for f in docker-compose.yml docker-compose.caddy.yml; do
+            docker compose -f "$f" config --format json > "/tmp/rendered-$f.json"
+            node "$GITHUB_WORKSPACE/scripts/check-compose-auth-mode.mjs" "/tmp/rendered-$f.json" "$f"
+          done
+
+      # 容器级回归：错误的认证模式组合必须让容器启动失败，而不是安静地明文回传验证码。
+      - name: 容器拒绝 NODE_ENV=production + AUTH_MODE=development
+        run: |
+          set -euo pipefail
+          if docker run --rm \
+               -e NODE_ENV=production \
+               -e AUTH_MODE=development \
+               -e JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" \
+               tally-backend:ci > /tmp/badauthmode.log 2>&1; then
+            echo "::error::生产容器竟然带着 AUTH_MODE=development 启动成功"
+            cat /tmp/badauthmode.log
+            exit 1
+          fi
+          grep -q "AUTH_MODE" /tmp/badauthmode.log \
+            || { echo "::error::启动失败原因不是 AUTH_MODE 互锁"; cat /tmp/badauthmode.log; exit 1; }
+          echo "✅ 生产容器按预期拒绝 development 认证模式"
+
       # 真实容器级回归：不只是 `compose config`，而是用完整 docker-compose.caddy.yml
       # 拉起 backend + Caddy，等待两者真正 healthy，并通过 HTTPS 反代访问 /health/ready。
       # - TALLY_DOMAIN=localhost：CI 无外部 DNS，Caddy 用内发自签证书，仍走真实 80/443 + TLS 反代。

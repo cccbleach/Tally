@@ -55,7 +55,7 @@ node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
 - Excel worker（`src/lib/billParser.ts`）：纯 CommonJS（`.cjs`），创建 worker 时显式 `execArgv: []`，不继承任何 loader → 0 告警。
 - 并发 worker（`test/loanConcWorker.ts` → 改为 **`test/loanConcWorker.cjs`**）：并发测试仍需真正独立的 worker 线程跑 Fastify + 独立 SQLite，但把 worker 入口改为纯 CommonJS，并在创建时只注入 tsx 的 **CJS require 钩子**（`execArgv: ["--require", require.resolve("tsx/cjs")]`），完全不走 ESM loader；钩子内用显式 `.ts` 扩展 `require` 源码即可加载 TypeScript 模块 → **0 告警**。
 - **未使用** 任何 `NODE_OPTIONS=--disable-warning` / 全局屏蔽 Warning。`package.json` 的 `test` 命令保持朴素 `tsx --test test/*.test.ts`。
-- 当时复测（**不屏蔽任何 Warning** 的 `pnpm exec tsx --test test/*.test.ts`）：**105/105 通过，FD warning = 0**（修复前约 1028 条）；本轮扩展后的 142 个测试仍保持 0 FD warning，见第 3 节。
+- 当时复测（**不屏蔽任何 Warning** 的 `pnpm exec tsx --test test/*.test.ts`）：**105/105 通过，FD warning = 0**（修复前约 1028 条）；本轮扩展后的 183 个测试仍保持 0 FD warning，见第 3 节。
 
 ### 0.5 账号枚举与短信供应商响应日志的安全复核
 
@@ -119,7 +119,7 @@ curl http://127.0.0.1:18080/health/ready  # {"status":"ok","migrationsApplied":2
 ## 3. backend 全量验收 ✅
 
 - `pnpm typecheck` 通过
-- `pnpm test`：**142 个测试全部通过，0 条 FD 告警**
+- `pnpm test`：**183 个测试全部通过，0 条 FD 告警**
 - CI 固定以 `TZ=UTC` 宿主 + `APP_TIMEZONE=Asia/Shanghai` 业务时区运行测试；预算/统计/RBAC 月份断言统一取 `currentYearMonth()`，不再在 UTC 月末边界混用宿主 `new Date()`。
 - `pnpm audit --audit-level=high --prod`：**0 个高危**
 - `pnpm build` 通过；`node scripts/smoke-dist-xlsx.mjs`（dist 产物 smoke）通过
