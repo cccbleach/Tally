@@ -2,6 +2,10 @@ import Foundation
 
 // 简单文件缓存：把最近一次拉取的数据落盘，供离线时读取。
 // 缓存按用户（+账本）分区：命名空间不同不会读到彼此的缓存，杜绝换账号/换账本串数据。
+//
+// 并发：namespace 是可变的静态状态，历史上没有同步保护（在 actor/主线程间读写，
+// Swift 5 模式下不报错但属数据竞争）。这里整体标注 @MainActor，所有访问都收敛到主线程。
+@MainActor
 enum LocalCache {
     private static var namespace = "anon"
 
@@ -11,7 +15,9 @@ enum LocalCache {
         namespace = safe.isEmpty ? "anon" : safe
     }
 
-    // 清空当前用户命名空间下的全部缓存（退出登录/被移出家庭时调用）
+    // 清空**当前命名空间**下的全部缓存。
+    // 注意顺序：必须在切换命名空间之前调用，否则清的是新命名空间的文件，
+    // 上一个用户（或当前用户）的缓存会被留在 Application Support 里。
     static func clearAll() {
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
         let prefix = namespace + "_"
@@ -162,6 +168,17 @@ struct APIService {
     func completeProfile(onboardingToken: String, nickname: String) async throws -> AuthResponse {
         struct Body: Encodable { let onboardingToken: String; let nickname: String }
         return try await client.request("POST", "/api/v1/auth/complete-profile", body: Body(onboardingToken: onboardingToken, nickname: nickname))
+    }
+
+    /// 服务端登出：吊销当前设备在服务端的会话（幂等）。
+    /// 需在删除本地令牌**之前**调用（要携带 access token 与 refreshToken）；
+    /// 网络失败不应阻断本地登出，因此由调用方以 best-effort 处理错误。
+    @discardableResult
+    func logout(refreshToken: String?) async throws -> Bool {
+        struct Body: Encodable { let refreshToken: String? }
+        struct Response: Decodable { let ok: Bool; let revoked: Bool }
+        let res: Response = try await client.request("POST", "/api/v1/auth/logout", body: Body(refreshToken: refreshToken))
+        return res.revoked
     }
 
     /// 昵称可用性

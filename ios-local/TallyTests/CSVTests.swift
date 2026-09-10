@@ -74,6 +74,39 @@ struct CSVTests {
         #expect(rows[0].id == tx.id.uuidString)
     }
 
+    @Test("CSV 公式注入防护：文本列以 = + - @ 开头时前置单引号，数值/日期列不受影响")
+    func formulaInjectionGuarded() throws {
+        let ledger = Ledger(name: "测试")
+        let account = Account(name: "现金", kind: .cash)
+        account.ledger = ledger
+        let category = Category(name: "餐饮", icon: "fork.knife", colorHex: "FF9F0A", kind: .expense)
+        category.ledger = ledger
+        let date = CSVService.isoDate.date(from: "2026-08-01") ?? Date()
+
+        // 备注/商家可能来自导入的账单文件，这里模拟被投毒的字段
+        let tx = Transaction(
+            kind: .expense, amountMinorUnits: 1250, currencyCode: "CNY", date: date,
+            account: account, category: category,
+            note: "=cmd|'/c calc'!A1", payee: "@SUM(1+1)*cmd|'/c calc'!A0"
+        )
+        tx.ledger = ledger
+
+        let csv = CSVService.exportCSV(transactions: [tx])
+        // 危险字段必须以 ' 开头（保持纯文本），且不能出现裸的 =cmd 形式
+        #expect(csv.contains("'=cmd"), "以 = 开头的备注必须被前置单引号: \(csv)")
+        #expect(csv.contains("'@SUM"), "以 @ 开头的商家必须被前置单引号: \(csv)")
+        #expect(!csv.contains(",=cmd"), "不得输出未转义的公式字段")
+
+        // 围道回导：单引号前缀必须被去掉，字段内容与原始一致
+        let rows = try CSVService.parse(csv)
+        #expect(rows.count == 1)
+        #expect(rows[0].note == "=cmd|'/c calc'!A1", "回导应还原原始备注: \(rows[0].note)")
+        #expect(rows[0].payee == "@SUM(1+1)*cmd|'/c calc'!A0", "回导应还原原始商家: \(rows[0].payee)")
+        // 金额/日期等 App 生成列不得被加前缀
+        #expect(rows[0].amount == "12.50")
+        #expect(rows[0].date == "2026-08-01")
+    }
+
     @Test("Refund export preserves its own ID and original transaction ID")
     func refundIdentityRoundTrip() throws {
         let ledger = Ledger(name: "测试")

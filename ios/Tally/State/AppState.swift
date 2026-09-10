@@ -78,7 +78,28 @@ final class AppState {
         isAuthenticated = true
     }
 
+    /// 退出登录：
+    /// 1) 先调用服务端登出吊销 refresh 会话（best-effort：网络失败也必须完成本地登出）；
+    /// 2) 清空本地文件缓存——必须在命名空间仍是当前用户时清理，否则会清错命名空间、
+    ///    把该用户的账户/流水/统计缓存长期留在 Application Support 里；
+    /// 3) 最后删除 Keychain 令牌并重置内存状态。
+    /// 顺序很关键：令牌要先于删除被读到，缓存要先于任何命名空间切换被清掉。
     func logout() {
+        let refreshToken = KeychainStore.loadRefreshToken()
+        let hadToken = KeychainStore.loadToken() != nil
+
+        if hadToken {
+            // 不等待结果、不因失败回滚本地登出：服务端吊销是"尽力而为"的加固手段
+            Task {
+                do {
+                    try await APIService.shared.logout(refreshToken: refreshToken)
+                } catch {
+                    // 网络不可用/会话已过期都无需打扰用户，本地登出照常完成
+                }
+            }
+        }
+
+        LocalCache.clearAll()
         KeychainStore.deleteTokens()
         user = nil
         needsNicknameSetup = false

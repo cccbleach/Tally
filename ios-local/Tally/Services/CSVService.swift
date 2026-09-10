@@ -101,7 +101,28 @@ public enum CSVService {
     }
 
     private static func encode(_ r: Row) -> [String] {
-        [r.type, r.date, r.amount, r.currency, r.account, r.counterAccount, r.category, r.payee, r.note, r.id, r.refundOfID]
+        // 文本列（账户/对手/分类/商家/备注）可能来自导入的账单文件 → 做公式注入防护；
+        // 数值/日期/ID 列由 App 生成，不加前缀（否则负金额会在回导时变成非法值）
+        [r.type, r.date, r.amount, r.currency,
+         sanitizeFormula(r.account), sanitizeFormula(r.counterAccount), sanitizeFormula(r.category),
+         sanitizeFormula(r.payee), sanitizeFormula(r.note), r.id, r.refundOfID]
+    }
+
+    /// CSV 公式注入防护（OWASP CSV Injection）：Excel / Numbers 会把以 `=`、`+`、`-`、`@`
+    /// （以及前导 Tab/CR）开头的字段当作公式解析，可能触发 DDE/外部程序调用。
+    /// `payee`/`note` 等文本可能来自导入的账单文件，因此导出时对**文本列**前置单引号 `'`。
+    ///
+    /// 只对文本列生效（见 `encode`）：金额/日期/ID 等列由 App 生成，且负金额本身以 `-` 开头，
+    /// 若一并加前缀会在回导时把金额变成非法值。
+    private static func sanitizeFormula(_ field: String) -> String {
+        guard let first = field.unicodeScalars.first else { return field }
+        let dangerous: Set<UInt32> = [0x3D /* = */, 0x2B /* + */, 0x2D /* - */, 0x40 /* @ */, 0x09 /* tab */, 0x0D /* CR */]
+        return dangerous.contains(first.value) ? "'" + field : field
+    }
+
+    /// 与 `sanitizeFormula` 对称：回导时去掉导出时加上的单引号，保证 导出→导入 往返一致。
+    private static func unescapeFormula(_ field: String) -> String {
+        field.hasPrefix("'") ? String(field.dropFirst()) : field
     }
 
     private static func escapeRow(_ fields: [String]) -> String {
@@ -152,8 +173,9 @@ public enum CSVService {
                     date: col(1).trimmingCharacters(in: .whitespaces),
                     amount: col(2).trimmingCharacters(in: .whitespaces),
                     currency: col(3).trimmingCharacters(in: .whitespaces).uppercased(),
-                    account: col(4), counterAccount: col(5), category: col(6),
-                    payee: col(7), note: col(8),
+                    account: unescapeFormula(col(4)), counterAccount: unescapeFormula(col(5)),
+                    category: unescapeFormula(col(6)),
+                    payee: unescapeFormula(col(7)), note: unescapeFormula(col(8)),
                     id: isRefund ? "" : idColumn,
                     refundOfID: isRefund ? idColumn : ""
                 ))
@@ -163,8 +185,9 @@ public enum CSVService {
                     date: col(1).trimmingCharacters(in: .whitespaces),
                     amount: col(2).trimmingCharacters(in: .whitespaces),
                     currency: col(3).trimmingCharacters(in: .whitespaces).uppercased(),
-                    account: col(4), counterAccount: col(5), category: col(6),
-                    payee: col(7), note: col(8),
+                    account: unescapeFormula(col(4)), counterAccount: unescapeFormula(col(5)),
+                    category: unescapeFormula(col(6)),
+                    payee: unescapeFormula(col(7)), note: unescapeFormula(col(8)),
                     id: idColumn,
                     refundOfID: col(10).trimmingCharacters(in: .whitespaces)
                 ))

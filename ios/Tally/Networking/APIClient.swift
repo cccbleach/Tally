@@ -38,7 +38,24 @@ struct KeychainAPITokenStore: APITokenStoring {
 
 actor APIClient {
     static let shared = APIClient()
+    // 静态可变状态：actor 隔离不覆盖 static 属性（跨 actor 共享），因此显式加锁。
+    // 语义是"本次会话只广播一次过期通知"，重复广播会导致重复登出流程。
+    private static let sessionExpiredLock = NSLock()
     private static var didNotifySessionExpired = false
+
+    private static func markSessionExpiredIfNeeded() -> Bool {
+        sessionExpiredLock.lock()
+        defer { sessionExpiredLock.unlock() }
+        if didNotifySessionExpired { return false }
+        didNotifySessionExpired = true
+        return true
+    }
+
+    private static func clearSessionExpiredFlag() {
+        sessionExpiredLock.lock()
+        didNotifySessionExpired = false
+        sessionExpiredLock.unlock()
+    }
 
     // 单飞刷新：同一时刻只允许一个刷新任务，其余并发请求等待同一个结果，
     // 避免首页多个请求同时遇到 401 时并发刷新 token。
@@ -115,15 +132,14 @@ actor APIClient {
     // 认证彻底失效：清理令牌并广播一次，让 AppState 统一登出
     private func expireSession() {
         tokenStore.deleteTokens()
-        if !APIClient.didNotifySessionExpired {
-            APIClient.didNotifySessionExpired = true
+        if APIClient.markSessionExpiredIfNeeded() {
             NotificationCenter.default.post(name: .tallySessionExpired, object: nil)
         }
     }
 
     // 新登录时重置“已通知会话过期”状态，避免旧会话的过期通知影响新会话
     nonisolated static func resetSessionExpiredState() {
-        didNotifySessionExpired = false
+        clearSessionExpiredFlag()
     }
 
     // 无请求体
