@@ -5,7 +5,7 @@ import { and, count, eq, or } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
 import { accounts, creditCardBills, loans, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
@@ -38,6 +38,8 @@ const updateSchema = z.object({
   billingDay: z.number().int().min(1).max(28).nullable().optional(),
   repaymentDay: z.number().int().min(1).max(28).nullable().optional(),
   ledgerId: z.string().optional(),
+  // 乐观锁：可选。若提供且与服务端当前 updatedAt 不一致则返回 409（与流水同一套约定）。
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
 type AccountRow = typeof accounts.$inferSelect;
@@ -96,6 +98,7 @@ function toDto(row: AccountRow, balance: number, debt: number) {
     billingDay: row.billingDay ?? null,
     repaymentDay: row.repaymentDay ?? null,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -141,6 +144,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       billingDay: null,
       repaymentDay: null,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     db.insert(accounts).values(row).run();
     const bal = body.initialBalance;
@@ -175,6 +179,10 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
+    // 乐观锁：家庭共享账本下两台设备并发改同一账户时，过期方收到 409 而不是静默覆盖
+    if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
+      throw conflict("CONFLICT", "账户已被其他端修改，请刷新后重试");
+    }
     const patch: Partial<typeof accounts.$inferInsert> = {};
     if (body.name !== undefined) patch.name = body.name;
     if (body.type !== undefined) patch.type = body.type;
@@ -206,6 +214,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
     if (body.creditLimit !== undefined) patch.creditLimit = body.creditLimit;
     if (body.billingDay !== undefined) patch.billingDay = body.billingDay;
     if (body.repaymentDay !== undefined) patch.repaymentDay = body.repaymentDay;
+    patch.updatedAt = new Date().toISOString();
     db.update(accounts)
       .set(patch)
       .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
@@ -234,7 +243,7 @@ export function registerAccountRoutes(app: FastifyInstance, deps: { db: AppDb["d
       .get();
     if (!existing) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
     db.update(accounts)
-      .set({ isArchived: true })
+      .set({ isArchived: true, updatedAt: new Date().toISOString() })
       .where(and(eq(accounts.id, id), eq(accounts.ledgerId, ledgerId)))
       .run();
     const archived = { ...existing, isArchived: true } as AccountRow;

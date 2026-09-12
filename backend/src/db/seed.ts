@@ -36,6 +36,7 @@ export function seedDefaultCategories(db: DB, userId: string, ledgerId: string):
     color: c.color,
     sortOrder: i,
     createdAt: now,
+    updatedAt: now,
   }));
   db.insert(categories).values(rows).run();
 }

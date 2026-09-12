@@ -22,7 +22,7 @@ function makeUpgradeDir() {
   return { dir, migDir, dbName: join(dir, "t.db") };
 }
 
-test("干净老库（无家庭数据）→ 0022 升级成功，全部 22 个迁移应用", () => {
+test("干净老库（无家庭数据）→ 升级到最新，全部迁移应用", () => {
   const { migDir, dbName } = makeUpgradeDir();
   const { sqlite } = createDb(dbName);
   try {
@@ -33,7 +33,7 @@ test("干净老库（无家庭数据）→ 0022 升级成功，全部 22 个迁�
     for (const f of files.filter((f) => f >= "0021")) copyFileSync(join(repo, f), join(migDir, f));
     runMigrations(sqlite, migDir);
     const applied = sqlite.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get() as { n: number };
-    assert.equal(applied.n, 22, "升级后应为 22 个迁移");
+    assert.equal(applied.n, files.length, `升级后应为全部 ${files.length} 个迁移`);
     assert.deepEqual(sqlite.prepare("PRAGMA foreign_key_check").all(), [], "外键检查应无误");
   } finally {
     sqlite.close();

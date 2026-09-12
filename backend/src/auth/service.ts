@@ -162,6 +162,7 @@ export function makeAuthService(db: DB, jwt: Jwt) {
       color: c.color,
       sortOrder: i,
       createdAt: now,
+      updatedAt: now,
     }));
     db.insert(categories).values(rows).run();
   }

@@ -332,7 +332,10 @@ paths:
     post:
       tags: [transactions]
       operationId: createTransaction
-      description: 收入/支出/转账（transfer 需 transferToAccountId）
+      description: >
+        收入/支出/转账（transfer 需 transferToAccountId）。可选 clientRequestId（8–64 位
+        字母数字/连字符）为客户端幂等键：同键重复提交返回首次创建的流水，
+        并发窗口由 (ledger_id, client_request_id) 唯一索引兜底。
   /api/v1/transactions/import:
     post:
       tags: [imports]
@@ -736,12 +739,13 @@ paths:
       summary: 更新账户
       description: >
         改 `currency` 受 ACCOUNT_CURRENCY_LOCKED 约束：账户已被流水/贷款/信用卡账单引用时返回 400
-        （否则历史金额会被重新解释成另一种币种）。
+        （否则历史金额会被重新解释成另一种币种）。可选 expectedUpdatedAt（ISO 8601）
+        为乐观锁：与当前 updatedAt 不一致返回 409 CONFLICT。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
-          description: 更新后的账户
+          description: 更新后的账户（updatedAt 前移）
           content:
             application/json:
               schema:
@@ -750,6 +754,8 @@ paths:
                   item: { $ref: "#/components/schemas/Account" }
         "400":
           description: 参数非法或账户币种被锁定
+        "409":
+          description: CONFLICT（expectedUpdatedAt 不匹配）
     delete:
       tags: [accounts]
       operationId: deleteAccount
@@ -763,11 +769,14 @@ paths:
     patch:
       tags: [categories]
       operationId: updateCategory
+      summary: 更新分类（支持乐观锁 expectedUpdatedAt）
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
-          description: 更新后的分类
+          description: 更新后的分类（updatedAt 前移）
+        "409":
+          description: CONFLICT（expectedUpdatedAt 不匹配）
     delete:
       tags: [categories]
       operationId: deleteCategory

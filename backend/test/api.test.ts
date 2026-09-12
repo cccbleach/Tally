@@ -540,6 +540,7 @@ test("账本隔离：非默认账本的数据不出现在默认 API 中", async 
       currency: "CNY",
       initialBalance: 8888,
       createdAt: now,
+      updatedAt: now,
     })
     .run();
 

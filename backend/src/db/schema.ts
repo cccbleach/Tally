@@ -177,6 +177,7 @@ export const accounts = sqliteTable(
     billingDay: integer("billing_day"),         // 账单日 1-28
     repaymentDay: integer("repayment_day"),     // 还款日 1-28
     createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(), // 乐观锁：PATCH 可带 expectedUpdatedAt 比对
   },
   (t) => [index("idx_accounts_user").on(t.userId), index("idx_accounts_ledger").on(t.ledgerId)],
 );
@@ -274,6 +275,7 @@ export const categories = sqliteTable(
     color: text("color"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(), // 乐观锁：PATCH 可带 expectedUpdatedAt 比对
   },
   (t) => [index("idx_categories_user").on(t.userId), index("idx_categories_ledger").on(t.ledgerId)],
 );
@@ -298,6 +300,7 @@ export const transactions = sqliteTable(
     dedupKey: text("dedup_key"), // 跨来源指纹（日期+金额+币种+规范化商家）
     linkedTransactionId: text("linked_transaction_id"), // 人工关联的目标流水
     paymentGroupId: text("payment_group_id"), // 一次还款拆分出的多条流水的分组关联
+    clientRequestId: text("client_request_id"), // 客户端幂等键（离线写队列重放去重）
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -308,6 +311,7 @@ export const transactions = sqliteTable(
     uniqueIndex("uniq_recurring_tx").on(t.recurringId, t.date), // 幂等唯一（NULL 互不冲突）
     uniqueIndex("uniq_tx_external_source").on(t.ledgerId, t.sourceType, t.externalId), // 硬去重：同账本同来源同外部 ID（NULL 互不冲突）
     index("idx_tx_dedup").on(t.ledgerId, t.dedupKey), // 软去重指纹（不唯一，允许同商家同金额正常消费共存）
+    uniqueIndex("uniq_tx_client_request").on(t.ledgerId, t.clientRequestId).where(sql`${t.clientRequestId} IS NOT NULL`), // 客户端幂等键（NULL 互不冲突）
   ],
 );
 

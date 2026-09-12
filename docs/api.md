@@ -20,7 +20,8 @@
 
 - **当前策略：Last-Write-Wins + 乐观锁**。服务端以 `updatedAt` 为版本号，写接口返回最新的 `updatedAt`。
 - PATCH 写接口可携带可选参数 `expectedUpdatedAt`（ISO 8601）；若其与服务端当前 `updatedAt` 不一致，返回 `409 { error: { code: "CONFLICT" } }`，客户端应刷新后再提交。
-- 目前 `expectedUpdatedAt` 支持：流水、预算、周期账单。账户/分类暂无 `updatedAt`，采用“提交后整体刷新”策略。
+- `expectedUpdatedAt` 支持：流水、预算、周期账单、**账户、分类**（账户/分类自 0023 迁移起携带 `updatedAt`，每次成功 PATCH 前移；归档账户同样前移）。
+- `POST /transactions` 支持可选 `clientRequestId`（8–64 位字母数字/连字符）：离线写队列重放与网络重发的幂等键，同键重复提交返回首次创建的流水（并发窗口由 `(ledger_id, client_request_id)` 唯一索引兜底）。
 - 客户端多端同步建议：拉取 → 记录 `updatedAt` → 修改时带上 → 遇 409 提示冲突并拉取最新。
 - 服务端不提供合并/三方合并；冲突由客户端引导用户处理（或按策略直接覆盖）。
 

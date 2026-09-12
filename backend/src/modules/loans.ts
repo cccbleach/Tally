@@ -128,6 +128,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
             billingDay: null,
             repaymentDay: null,
             createdAt: now,
+            updatedAt: now,
           })
           .run();
       }

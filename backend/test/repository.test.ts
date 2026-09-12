@@ -59,12 +59,13 @@ before(() => {
       currency: "CNY",
       initialBalance: 0,
       createdAt: now,
+      updatedAt: now,
     }).run();
   }
   const catA = randomUUID();
   const catB = randomUUID();
-  db.insert(categories).values({ id: catA, userId, ledgerId: ledgerA, name: "A分类", type: "expense", createdAt: now }).run();
-  db.insert(categories).values({ id: catB, userId, ledgerId: ledgerB, name: "B分类", type: "expense", createdAt: now }).run();
+  db.insert(categories).values({ id: catA, userId, ledgerId: ledgerA, name: "A分类", type: "expense", createdAt: now, updatedAt: now }).run();
+  db.insert(categories).values({ id: catB, userId, ledgerId: ledgerB, name: "B分类", type: "expense", createdAt: now, updatedAt: now }).run();
 });
 
 after(() => {

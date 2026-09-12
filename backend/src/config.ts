@@ -18,6 +18,9 @@ export interface Config {
   jwtSecret: string;
   timezone: string;
   baseCurrency: string;
+  /** 汇率自动拉取（默认关闭）：开启后每日拉取最新汇率写入全局兜底表 */
+  exchangeRateFetchEnabled: boolean;
+  exchangeRateFetchUrl: string;
   corsOrigins: string[];
   accessTokenTtl: string;
   refreshTokenTtl: string;
@@ -116,6 +119,11 @@ export const config: Config = {
   timezone: process.env.APP_TIMEZONE ?? process.env.TZ ?? DEFAULT_TIMEZONE,
   // 基准币种：统计/总资产换算的统一口径，默认人民币。
   baseCurrency: (process.env.BASE_CURRENCY ?? "CNY").toUpperCase(),
+  // 汇率自动拉取：默认关闭（自部署不强制依赖外部服务）。
+  // 开启（EXCHANGE_RATE_FETCH_ENABLED=1）后启动 30s 拉一次 + 每日 04:30 定时刷新，
+  // 结果 upsert 到全局兜底汇率（userId IS NULL），失败只记日志、绝不删除已有汇率。
+  exchangeRateFetchEnabled: process.env.EXCHANGE_RATE_FETCH_ENABLED === "1",
+  exchangeRateFetchUrl: process.env.EXCHANGE_RATE_FETCH_URL ?? "https://open.er-api.com/v6/latest/CNY",
   // CORS 白名单，逗号分隔；为空时开发环境放行所有（origin: true）。
   corsOrigins: (process.env.CORS_ORIGINS ?? "")
     .split(",")

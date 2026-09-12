@@ -5,7 +5,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
 import { categories } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
-import { notFound } from "../lib/errors.js";
+import { notFound, conflict } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import type { Jwt } from "../auth/jwt.js";
@@ -25,6 +25,8 @@ const updateSchema = z.object({
   color: z.string().max(20).nullable().optional(),
   sortOrder: z.number().int().optional(),
   ledgerId: z.string().optional(),
+  // 乐观锁：可选。若提供且与服务端当前 updatedAt 不一致则返回 409（与流水同一套约定）。
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
 type CategoryRow = typeof categories.$inferSelect;
@@ -37,6 +39,7 @@ function toDto(row: CategoryRow) {
     icon: row.icon,
     color: row.color,
     sortOrder: row.sortOrder,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -62,6 +65,7 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "category:manage");
+    const now = new Date().toISOString();
     const row = {
       id: randomUUID(),
       userId,
@@ -71,7 +75,8 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
       icon: body.icon ?? null,
       color: body.color ?? null,
       sortOrder: body.sortOrder ?? 999,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
     db.insert(categories).values(row).run();
     return { item: toDto(row) };
@@ -89,11 +94,16 @@ export function registerCategoryRoutes(app: FastifyInstance, deps: { db: AppDb["
       .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))
       .get();
     if (!existing) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
+    // 乐观锁：家庭共享账本下两台设备并发改同一分类时，过期方收到 409 而不是静默覆盖
+    if (body.expectedUpdatedAt && existing.updatedAt !== body.expectedUpdatedAt) {
+      throw conflict("CONFLICT", "分类已被其他端修改，请刷新后重试");
+    }
     const patch: Partial<typeof categories.$inferInsert> = {};
     if (body.name !== undefined) patch.name = body.name;
     if (body.icon !== undefined) patch.icon = body.icon;
     if (body.color !== undefined) patch.color = body.color;
     if (body.sortOrder !== undefined) patch.sortOrder = body.sortOrder;
+    patch.updatedAt = new Date().toISOString();
     db.update(categories)
       .set(patch)
       .where(and(eq(categories.id, id), eq(categories.ledgerId, ledgerId)))

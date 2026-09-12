@@ -51,6 +51,8 @@ const commonFields = {
   currency: currencySchema.default("CNY"),
   ledgerId: z.string().optional(),
   accountId: z.string().min(1, "账户不能为空"),
+  // 客户端幂等键（离线写队列重放）：同一键重复提交返回首次创建的流水，不重复入账
+  clientRequestId: z.string().min(8).max(64).regex(/^[A-Za-z0-9-]+$/, "幂等键只允许字母数字与连字符").optional(),
 };
 
 const createSchema = z.discriminatedUnion("type", [
@@ -206,6 +208,21 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "transaction:create");
 
+    // 幂等重放：离线队列重试/网络重发携带同一 clientRequestId 时，直接返回首次创建的流水。
+    // 并发窗口内两个请求同时走到插入时，由 uniq_tx_client_request 唯一索引兜底（见下方 catch）。
+    if (body.clientRequestId) {
+      const replayed = db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.clientRequestId, body.clientRequestId)))
+        .get();
+      if (replayed) {
+        const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+        const um = loadUserNicknames(db, userId, ledgerId);
+        return { item: toDto(replayed, am, cm, um) };
+      }
+    }
+
     const account = db
       .select()
       .from(accounts)
@@ -257,10 +274,30 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       date: body.date,
       transferToAccountId,
       sourceType: "manual",
+      clientRequestId: body.clientRequestId ?? null,
       createdAt: now,
       updatedAt: now,
     };
-    db.insert(transactions).values(row).run();
+    try {
+      db.insert(transactions).values(row).run();
+    } catch (error) {
+      // 并发竞态：另一个请求已用同一幂等键插入（唯一索引 uniq_tx_client_request）。
+      // 重读并返回已存在的流水，保证「至多一次入账 + 调用方拿到成功」。
+      const message = error instanceof Error ? error.message : "";
+      if (body.clientRequestId && message.includes("uniq_tx_client_request")) {
+        const winner = db
+          .select()
+          .from(transactions)
+          .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.clientRequestId, body.clientRequestId)))
+          .get();
+        if (winner) {
+          const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+          const um = loadUserNicknames(db, userId, ledgerId);
+          return { item: toDto(winner, am, cm, um) };
+        }
+      }
+      throw error;
+    }
     const { am, cm } = loadRelationMaps(db, userId, ledgerId);
     const um = loadUserNicknames(db, userId, ledgerId);
     return { item: toDto(row as TransactionRow, am, cm, um) };
