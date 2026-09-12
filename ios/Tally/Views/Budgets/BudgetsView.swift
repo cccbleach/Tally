@@ -45,7 +45,7 @@ struct BudgetsView: View {
         VStack(spacing: 8) {
             Text("本月总预算").font(.caption).foregroundColor(.secondary)
             if o.totalBudget > 0 {
-                Text(Money.format(o.totalSpent) + " / " + Money.format(o.totalBudget))
+                Text(Money.format(o.totalSpent, currency: store.baseCurrencyCode) + " / " + Money.format(o.totalBudget, currency: store.baseCurrencyCode))
                     .font(.title2.bold())
                     .monospacedDigit()
                 ProgressView(value: min(o.totalPercent, 100), total: 100)
@@ -60,6 +60,7 @@ struct BudgetsView: View {
 }
 
 struct BudgetRow: View {
+    @Environment(DataStore.self) private var store
     let item: BudgetOverviewItem
 
     var body: some View {
@@ -67,7 +68,7 @@ struct BudgetRow: View {
             HStack {
                 Text(item.categoryName)
                 Spacer()
-                Text(Money.format(item.spent) + " / " + Money.format(item.budget))
+                Text(Money.format(item.spent, currency: store.baseCurrencyCode) + " / " + Money.format(item.budget, currency: store.baseCurrencyCode))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .monospacedDigit()
@@ -75,7 +76,7 @@ struct BudgetRow: View {
             ProgressView(value: min(item.percent, 100), total: 100)
                 .tint(item.percent > 100 ? .red : .accentColor)
             if item.percent > 100 {
-                Text("超支 " + Money.format(item.spent - item.budget))
+                Text("超支 " + Money.format(item.spent - item.budget, currency: store.baseCurrencyCode))
                     .font(.caption)
                     .foregroundColor(.red)
             }
@@ -106,7 +107,7 @@ struct BudgetFormView: View {
                     LabeledContent("类型", value: "总预算")
                 }
                 HStack {
-                    Text("¥").font(.title2).foregroundColor(.secondary)
+                    Text(Currencies.info(for: store.baseCurrencyCode).symbol).font(.title2).foregroundColor(.secondary)
                     TextField("0.00", text: $amountString)
                         .keyboardType(.decimalPad)
                         .font(.title2.bold())
@@ -129,13 +130,14 @@ struct BudgetFormView: View {
     }
 
     private func save() async {
-        guard let cents = Money.cents(fromYuanString: amountString) else { return }
+        // 预算金额按账本本位币解析（服务端统计口径折算到本位币）
+        guard let amount = Money.minorUnits(fromInput: amountString, currency: store.baseCurrencyCode) else { return }
         do {
             try await APIService.shared.upsertBudget(
                 year: store.selectedYear,
                 month: store.selectedMonth,
                 categoryId: mode == "total" ? nil : categoryId,
-                amount: cents
+                amount: amount
             )
             await store.refreshBudgetOverview()
             dismiss()

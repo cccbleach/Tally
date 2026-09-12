@@ -94,7 +94,11 @@ struct CategoryFormView: View {
     private func save() async {
         do {
             if let existing {
-                _ = try await APIService.shared.updateCategory(id: existing.id, name: name, icon: nil, color: nil)
+                // 乐观锁：带上编辑时的版本号，另一端已改过则 409 提示刷新
+                _ = try await APIService.shared.updateCategory(
+                    id: existing.id, name: name, icon: nil, color: nil,
+                    expectedUpdatedAt: existing.updatedAt
+                )
             } else {
                 _ = try await APIService.shared.createCategory(name: name, type: type, icon: nil, color: nil)
             }

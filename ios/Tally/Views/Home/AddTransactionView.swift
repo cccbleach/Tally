@@ -23,6 +23,22 @@ struct AddTransactionView: View {
         store.categories.filter { $0.type == (type == "income" ? "income" : "expense") }
     }
 
+    private var selectedAccount: Account? {
+        store.accounts.first(where: { $0.id == selectedAccountId })
+    }
+    /// 录入币种 = 所选账户币种（服务端强制「流水币种 = 账户币种」，跨币种写入会被
+    /// 400 CURRENCY_MISMATCH 拒绝）；未选账户时按账本本位币兜底。
+    private var entryCurrency: String {
+        selectedAccount?.currency ?? store.baseCurrencyCode
+    }
+    private var entryCurrencySymbol: String {
+        Currencies.info(for: entryCurrency).symbol
+    }
+    /// 转账的两个账户必须同币种（服务端两侧都做护栏校验），只提供同币种选项
+    private var transferCandidates: [Account] {
+        activeAccounts.filter { $0.id != selectedAccountId && $0.currency == entryCurrency }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -37,7 +53,7 @@ struct AddTransactionView: View {
 
                 Section {
                     HStack {
-                        Text("¥").font(.title2).foregroundColor(.secondary)
+                        Text(entryCurrencySymbol).font(.title2).foregroundColor(.secondary)
                         TextField("0.00", text: $amountString)
                             .keyboardType(.decimalPad)
                             .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -48,7 +64,7 @@ struct AddTransactionView: View {
                 Section("账户") {
                     Picker("账户", selection: $selectedAccountId) {
                         ForEach(activeAccounts) { a in
-                            Text(a.name + "（" + Money.format(a.balance) + "）").tag(a.id)
+                            Text(a.name + "（" + Money.format(a.balance, currency: a.currency) + "）").tag(a.id)
                         }
                     }
                 }
@@ -56,7 +72,7 @@ struct AddTransactionView: View {
                 if type == "transfer" {
                     Section("转入账户") {
                         Picker("转入账户", selection: $transferToAccountId) {
-                            ForEach(activeAccounts.filter { $0.id != selectedAccountId }) { a in
+                            ForEach(transferCandidates) { a in
                                 Text(a.name).tag(a.id)
                             }
                         }
@@ -90,8 +106,10 @@ struct AddTransactionView: View {
             selectedCategoryId = activeCategories.first?.id ?? ""
         }
         .onChange(of: selectedAccountId) { _, _ in
-            if type == "transfer", transferToAccountId == selectedAccountId {
-                transferToAccountId = activeAccounts.first(where: { $0.id != selectedAccountId })?.id ?? ""
+            // 换账户后币种随之变化：转账目标必须重选为同币种账户
+            if type == "transfer", transferToAccountId == selectedAccountId
+                || !transferCandidates.contains(where: { $0.id == transferToAccountId }) {
+                transferToAccountId = transferCandidates.first?.id ?? ""
             }
         }
     }
@@ -113,36 +131,57 @@ struct AddTransactionView: View {
         if selectedAccountId.isEmpty { selectedAccountId = activeAccounts.first?.id ?? "" }
         if type != "transfer", selectedCategoryId.isEmpty { selectedCategoryId = activeCategories.first?.id ?? "" }
         if type == "transfer", transferToAccountId.isEmpty {
-            transferToAccountId = activeAccounts.first(where: { $0.id != selectedAccountId })?.id ?? ""
+            transferToAccountId = transferCandidates.first?.id ?? ""
         }
     }
 
     private var canSave: Bool {
-        guard Money.cents(fromYuanString: amountString) != nil else { return false }
+        guard Money.minorUnits(fromInput: amountString, currency: entryCurrency) != nil else { return false }
         if type == "transfer" { return !selectedAccountId.isEmpty && !transferToAccountId.isEmpty }
         return !selectedAccountId.isEmpty && !selectedCategoryId.isEmpty
     }
 
     private func save() async {
-        guard let cents = Money.cents(fromYuanString: amountString) else { return }
+        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else { return }
         isSaving = true
         defer { isSaving = false }
         let dateStr = TallyDate.dayFormatter.string(from: date)
+        let clientRequestId = UUID().uuidString
         do {
             _ = try await APIService.shared.createTransaction(
                 type: type,
-                amount: cents,
+                amount: amount,
                 date: dateStr,
                 note: note.isEmpty ? nil : note,
-                currency: "CNY",
+                currency: entryCurrency,
                 accountId: selectedAccountId,
                 categoryId: type == "transfer" ? nil : selectedCategoryId,
-                transferToAccountId: type == "transfer" ? transferToAccountId : nil
+                transferToAccountId: type == "transfer" ? transferToAccountId : nil,
+                clientRequestId: clientRequestId
             )
             await store.loadAll()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            if PendingTransactionQueue.isRetryableTransportError(error) {
+                // 断网：入本地队列（幂等键 = clientRequestId，联网重放不会重复入账）
+                PendingTransactionQueue.enqueue(QueuedTransaction(
+                    id: clientRequestId,
+                    type: type,
+                    amount: amount,
+                    date: dateStr,
+                    note: note.isEmpty ? nil : note,
+                    currency: entryCurrency,
+                    accountId: selectedAccountId,
+                    categoryId: type == "transfer" ? nil : selectedCategoryId,
+                    transferToAccountId: type == "transfer" ? transferToAccountId : nil,
+                    queuedAt: Date()
+                ))
+                store.pendingSyncCount = PendingTransactionQueue.count()
+                await store.loadAll()
+                dismiss()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

@@ -10,7 +10,8 @@ struct LiabilitiesView: View {
         List {
             if let s = summary {
                 Section("总负债") {
-                    LabeledContent("负债合计", value: Money.format(s.totalDebt))
+                    // 负债中心的金额已由服务端折算到账本本位币
+                    LabeledContent("负债合计", value: Money.format(s.totalDebt, currency: store.baseCurrencyCode))
                 }
                 Section("信用卡") {
                     if s.creditCards.isEmpty {
@@ -20,7 +21,7 @@ struct LiabilitiesView: View {
                         HStack {
                             Text(card.name)
                             Spacer()
-                            Text("欠款 " + Money.format(card.debt)).foregroundColor(.red)
+                            Text("欠款 " + Money.format(card.debt, currency: store.baseCurrencyCode)).foregroundColor(.red)
                         }
                     }
                 }
@@ -31,9 +32,9 @@ struct LiabilitiesView: View {
                     ForEach(s.loans) { loan in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(loan.name).font(.headline)
-                            Text("剩余本金 " + Money.format(loan.remainingPrincipal)).font(.subheadline)
+                            Text("剩余本金 " + Money.format(loan.remainingPrincipal, currency: store.baseCurrencyCode)).font(.subheadline)
                             if let next = loan.nextPaymentDate {
-                                Text("下期 \(next) · 月供 " + Money.format(loan.monthlyPayment))
+                                Text("下期 \(next) · 月供 " + Money.format(loan.monthlyPayment, currency: store.baseCurrencyCode))
                                     .font(.caption).foregroundColor(.secondary)
                             }
                         }
@@ -47,7 +48,7 @@ struct LiabilitiesView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(bill.period).font(.headline)
-                                Text("应还 " + Money.format(bill.statementBalance)).font(.subheadline)
+                                Text("应还 " + Money.format(bill.statementBalance, currency: store.baseCurrencyCode)).font(.subheadline)
                                 if let due = bill.dueDate {
                                     Text("还款日 \(due)").font(.caption).foregroundColor(.secondary)
                                 }
@@ -119,6 +120,7 @@ struct LiabilitiesView: View {
 
 struct AddCreditCardBillView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(DataStore.self) private var store
     let cards: [CreditCardLiability]
     let onSaved: () async -> Void
 
@@ -167,7 +169,8 @@ struct AddCreditCardBillView: View {
     }
 
     private func save() async {
-        guard let cents = Money.cents(fromYuanString: amountYuan) else {
+        // 账单金额按账本本位币解析（负债中心整体折算到本位币展示）
+        guard let amount = Money.minorUnits(fromInput: amountYuan, currency: store.baseCurrencyCode) else {
             errorMessage = "请输入有效金额"
             return
         }
@@ -177,7 +180,7 @@ struct AddCreditCardBillView: View {
             try await APIService.shared.createCreditCardBill(
                 accountId: cardId,
                 period: period,
-                statementBalance: cents,
+                statementBalance: amount,
                 minimumPayment: nil,
                 dueDate: dueDate.isEmpty ? nil : dueDate
             )
@@ -191,10 +194,21 @@ struct AddCreditCardBillView: View {
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(LockService.self) private var lockService
+    @AppStorage(LockService.enabledKey) private var biometricLockEnabled = false
     @State private var errorMessage: String?
     @State private var confirmLogoutAll = false
     @State private var logoutAllNotice: String?
     @State private var isLoggingOutAll = false
+    // CSV 导出：异步拉全量流水 → 写临时文件 → 系统分享面板
+    @State private var isExporting = false
+    @State private var exportFile: ExportFile?
+
+    /// 分享面板需要 Identifiable 才能用 sheet(item:) 弹出
+    struct ExportFile: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
 
     var body: some View {
         NavigationStack {
@@ -212,6 +226,29 @@ struct SettingsView: View {
                     NavigationLink("周期账单") { RecurringView() }
                     NavigationLink("导入账单") { StagedImportView() }
                     NavigationLink("负债中心") { LiabilitiesView() }
+                }
+
+                Section {
+                    Button {
+                        Task { await exportCSV() }
+                    } label: {
+                        if isExporting {
+                            HStack { Text("正在生成导出文件…"); Spacer(); ProgressView() }
+                        } else {
+                            Label("导出全部流水（CSV）", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    .disabled(isExporting)
+                } footer: {
+                    Text("导出当前账本全部流水为 CSV（含币种列），可通过「文件」/AirDrop 等保存备份。")
+                }
+
+                if lockService.deviceSupportsLock {
+                    Section {
+                        Toggle("生物锁（Face ID / 触控 ID）", isOn: $biometricLockEnabled)
+                    } footer: {
+                        Text("开启后，App 切到后台即上锁，回到前台需验证才能查看账目。")
+                    }
                 }
 
                 Section {
@@ -239,6 +276,11 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .task { await refreshProfile() }
             .refreshable { await refreshProfile() }
+            .sheet(item: $exportFile) { file in
+                ActivityShareSheet(items: [file.url])
+                    .presentationDetents([.medium, .large])
+                    .ignoresSafeArea()
+            }
             .confirmationDialog("退出全部设备？", isPresented: $confirmLogoutAll, titleVisibility: .visible) {
                 Button("退出全部设备", role: .destructive) {
                     Task { await performLogoutAll() }
@@ -271,6 +313,27 @@ struct SettingsView: View {
         // 设置页只刷新本人资料；共享账本与邀请统一由明细页入口维护。
         if let profile = try? await APIService.shared.myProfile() {
             appState.user = profile
+        }
+    }
+
+    /// 拉全量流水（分页）→ 生成 CSV → 写临时文件 → 弹分享面板。
+    /// 失败时如实提示，不弹空文件。
+    private func exportCSV() async {
+        isExporting = true
+        defer { isExporting = false }
+        do {
+            let transactions = try await TransactionCSVExport.fetchAll { page in
+                try await APIService.shared.transactions(
+                    from: nil, to: nil, accountId: nil, categoryId: nil, type: nil,
+                    page: page, limit: 200
+                )
+            }
+            let csv = TransactionCSVExport.csv(from: transactions)
+            exportFile = ExportFile(
+                url: try TransactionCSVExport.writeTemporaryFile(csv, fileName: TransactionCSVExport.suggestedFileName())
+            )
+        } catch {
+            errorMessage = "导出失败：\(error.localizedDescription)"
         }
     }
 }

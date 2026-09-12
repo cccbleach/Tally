@@ -58,6 +58,7 @@ struct Account: Codable, Identifiable, Hashable {
     var balance: Int
     var debt: Int?  // 负债账户当前欠款（本币正数），非负债账户为 0
     let createdAt: String
+    var updatedAt: String?
 }
 
 // MARK: - 分类
@@ -69,6 +70,7 @@ struct Category: Codable, Identifiable, Hashable {
     var icon: String?
     var color: String?
     var sortOrder: Int
+    var updatedAt: String?
 }
 
 // MARK: - 流水

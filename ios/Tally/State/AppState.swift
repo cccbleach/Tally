@@ -134,9 +134,11 @@ final class AppState {
         return revoked
     }
 
-    /// 本地登出清理：缓存 → 令牌 → 内存状态（顺序不可调换，见 logout 注释）
+    /// 本地登出清理：缓存 → 导出临时文件 → 令牌 → 内存状态（顺序不可调换，见 logout 注释）
     private func clearLocalSession() {
         LocalCache.clearAll()
+        // 导出的全量流水 CSV 是隐私数据，登出时一并清掉（tmp 不依赖系统清理）
+        TransactionCSVExport.clearTemporaryFiles()
         KeychainStore.deleteTokens()
         user = nil
         needsNicknameSetup = false

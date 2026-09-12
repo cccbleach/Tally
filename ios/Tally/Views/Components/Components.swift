@@ -53,9 +53,12 @@ struct CategoryBadge: View {
 struct AmountLabel: View {
     let amount: Int
     let type: String
+    /// 金额所属币种（流水按自身币种展示）；nil = 账本本位币
+    var currency: String?
+
     var body: some View {
         let prefix = type == "income" ? "+" : (type == "expense" ? "-" : "")
-        Text(prefix + Money.format(amount))
+        Text(prefix + Money.formatMagnitude(amount, currency: currency))
             .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundColor(typeColor(type))
             .monospacedDigit()

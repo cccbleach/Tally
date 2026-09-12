@@ -34,6 +34,11 @@ struct RecurringRow: View {
         store.categories.first(where: { $0.id == bill.categoryId })
     }
 
+    /// 周期账单金额继承其账户币种（服务端生成流水时按账户币种入账）
+    private var currencyCode: String? {
+        store.accounts.first(where: { $0.id == bill.accountId })?.currency
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             CategoryBadge(icon: category?.icon, color: category?.color)
@@ -43,7 +48,7 @@ struct RecurringRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                AmountLabel(amount: bill.amount, type: bill.type)
+                AmountLabel(amount: bill.amount, type: bill.type, currency: currencyCode)
                 Toggle("", isOn: Binding(
                     get: { bill.isActive },
                     set: { _ in Task { await toggle() } }
@@ -101,6 +106,13 @@ struct RecurringFormView: View {
 
     private var activeAccounts: [Account] { store.accounts.filter { !$0.isArchived } }
     private var activeCategories: [Category] { store.categories.filter { $0.type == type } }
+    private var selectedAccount: Account? {
+        store.accounts.first(where: { $0.id == selectedAccountId })
+    }
+    /// 金额币种跟随所选账户（生成流水时按账户币种入账）
+    private var entryCurrency: String {
+        selectedAccount?.currency ?? store.baseCurrencyCode
+    }
 
     var body: some View {
         NavigationStack {
@@ -114,7 +126,7 @@ struct RecurringFormView: View {
                 }
                 Section {
                     HStack {
-                        Text("¥").font(.title2).foregroundColor(.secondary)
+                        Text(Currencies.info(for: entryCurrency).symbol).font(.title2).foregroundColor(.secondary)
                         TextField("0.00", text: $amountString)
                             .keyboardType(.decimalPad)
                             .font(.title2.bold())
@@ -166,14 +178,14 @@ struct RecurringFormView: View {
     }
 
     private func save() async {
-        guard let cents = Money.cents(fromYuanString: amountString) else { return }
+        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else { return }
         let df = TallyDate.dayFormatter
         do {
             _ = try await APIService.shared.createRecurring(
                 accountId: selectedAccountId,
                 categoryId: selectedCategoryId,
                 type: type,
-                amount: cents,
+                amount: amount,
                 note: note.isEmpty ? nil : note,
                 frequency: frequency,
                 interval: interval,

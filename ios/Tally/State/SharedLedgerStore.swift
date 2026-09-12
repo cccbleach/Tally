@@ -22,12 +22,13 @@ protocol SharedLedgerServing {
 
 extension APIService: SharedLedgerServing {}
 
-/// 账本切换后需要同步缓存命名空间并重新加载业务数据。
+/// 账本切换后需要同步缓存命名空间、本位币并重新加载业务数据。
 /// 抽成协议是为了让 SharedLedgerStore 的状态机可以独立测试。
 @MainActor
 protocol LedgerDataManaging: AnyObject {
     var ledgerId: String? { get }
     func setContext(userId: String?, ledgerId: String?)
+    func setBaseCurrency(code: String)
     func loadAll() async
 }
 
@@ -330,6 +331,7 @@ final class SharedLedgerStore {
         activeFamily = snapshot.family
         familyDetail = snapshot.familyDetail
         invitations = snapshot.invitations
+        syncBaseCurrency()
     }
 
     private func refreshAfterMutation(reloadData: Bool) async throws {
@@ -348,6 +350,13 @@ final class SharedLedgerStore {
                 isCurrent: $0.id == id
             )
         }
+        syncBaseCurrency()
+    }
+
+    /// 把当前账本币种同步给 DataStore：统计/预算/负债的聚合金额都由服务端折算到
+    /// 本位币返回，展示层必须用同一币种格式化，否则 USD 账本的结余会显示成 ¥。
+    private func syncBaseCurrency() {
+        dataManager?.setBaseCurrency(code: currentLedger?.currency ?? Money.defaultCurrencyCode)
     }
 
     private func synchronizeDataIfNeeded(forceReload: Bool) async -> Bool {
@@ -368,5 +377,7 @@ final class SharedLedgerStore {
         activeFamily = nil
         familyDetail = nil
         invitations = []
+        // 登出/换用户后账本币种未知，回到默认，待下次快照刷新再同步
+        dataManager?.setBaseCurrency(code: Money.defaultCurrencyCode)
     }
 }

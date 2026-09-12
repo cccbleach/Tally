@@ -15,6 +15,13 @@ final class DataStore {
     var errorMessage: String?
     var isOffline = false
 
+    /// 当前账本本位币（统计/预算/负债等聚合金额的折算目标，服务端 BASE_CURRENCY 口径）。
+    /// 由 SharedLedgerStore 在账本快照刷新/切换后同步；展示聚合金额时传给 Money.format。
+    var baseCurrencyCode = Money.defaultCurrencyCode
+
+    /// 待同步的离线记账条数（断网入队、联网重放后清零），供 UI 展示角标/提示
+    var pendingSyncCount = 0
+
     var selectedYear: Int
     var selectedMonth: Int
 
@@ -40,6 +47,11 @@ final class DataStore {
         clearState()
     }
 
+    /// 由 SharedLedgerStore 在账本快照刷新/切换时同步本位币（统计聚合金额的展示币种）。
+    func setBaseCurrency(code: String) {
+        baseCurrencyCode = code
+    }
+
     private func clearState() {
         accounts = []
         categories = []
@@ -48,6 +60,7 @@ final class DataStore {
         trend = []
         budgetOverview = nil
         recurring = []
+        pendingSyncCount = PendingTransactionQueue.count()
     }
 
     func moveMonth(by delta: Int) {
@@ -121,10 +134,28 @@ final class DataStore {
             LocalCache.save(trend, forKey: "trend")
             isOffline = false
             errorMessage = nil
+            // 网络已恢复：重放离线期间入队的记账（带幂等键，不会重复入账）。
+            // 重放可能改变流水/汇总 → 成功后重拉一次列表与统计。
+            let syncOutcome = await OfflineTransactionSyncer.sync()
+            pendingSyncCount = syncOutcome.remaining
+            if syncOutcome.synced > 0 || syncOutcome.dropped > 0 {
+                async let t = APIService.shared.transactions(from: range.from, to: range.to, accountId: nil, categoryId: nil, type: nil)
+                async let s = APIService.shared.summary(year: selectedYear, month: selectedMonth)
+                if let refreshed = try? await (t, s) {
+                    transactions = refreshed.0.items
+                    self.summary = refreshed.1
+                    LocalCache.save(refreshed.0.items, forKey: "transactions")
+                    LocalCache.save(refreshed.1, forKey: "summary")
+                }
+            }
+            if syncOutcome.dropped > 0 {
+                errorMessage = "\(syncOutcome.dropped) 笔离线记录被服务器拒绝：\(syncOutcome.firstDropReason ?? "未知原因")"
+            }
         } catch {
             let r = classify(error)
             isOffline = r.offline
             errorMessage = r.message
+            pendingSyncCount = PendingTransactionQueue.count()
         }
     }
 

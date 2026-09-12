@@ -123,6 +123,8 @@ targets:
     platform: iOS
     sources:
       - Tally
+    dependencies:
+      - target: TallyWidget
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tally.logan
@@ -176,9 +178,40 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # 深链 scheme：桌面小组件/快捷指令/Safari 通过 tally://add 打开记账表单
+        CFBundleURLTypes:
+          - CFBundleURLName: com.tally.logan.deeplink
+            CFBundleURLSchemes:
+              - tally
         # 生产用 HTTPS 不再全局放行任意 HTTP；仅允许本地/局域网 HTTP 便于开发联调
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+  TallyWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - TallyWidget
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tally.logan.TallyWidget
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "iPhone Developer"
+        DEVELOPMENT_TEAM: XN5LYQCCY2
+        SKIP_INSTALL: YES
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0.0"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+        SDKROOT: iphoneos
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: TallyWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Tally 一键记账
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
   TallyTests:
     type: bundle.unit-test
     platform: iOS

@@ -36,8 +36,15 @@ struct AccountsView: View {
     private var liabilityAccounts: [Account] {
         activeAccounts.filter { $0.isLiability == true && ($0.debt ?? 0) > 0 }
     }
-    private var totalAssets: Int { assetAccounts.reduce(0) { $0 + $1.balance } }
-    private var totalDebt: Int { liabilityAccounts.reduce(0) { $0 + ($1.debt ?? 0) } }
+    // 优先用服务端折算后的口径（StatsSummary.totalAssets/totalDebt 已按本位币换算）；
+    // 账户余额是各自币种的原生值，本地直接相加在多币种账本下会算错。
+    // summary 尚未加载时退回本地求和（与历史行为一致，单币种账本下结果相同）。
+    private var totalAssets: Int {
+        store.summary?.totalAssets ?? assetAccounts.reduce(0) { $0 + $1.balance }
+    }
+    private var totalDebt: Int {
+        store.summary?.totalDebt ?? liabilityAccounts.reduce(0) { $0 + ($1.debt ?? 0) }
+    }
     private var netWorth: Int { totalAssets - totalDebt }
 
     var body: some View {
@@ -47,18 +54,18 @@ struct AccountsView: View {
                     HStack {
                         Text("总资产").foregroundColor(.secondary)
                         Spacer()
-                        Text(Money.format(totalAssets)).font(.title3.bold()).monospacedDigit()
+                        Text(Money.format(totalAssets, currency: store.baseCurrencyCode)).font(.title3.bold()).monospacedDigit()
                     }
                     if totalDebt > 0 {
                         HStack {
                             Text("负债").foregroundColor(.secondary)
                             Spacer()
-                            Text(Money.format(totalDebt)).font(.headline).foregroundColor(.red).monospacedDigit()
+                            Text(Money.format(totalDebt, currency: store.baseCurrencyCode)).font(.headline).foregroundColor(.red).monospacedDigit()
                         }
                         HStack {
                             Text("净资产").foregroundColor(.secondary)
                             Spacer()
-                            Text(Money.format(netWorth)).font(.headline).monospacedDigit()
+                            Text(Money.format(netWorth, currency: store.baseCurrencyCode)).font(.headline).monospacedDigit()
                         }
                     }
                 }
@@ -110,6 +117,7 @@ struct AccountsView: View {
 }
 
 struct AccountRow: View {
+    @Environment(DataStore.self) private var store
     let account: Account
 
     var body: some View {
@@ -128,11 +136,12 @@ struct AccountRow: View {
             Spacer()
             if account.isLiability == true, let debt = account.debt, debt > 0 {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("欠款 " + Money.format(debt)).font(.headline).foregroundColor(.red).monospacedDigit()
-                    Text(Money.format(account.balance)).font(.caption).foregroundColor(.secondary)
+                    // debt 字段由服务端折算到本位币；balance 是账户原生币种余额
+                    Text("欠款 " + Money.format(debt, currency: store.baseCurrencyCode)).font(.headline).foregroundColor(.red).monospacedDigit()
+                    Text(Money.format(account.balance, currency: account.currency)).font(.caption).foregroundColor(.secondary)
                 }
             } else {
-                Text(Money.format(account.balance)).font(.headline).monospacedDigit()
+                Text(Money.format(account.balance, currency: account.currency)).font(.headline).monospacedDigit()
             }
         }
     }
@@ -145,6 +154,7 @@ struct AccountFormView: View {
 
     @State private var name = ""
     @State private var type = "other"
+    @State private var currency = Money.defaultCurrencyCode
     @State private var initialBalance = ""
     @State private var errorMessage: String?
 
@@ -156,8 +166,15 @@ struct AccountFormView: View {
         self.existing = existing
         _name = State(initialValue: existing?.name ?? "")
         _type = State(initialValue: existing?.type ?? "other")
-        _initialBalance = State(initialValue: existing == nil ? "" : String(format: "%.2f", Double(existing!.initialBalance) / 100.0))
+        _currency = State(initialValue: existing?.currency ?? Money.defaultCurrencyCode)
+        if let existing {
+            _initialBalance = State(initialValue: Currencies.info(for: existing.currency).decimalString(existing.initialBalance))
+        } else {
+            _initialBalance = State(initialValue: "")
+        }
     }
+
+    private var currencyInfo: CurrencyInfo { Currencies.info(for: currency) }
 
     var body: some View {
         NavigationStack {
@@ -166,8 +183,17 @@ struct AccountFormView: View {
                 Picker("类型", selection: $type) {
                     ForEach(types, id: \.0) { t in Text(t.1).tag(t.0) }
                 }
+                if existing == nil {
+                    // 新建可选币种（默认账本本位币）；编辑不换币种——已有流水的账户
+                    // 换币种会让历史金额被新币种重新解释，服务端也会拒绝
+                    Picker("币种", selection: $currency) {
+                        ForEach(Currencies.common, id: \.code) { c in
+                            Text("\(c.code) \(c.symbol)").tag(c.code)
+                        }
+                    }
+                }
                 HStack {
-                    Text("¥").font(.title2).foregroundColor(.secondary)
+                    Text(currencyInfo.symbol).font(.title2).foregroundColor(.secondary)
                     TextField("初始余额", text: $initialBalance).keyboardType(.decimalPad)
                 }
             }
@@ -179,15 +205,25 @@ struct AccountFormView: View {
             }
             .errorAlert($errorMessage)
         }
+        .onAppear {
+            // 未显式选择时跟随账本本位币（而非写死 CNY）
+            if existing == nil, currency == Money.defaultCurrencyCode {
+                currency = store.baseCurrencyCode
+            }
+        }
     }
 
     private func save() async {
-        let cents = Money.cents(fromYuanString: initialBalance) ?? 0
+        let balance = Money.minorUnits(fromInput: initialBalance, currency: currency) ?? 0
         do {
             if let existing {
-                _ = try await APIService.shared.updateAccount(id: existing.id, name: name, type: type, initialBalance: cents, icon: nil, color: nil)
+                // 乐观锁：带上编辑时的版本号，另一端已改过则 409 提示刷新
+                _ = try await APIService.shared.updateAccount(
+                    id: existing.id, name: name, type: type, initialBalance: balance,
+                    icon: nil, color: nil, expectedUpdatedAt: existing.updatedAt
+                )
             } else {
-                _ = try await APIService.shared.createAccount(name: name, type: type, currency: "CNY", initialBalance: cents, icon: nil, color: nil)
+                _ = try await APIService.shared.createAccount(name: name, type: type, currency: currency, initialBalance: balance, icon: nil, color: nil)
             }
             await store.refreshAccounts()
             dismiss()

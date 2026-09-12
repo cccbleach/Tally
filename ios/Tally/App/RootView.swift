@@ -4,6 +4,9 @@ struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(DataStore.self) private var dataStore
     @Environment(SharedLedgerStore.self) private var sharedLedgerStore
+    @Environment(LockService.self) private var lockService
+    // 深链（tally://add）：小组件/快捷指令/Safari 触发
+    @State private var deepLink: DeepLink.Route?
 
     var body: some View {
         Group {
@@ -17,8 +20,26 @@ struct RootView: View {
                 LoginView()
             }
         }
+        // 深链只在已登录时生效（未登录先去登录，避免弹出到登录页上的记账表单）
+        .onOpenURL { url in
+            if appState.isAuthenticated {
+                deepLink = DeepLink.route(for: url)
+            }
+        }
+        .sheet(item: $deepLink) { _ in
+            AddTransactionView()
+        }
+        // 生物锁盖层：只盖已登录内容（登录/引导页自身即门槛，不再叠加锁屏）
+        .overlay {
+            if lockService.isLocked, appState.isAuthenticated {
+                LockScreenView()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: lockService.isLocked)
         .onChange(of: appState.user?.id) { _, newUser in
             // 换账号/退出登录时：清空内存并切换缓存命名空间，避免串数据
+            lockService.isAuthenticated = appState.isAuthenticated
             if appState.isAuthenticated {
                 dataStore.setContext(userId: newUser, ledgerId: dataStore.ledgerId)
             } else {
@@ -26,6 +47,32 @@ struct RootView: View {
                 dataStore.setContext(userId: nil, ledgerId: nil)
             }
         }
+    }
+}
+
+/// 锁屏层：出现即发起一次验证；取消/失败后可手动重试
+struct LockScreenView: View {
+    @Environment(LockService.self) private var lockService
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            VStack(spacing: 20) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.secondary)
+                Text("Tally 已锁定").font(.title3.bold())
+                Button {
+                    Task { await lockService.unlock() }
+                } label: {
+                    Label("解锁", systemImage: "faceid")
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .task { await lockService.unlock() }
     }
 }
 

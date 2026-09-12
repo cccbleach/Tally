@@ -68,6 +68,7 @@ struct UpdateAccountBody: Encodable {
     var icon: String?
     var color: String?
     var isArchived: Bool?
+    var expectedUpdatedAt: String?
 }
 
 struct CreateCategoryBody: Encodable {
@@ -81,6 +82,7 @@ struct UpdateCategoryBody: Encodable {
     var name: String?
     var icon: String?
     var color: String?
+    var expectedUpdatedAt: String?
 }
 
 struct CreateTransactionBody: Encodable {
@@ -92,6 +94,8 @@ struct CreateTransactionBody: Encodable {
     let accountId: String
     let categoryId: String?
     let transferToAccountId: String?
+    // 客户端幂等键：离线写队列重放时防重复入账（服务端按 (ledger, key) 唯一）
+    let clientRequestId: String?
 }
 
 struct UpdateTransactionBody: Encodable {
@@ -221,8 +225,8 @@ struct APIService {
         return res.item
     }
 
-    func updateAccount(id: String, name: String?, type: String?, initialBalance: Int?, icon: String?, color: String?) async throws -> Account {
-        let body = UpdateAccountBody(name: name, type: type, initialBalance: initialBalance, icon: icon, color: color, isArchived: nil)
+    func updateAccount(id: String, name: String?, type: String?, initialBalance: Int?, icon: String?, color: String?, expectedUpdatedAt: String? = nil) async throws -> Account {
+        let body = UpdateAccountBody(name: name, type: type, initialBalance: initialBalance, icon: icon, color: color, isArchived: nil, expectedUpdatedAt: expectedUpdatedAt)
         let res: ItemResponse<Account> = try await client.request("PATCH", "/api/v1/accounts/\(id)", body: body)
         return res.item
     }
@@ -243,8 +247,8 @@ struct APIService {
         return res.item
     }
 
-    func updateCategory(id: String, name: String?, icon: String?, color: String?) async throws -> Category {
-        let body = UpdateCategoryBody(name: name, icon: icon, color: color)
+    func updateCategory(id: String, name: String?, icon: String?, color: String?, expectedUpdatedAt: String? = nil) async throws -> Category {
+        let body = UpdateCategoryBody(name: name, icon: icon, color: color, expectedUpdatedAt: expectedUpdatedAt)
         let res: ItemResponse<Category> = try await client.request("PATCH", "/api/v1/categories/\(id)", body: body)
         return res.item
     }
@@ -264,8 +268,8 @@ struct APIService {
         return try await client.request("GET", "/api/v1/transactions", query: query)
     }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?) async throws -> Transaction {
-        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, currency: currency, accountId: accountId, categoryId: categoryId, transferToAccountId: transferToAccountId)
+    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String? = nil) async throws -> Transaction {
+        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, currency: currency, accountId: accountId, categoryId: categoryId, transferToAccountId: transferToAccountId, clientRequestId: clientRequestId)
         let res: ItemResponse<Transaction> = try await client.request("POST", "/api/v1/transactions", body: body)
         return res.item
     }
@@ -477,6 +481,12 @@ struct APIService {
         let file = try await Task.detached(priority: .userInitiated) {
             try BillImportFile.read(fileURL)
         }.value
+        return try await uploadImportData(name: file.name, data: file.data, ledgerId: ledgerId)
+    }
+
+    /// 上传内存中的账单内容（OCR 截图识别结果合成文本走这里，与文件上传同一管道）
+    func uploadImportData(name: String, data: Data, ledgerId: String?) async throws -> ImportJob {
+        let file = BillImportFile(name: name, data: data)
         let multipart = file.multipart(boundary: "TallyBoundary-\(UUID().uuidString)")
         struct UploadResponse: Decodable { let item: ImportJob }
         let query = ledgerId.map { [URLQueryItem(name: "ledgerId", value: $0)] } ?? []

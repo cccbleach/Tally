@@ -1,26 +1,31 @@
 import Foundation
 
+/// 金额展示与输入解析的门面。
+///
+/// `currency` 缺省 = 账本本位币口径：统计/预算/负债等聚合金额已由服务端折算到本位币
+/// （BASE_CURRENCY）返回，这些场景直接 `Money.format(x)`；流水/账户等**自带币种**的
+/// 数据必须显式传 `currency:`，否则美元账户的余额会显示成 ¥。
 enum Money {
-    static func format(_ cents: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "CNY"
-        formatter.currencySymbol = "¥"
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.minimumFractionDigits = 2
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSNumber(value: Double(cents) / 100.0)) ?? "¥0.00"
+    static let defaultCurrencyCode = "CNY"
+
+    static func format(_ amount: Int, currency code: String? = nil) -> String {
+        Currencies.info(for: code).format(amount)
     }
 
-    // 带正负号的金额，用于首页摘要
-    static func signed(_ cents: Int) -> String {
-        (cents >= 0 ? "" : "-") + format(abs(cents))
+    /// 带正负号的金额（首页结余、净资产等）：负数加 "-"，正数无前缀
+    static func signed(_ amount: Int, currency code: String? = nil) -> String {
+        let info = Currencies.info(for: code)
+        return (amount < 0 ? "-" : "") + info.formatMagnitude(amount)
     }
 
-    // 输入的数字字符串（元）转分
-    static func cents(fromYuanString s: String) -> Int? {
-        let cleaned = s.replacingOccurrences(of: ",", with: "")
-        guard let value = Double(cleaned) else { return nil }
-        return Int((value * 100).rounded())
+    /// 无符号文本（含货币符号）：供 AmountLabel 这类自带 +/- 前缀的场景拼接
+    static func formatMagnitude(_ amount: Int, currency code: String? = nil) -> String {
+        Currencies.info(for: code).formatMagnitude(amount)
+    }
+
+    /// 输入框金额（主单位小数字符串）→ 最小单位整数。纯整数运算，不经过 Double；
+    /// 小数位多于币种精度（如 CNY 输 3 位小数）返回 nil，避免静默丢精度。
+    static func minorUnits(fromInput text: String, currency code: String? = nil) -> Int? {
+        Currencies.info(for: code).parseMinorUnits(text)
     }
 }
