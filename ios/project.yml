@@ -169,6 +169,12 @@ targets:
         # 由构建配置（TALLY_API_BASE_URL）注入，避免源码/Info.plist 写死地址
         TallyAPIBaseURL: $(TALLY_API_BASE_URL)
         UILaunchScreen: {}
+        # 应用锁用 LAContext(.deviceOwnerAuthentication)：带 Face ID 的设备在缺少本键时，
+        # 系统会直接终止 App（隐私数据访问缺 usage description），因此必须声明。
+        NSFaceIDUsageDescription: 用于解锁 Tally：从后台回到前台时需要验证你的身份，保护账目隐私。
+        # 真机调试若把 Debug 的 API 指向局域网 IP（而非 localhost），iOS 会要求本地网络权限；
+        # 缺失时连接会被拒且没有权限弹窗可点。
+        NSLocalNetworkUsageDescription: 用于在真机调试时连接本机开发服务器（仅在 Debug 联调本机后端时需要）。
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # iPhone 保持竖屏；通用 App 在 iPad 上声明完整方向集，满足多任务窗口要求，

@@ -241,6 +241,9 @@
 
 ## 12. iOS 发布资产与 Release 构建
 
+- [ ] **真机验收已执行**（CI 与单测覆盖不到的系统交互）：按 `docs/ios-device-acceptance.md` 逐项走一遍
+      —— 应用锁(Face ID)、小组件与深链、快捷指令、截图 OCR 导入、离线写队列、多币种、CSV 导出、登出。
+      这些恰恰是"CI 全绿但用户一上手就出问题"的典型来源（例如缺少 `NSFaceIDUsageDescription` 会在真机直接崩溃）。
 - [ ] 联网版（`ios/`）与离线版（`ios-local/`）都通过资产检查：
       ```bash
       ./scripts/check-ios-release-assets.sh ios Tally
