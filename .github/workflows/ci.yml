@@ -48,6 +48,22 @@ jobs:
             git --no-pager diff --check --cached
           fi
 
+      - name: shell 脚本语法检查（bash -n）
+        run: |
+          set -euo pipefail
+          # 本机 macOS 自带 bash 3.2：脚本里若出现全角标点紧邻变量名等写法会被解析成非法变量名，
+          # 只在运行时才炸（本项目已踩过一次：$VAR 后紧跟全角逗号 → unbound variable）。
+          # 这里做纯语法体检，避免坏脚本进主干。
+          status=0
+          for f in scripts/*.sh; do
+            if ! bash -n "$f"; then
+              echo "::error::$f 语法检查失败"
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] || exit 1
+          echo "✅ 所有 shell 脚本语法检查通过"
+
       - name: 禁止跟踪 xcuserdata / 本地数据
         run: |
           set -euo pipefail

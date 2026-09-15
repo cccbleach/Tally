@@ -85,7 +85,9 @@ pnpm dev                      # 开发模式（tsx watch），默认 http://loca
 
 验证：`curl http://localhost:8080/health` 返回 `{"status":"ok",...}`。
 
-> 本机需 Node.js ≥ 24 与 pnpm（`backend/package.json` 的 `engines` 为 `>=24.0.0 <25`）。首次 `pnpm install` 会构建 `better-sqlite3` 原生模块（已通过 `pnpm-workspace.yaml` 放行）。
+> 本机需 Node.js ≥ 24 与 pnpm（`backend/package.json` 的 `engines` 为 `>=24.0.0 <25`）。
+> 开工前建议先跑一次环境自检：`./scripts/check-dev-env.sh`（会检查 node 是否为真实 Node 而
+> 非 Electron 内置、Xcode 许可证是否已接受、原生依赖能否加载、Docker 是否可用等本机踩过的坑）。首次 `pnpm install` 会构建 `better-sqlite3` 原生模块（已通过 `pnpm-workspace.yaml` 放行）。
 
 ### 2. 运行 iOS App（需 Mac + Xcode）
 
@@ -119,9 +121,9 @@ setting presets。生成过程不应出现 `No "... settings found"`，校验脚
 ```bash
 cd backend
 pnpm typecheck
-pnpm test        # 194 个测试：手机号+短信验证码认证/强制唯一昵称/共享账本/账户/分类/流水/统计/预算/周期账单/贷款/去重/乐观锁/流水幂等键/汇率拉取
+pnpm test        # 195 个测试：手机号+短信验证码认证/强制唯一昵称/共享账本/账户/分类/流水/统计/预算/周期账单/贷款/去重/乐观锁/流水幂等键/汇率拉取
                  # （含幂等、OpenAPI 契约、时区、转账检索、汇率换算、负债语义、账本隔离、分层、
-                 #  迁移校验（22 个迁移）、乐观锁、并发回归、故障注入、限流与 TRUST_PROXY、
+                 #  迁移校验（23 个迁移）、乐观锁、并发回归、故障注入、限流与 TRUST_PROXY、
                  #  AUTH_MODE/限流生产互锁、短信节流、跨币种护栏、负债折算、服务端登出与契约集合校验、
                  #  生产模式安全策略、账单导入去重等回归，全部 0 fail）
 ```

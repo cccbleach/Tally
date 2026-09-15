@@ -156,7 +156,7 @@
       sha256sum /srv/tally-backups/pre-migration/tally-*.db | tail -1
       sqlite3 <备份文件> "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;"
       ```
-- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0022_*.sql`，共 22 个）；
+- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0023_*.sql`，共 23 个）；
       已上线的迁移文件与数据库里已应用的记录一律不许改（`test/migration.test.ts` 会校验）。
 - [ ] 回滚预案：SQLite 无 down migration —— 回滚 = 停服 → `scripts/restore.sh <迁移前备份> backend/data` →
       起旧镜像 tag。演练过一次才算有预案（见第 8 节）。
@@ -306,6 +306,11 @@
 ---
 
 ## 附：本仓库的本地/CI 验收命令
+
+```bash
+# 环境自检（node 是否真实 Node / Xcode 许可证 / 原生依赖 / Docker）
+./scripts/check-dev-env.sh
+```
 
 ```bash
 # 后端全量
