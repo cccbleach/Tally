@@ -1,4 +1,5 @@
 import { setRate } from "./currency.js";
+import { config } from "../config.js";
 import type { DB } from "../db/client.js";
 
 // 汇率自动拉取（opt-in，见 config.exchangeRateFetchEnabled）：
@@ -36,16 +37,53 @@ export function parseRatesPayload(json: unknown): FetchedRates {
   return { base, rates };
 }
 
-/** 拉取并写入全局兜底汇率。返回写入条数。 */
+/** 拉取并写入全局兜底汇率。返回写入条数。
+ *
+ *  `targetBase` 默认取部署基准币（config.baseCurrency）。为什么需要它：
+ *  汇率源按**自己的基准**报价（默认 URL 是 CNY 基准），而查表 `getRate(currency, base)`
+ *  用的是部署基准。两者不一致时，抓取写入的行永远查不到，于是回退到内置兜底表——
+ *  而内置表是**人民币视角**，被当成目标基准使用会**静默算错**约 7 倍（USD/CNY 倍数）。
+ *  因此这里把响应交叉换算到部署基准：rate(目标→X) = rates[X] / rates[目标]。
+ */
 export async function fetchAndStoreGlobalRates(
   db: DB,
   url: string,
   fetchImpl: FetchLike = globalFetch(),
+  targetBase: string = config.baseCurrency,
 ): Promise<{ base: string; stored: number }> {
   const response = await fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`汇率源 HTTP ${response.status}`);
   const json: unknown = await response.json();
-  const { base, rates } = parseRatesPayload(json);
+  const parsed = parseRatesPayload(json);
+
+  const target = targetBase.trim().toUpperCase();
+  let base = parsed.base;
+  let rates = parsed.rates;
+
+  if (parsed.base !== target) {
+    const targetPerBase = parsed.rates[target];
+    if (targetPerBase === undefined || !Number.isFinite(targetPerBase) || targetPerBase <= 0) {
+      throw new Error(
+        `汇率源基准为 ${parsed.base}，与部署基准 ${target} 不一致，且响应里没有 ${target} 汇率，无法换算；` +
+          `请改用与基准一致的源（如 https://open.er-api.com/v6/latest/${target}）。` +
+          "若直接按对方基准写入，本部署的换算会回退到人民币视角的内置兜底表而静默算错。",
+      );
+    }
+    // 先整体换算完成再写库：任何失败都不留下半套基准的脏数据
+    const rebased: Record<string, number> = {};
+    for (const [code, rate] of Object.entries(parsed.rates)) {
+      if (code === target) continue;
+      rebased[code] = rate / targetPerBase;
+    }
+    // 源基准自身被 parseRatesPayload 作为"基准"排除了（CNY），但归一化到目标基准后
+    // 它就是一个普通币种，必须补回：否则 (CNY → USD) 查表落空会回退到内置表 CNY=1，
+    // 又是静默算错（偏差恰为 USD/CNY 倍数）。
+    rebased[parsed.base] = 1 / targetPerBase;
+    rates = rebased;
+    base = target;
+    console.log(`汇率源基准 ${parsed.base} 已按 ${target} 重新折算（1 ${target} = ${base} 基准下的换算值）`);
+  }
+
   let stored = 0;
   for (const [code, rate] of Object.entries(rates)) {
     setRate(db, null, base, code, rate);
@@ -59,9 +97,10 @@ export async function runExchangeRateFetchSafely(
   db: DB,
   url: string,
   fetchImpl: FetchLike = globalFetch(),
+  targetBase?: string,
 ): Promise<boolean> {
   try {
-    const { base, stored } = await fetchAndStoreGlobalRates(db, url, fetchImpl);
+    const { base, stored } = await fetchAndStoreGlobalRates(db, url, fetchImpl, targetBase);
     console.log(`汇率已刷新：基准 ${base}，写入 ${stored} 个币种的全局兜底汇率`);
     return true;
   } catch (error) {

@@ -110,6 +110,21 @@ if (!isProduction && authMode === "development" && isSmsLive() && !process.env.N
   );
 }
 
+// 非 CNY 基准部署的静默算错风险（已实测复现）：
+// 内置兜底汇率表是**人民币视角**（CNY 基准），而 getRate 按 config.baseCurrency 查表。
+// 若 BASE_CURRENCY 配成别的币种且没有对应基准的汇率数据，查表失败就会回退到这张 CNY 基准的表，
+// 被当成目标基准使用 —— 实测 getRate(JPY→USD) 返回 0.05（CNY/JPY）而非 0.00646，偏差约 7.7 倍
+// （正好是 USD/CNY 的倍数），且不报任何错。这里做启动期告警，提示必须用与基准一致的汇率源。
+const baseCurrency = (process.env.BASE_CURRENCY ?? "CNY").toUpperCase();
+if (baseCurrency !== "CNY" && !process.env.NODE_TEST_CONTEXT) {
+  console.warn(
+    `[config] 警告：BASE_CURRENCY=${baseCurrency}，但内置兜底汇率表是人民币（CNY）视角。` +
+      "若未提供该基准的汇率数据，换算会静默按 CNY 汇率计算（实测偏差可达数倍）。" +
+      `请开启 EXCHANGE_RATE_FETCH_ENABLED=1 并使用与基准一致的汇率源（如 https://open.er-api.com/v6/latest/${baseCurrency}），` +
+      "抓取会自动把汇率归一化到该基准。",
+  );
+}
+
 export const config: Config = {
   port: Number(process.env.PORT ?? 8080),
   host: process.env.HOST ?? "0.0.0.0",
@@ -117,8 +132,8 @@ export const config: Config = {
   jwtSecret,
   // 业务时区：用于“今天/当月”判断。优先 APP_TIMEZONE，其次容器 TZ，默认神州时间。
   timezone: process.env.APP_TIMEZONE ?? process.env.TZ ?? DEFAULT_TIMEZONE,
-  // 基准币种：统计/总资产换算的统一口径，默认人民币。
-  baseCurrency: (process.env.BASE_CURRENCY ?? "CNY").toUpperCase(),
+  // 基准币种：统计/总资产换算的统一口径，默认人民币。取值与告警见文件上方。
+  baseCurrency,
   // 汇率自动拉取：默认关闭（自部署不强制依赖外部服务）。
   // 开启（EXCHANGE_RATE_FETCH_ENABLED=1）后启动 30s 拉一次 + 每日 04:30 定时刷新，
   // 结果 upsert 到全局兜底汇率（userId IS NULL），失败只记日志、绝不删除已有汇率。

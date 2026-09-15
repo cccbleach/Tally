@@ -126,3 +126,45 @@ test("失败安全：HTTP 错误/网络异常不抛出且保留现有汇率", as
 
   assert.equal(getRate(db, "anyone", "USD", "CNY"), before, "失败绝不删除已有汇率");
 });
+
+test("基准不一致时把汇率归一化到部署基准（避免回退到人民币视角内置表而静默算错）", async () => {
+  // 已复现的缺陷：源按 CNY 报价（默认 URL 就是 CNY 基准），而部署 BASE_CURRENCY=USD 时，
+  // 抓取若按源的基准写库，查表永久落空 → 回退内置兜底表（人民币视角）→ 实测偏差约 7.7 倍。
+  const res = await fetchAndStoreGlobalRates(
+    db,
+    "https://rates.example/latest",
+    payloadFetch({ result: "success", base_code: "CNY", rates: { USD: 0.1389, JPY: 21.5, CNY: 1 } }),
+    "USD",
+  );
+  assert.equal(res.base, "USD", "写入的基准必须是部署基准");
+  assert.equal(res.stored, 2, "应写入 JPY 与被补回的源基准 CNY（目标基准自身除外）");
+  // 1 USD = 21.5 / 0.1389 ≈ 154.79 JPY；CNY 侧为 21.5
+  assert.ok(Math.abs(getRate(db, "u", "JPY", "USD") - 154.788) < 0.01, "JPY 应按 USD 基准折算");
+  assert.ok(Math.abs(getRate(db, "u", "CNY", "USD") - 1 / 0.1389) < 0.001, "源基准 CNY 必须补回并按目标基准折算（否则回退内置表 CNY=1，偏差 7.2 倍）");
+  assert.equal(getRate(db, "u", "USD", "USD"), 1, "基准币自身恒为 1");
+
+  // 关键回归：不能再回退到内置的 CNY 视角值（0.05 是 CNY/JPY，被当成 USD/JPY 用）
+  assert.notEqual(getRate(db, "u", "JPY", "USD"), 0.05, "不得回退到人民币视角的内置兜底值");
+});
+
+test("源基准与部署基准不一致且无法换算时：明确报错且不写入任何汇率", async () => {
+  // 响应里没有部署基准（USD）的汇率 → 无法交叉换算，必须拒绝而不是按对方基准写错
+  await assert.rejects(
+    () =>
+      fetchAndStoreGlobalRates(
+        db,
+        "https://rates.example/latest",
+        payloadFetch({ result: "success", base_code: "CNY", rates: { JPY: 21.5, EUR: 0.127 } }),
+        "USD",
+      ),
+    /与部署基准 USD 不一致/,
+  );
+  // 调度层包装后只记日志、不抛错
+  const ok = await runExchangeRateFetchSafely(
+    db,
+    "https://rates.example/latest",
+    payloadFetch({ result: "success", base_code: "CNY", rates: { JPY: 21.5 } }),
+    "USD",
+  );
+  assert.equal(ok, false, "失败应返回 false（由调度层记日志）");
+});
