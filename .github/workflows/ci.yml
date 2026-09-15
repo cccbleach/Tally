@@ -8,15 +8,16 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: "Release 构建/Archive 注入的 HTTPS API 地址；正式生产默认 https://your-domain.cn（禁止 localhost/example.com/占位域名）"
+        description: "Release 构建/Archive 注入的 HTTPS API 地址；正式生产地址由仓库变量 PROD_API_BASE_URL 提供（禁止 localhost/example.com/占位域名）"
         required: false
-        default: "https://your-domain.cn"
 
-# Release 构建/Archive 注入的 API 地址：正式生产唯一使用 https://your-domain.cn（必须是真实可解析的 HTTPS 域名）。
+# Release 构建/Archive 注入的 API 地址：正式生产域名只存在于**仓库变量** PROD_API_BASE_URL
+# （Settings → Secrets and variables → Actions → Variables），不落在代码里，避免公开仓库暴露运维域名。
+# 未设置该变量时，Release 构建会因域名守门校验而失败 —— 这是刻意的（禁止把占位域名打进产物）。
 # 这里刻意不使用 localhost / example.com / your-* 等占位形式；
 # ios/scripts/validate-api-url.sh 会拒绝占位值，Release 构建也会因此直接失败。
 env:
-  PROD_API_BASE_URL: ${{ inputs.api_base_url || 'https://your-domain.cn' }}
+  PROD_API_BASE_URL: ${{ inputs.api_base_url || vars.PROD_API_BASE_URL }}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -99,6 +100,13 @@ jobs:
             git --no-pager diff --check
             git --no-pager diff --check --cached
           fi
+
+      - name: 凭证特征扫描（受跟踪文件 + 完整历史）
+        run: |
+          set -euo pipefail
+          # 高置信度凭证特征（云厂商 AK / GitHub·Slack·OpenAI 令牌 / 私钥 / JWT）。
+          # 同时扫**历史**：仓库改公开后历史同样可见，删掉文件并不算数。
+          ./scripts/check-no-secrets.sh
 
       - name: shell 脚本语法检查（bash -n）
         run: |
@@ -216,7 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
-          export TALLY_DOMAIN="your-domain.cn"
+          export TALLY_DOMAIN="tally.invalid"   # 仅用于渲染 compose 配置，非真实域名
           export ACME_EMAIL="ci@example.com"
           docker compose -f docker-compose.caddy.yml config --quiet
           docker compose -f docker-compose.caddy.yml config --format json > /tmp/rendered.json
@@ -238,7 +246,7 @@ jobs:
         run: |
           set -euo pipefail
           export JWT_SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
-          export TALLY_DOMAIN="your-domain.cn"
+          export TALLY_DOMAIN="tally.invalid"   # 仅用于渲染 compose 配置，非真实域名
           export ACME_EMAIL="ci@example.com"
           for f in docker-compose.yml docker-compose.caddy.yml; do
             docker compose -f "$f" config --format json > "/tmp/rendered-$f.json"
@@ -349,7 +357,7 @@ jobs:
             -configuration Debug -derivedDataPath "$RUNNER_TEMP/dd-debug" \
             build CODE_SIGNING_ALLOWED=NO
 
-      - name: Release 构建（显式注入正式生产域名 https://your-domain.cn）
+      - name: Release 构建（显式注入正式生产域名，取自仓库变量 PROD_API_BASE_URL）
         run: |
           set -euo pipefail
           echo "注入正式生产 API 地址：$PROD_API_BASE_URL"
