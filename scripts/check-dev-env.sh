@@ -64,12 +64,24 @@ XCODEBUILD_DIRECT="/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild
 if [ -n "${XCODEBUILD_SHIM}" ]; then
   pass "xcodebuild 已安装：$("${XCODEBUILD_SHIM}" -version 2>/dev/null | head -1)"
   if "${XCODEBUILD_SHIM}" -checkFirstLaunchStatus >/dev/null 2>&1; then
-    pass "Xcode 许可证已接受（首次启动检查通过）"
+    pass "Xcode 首次启动检查通过（许可证 + 组件齐备）"
   else
-    fail "Xcode 许可证未接受：xcodebuild / xcrun / /usr/bin/python3 都会退出码 69，iOS 本地构建不可用"
-    echo "        修复：sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch"
-    if [ -x "${XCODEBUILD_DIRECT}" ] && "${XCODEBUILD_DIRECT}" -version >/dev/null 2>&1; then
-      echo "        （部分绕过：直接调用 ${XCODEBUILD_DIRECT} 可查版本，但完整构建/测试仍会走 xcrun 授权检查）"
+    # `-checkFirstLaunchStatus` 是静默失败，两种情况的退出码都是 69，必须区分：
+    #   a) 许可证未接受 → xcrun / /usr/bin/python3 也会一起挂；
+    #   b) 许可证已接受但"首次启动未完成"（组件/私有框架与 Xcode 版本不同步）
+    #      → xcrun 正常、模拟器构建通常也能过，但**真机部署/Archive 可能失败**。
+    # 本机实测（Xcode 26→27 升级后）属于 (b)：构建成功但日志出现 DVTPlugInLoading 加载失败，
+    # 且 /Library/Developer/PrivateFrameworks/CoreDevice.framework 仍是旧版本。
+    if xcrun --find swiftc >/dev/null 2>&1; then
+      fail "Xcode 首次启动未完成（组件与 Xcode 版本不同步）：-checkFirstLaunchStatus 退出码 69"
+      echo "        许可证已通过（xcrun 正常），但真机部署/Archive 可能因私有框架版本不匹配而失败。"
+      echo "        修复：sudo xcodebuild -runFirstLaunch"
+    else
+      fail "Xcode 许可证未接受：xcodebuild / xcrun / /usr/bin/python3 都会退出码 69，iOS 本地构建不可用"
+      echo "        修复：sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch"
+      if [ -x "${XCODEBUILD_DIRECT}" ] && "${XCODEBUILD_DIRECT}" -version >/dev/null 2>&1; then
+        echo "        （部分绕过：直接调用 ${XCODEBUILD_DIRECT} 可查版本，但完整构建/测试仍会走 xcrun 授权检查）"
+      fi
     fi
   fi
 else

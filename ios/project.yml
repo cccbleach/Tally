@@ -210,6 +210,12 @@ targets:
       path: TallyWidget/Info.plist
       properties:
         CFBundleDisplayName: Tally 一键记账
+        # 版本号必须与主 App 一致，否则 Archive 上传 App Store Connect 会以
+        # "The CFBundleShortVersionString of an app extension ('1.0') must match that of its
+        # containing parent app ('1.0.0')" 被拒（原先这里硬编码 1.0）。
+        # 用构建设置代入，以后调版本号不会再漂移。
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
   TallyTests:

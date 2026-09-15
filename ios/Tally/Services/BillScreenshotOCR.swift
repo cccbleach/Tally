@@ -37,25 +37,33 @@ enum BillScreenshotOCR {
     // MARK: - Vision 识别（仅本机执行）
 
     static func recognizeLines(from imageData: Data) async throws -> [String] {
-        guard let image = cgImage(from: imageData) else {
-            throw OCRError.noText
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
+        // 并发正确性（修掉 Swift 6.4 下的 3 类警告）：`VNImageRequestHandler` 与
+        // `VNRecognizeTextRequest` 都是 **非 Sendable** 类型，而 `DispatchQueue.async`
+        // 的闭包是 `@Sendable`。原来在闭包外创建这两个对象再捕获进去，属于把非 Sendable
+        // 的值跨隔离域传递（编译警告；一旦开启严格并发就是错误）。
+        // 现在把全部 Vision 对象都创建在闭包**内部**，闭包只捕获 Sendable 的
+        // `imageData`（Data）与 `continuation`，因此不再有任何跨域捕获，也无需
+        // `@preconcurrency` 之类的抑制手段。
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let image = cgImage(from: imageData) else {
+                    continuation.resume(throwing: OCRError.noText)
                     return
                 }
-                let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-                let lines = observations.compactMap { $0.topCandidates(1).first?.string }
-                continuation.resume(returning: lines)
-            }
-            request.recognitionLevel = .accurate
-            request.recognitionLanguages = ["zh-Hans", "en-US"]
-            request.usesLanguageCorrection = true
+                let request = VNRecognizeTextRequest { request, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                        return
+                    }
+                    let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+                    let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+                    continuation.resume(returning: lines)
+                }
+                request.recognitionLevel = .accurate
+                request.recognitionLanguages = ["zh-Hans", "en-US"]
+                request.usesLanguageCorrection = true
 
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
-            DispatchQueue.global(qos: .userInitiated).async {
+                let handler = VNImageRequestHandler(cgImage: image, options: [:])
                 do {
                     try handler.perform([request])
                 } catch {
