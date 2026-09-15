@@ -150,13 +150,35 @@ fi
 
 # 描述文件（provisioning profile）只能由登录的 Apple ID 自动申请，机器上往往没有：
 # 这里只做提示，避免“CI 能过、真机装不上/上传失败”才发现。
-PROF_DIRS="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles $HOME/Library/MobileDevice/Provisioning Profiles"
+#
+# 注意路径里含空格（"Provisioning Profiles"）：原先用未加引号的空格分隔字符串遍历，
+# 会被拆成 ".../UserData/Provisioning" 与 "Profiles" 两个不存在的路径，
+# 于是**永远数出 0 个**并误报"本机没有描述文件"（本机实测：Xcode 管理目录里实际有 1 个）。
+# 改用数组逐项遍历，并额外报告检测到的 Profile 属于哪个 Team，便于直接判断是否匹配工程。
+PROF_DIRS=(
+  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+  "$HOME/Library/MobileDevice/Provisioning Profiles"
+)
 NPROF=0
-for d in $PROF_DIRS; do
-  [ -d "$d" ] && NPROF=$((NPROF + $(find "$d" -name '*.mobileprovision' 2>/dev/null | wc -l | tr -d ' ')))
+PROF_TEAMS=""
+for d in "${PROF_DIRS[@]}"; do
+  [ -d "$d" ] || continue
+  n=$(find "$d" -name '*.mobileprovision' 2>/dev/null | wc -l | tr -d ' ')
+  NPROF=$((NPROF + n))
+  # 逐个解析出 TeamIdentifier（本机可能同时存在多个团队的描述文件）
+  while IFS= read -r prof; do
+    [ -n "$prof" ] || continue
+    t=$(security cms -D -i "$prof" 2>/dev/null | plutil -p - 2>/dev/null | grep -oE '"TeamIdentifier"' -A 1 | grep -oE '[A-Z0-9]{10}' | head -1)
+    [ -n "$t" ] && PROF_TEAMS="${PROF_TEAMS}${t} "
+  done <<< "$(find "$d" -name '*.mobileprovision' 2>/dev/null)"
 done
+PROF_TEAMS="$(printf '%s\n' $PROF_TEAMS | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [ "$NPROF" -gt 0 ]; then
-  ok "本机已安装描述文件 ${NPROF} 个"
+  ok "本机已安装描述文件 ${NPROF} 个（Team: ${PROF_TEAMS:-未知}）"
+  if [ -n "${TEAM}" ] && [ -n "$PROF_TEAMS" ] && ! printf '%s' "$PROF_TEAMS" | grep -q "$TEAM"; then
+    note "⚠️  已安装的描述文件团队（${PROF_TEAMS}）与工程 DEVELOPMENT_TEAM（${TEAM}）不一致："
+    note "    真机安装/上传前需在 Xcode → Settings → Accounts 登录 ${TEAM} 对应的 Apple ID。"
+  fi
 else
   note "⚠️  本机没有描述文件（provisioning profile）。Archive 可用 CODE_SIGNING_ALLOWED=NO 做结构校验，"
   note "    但真机安装 / TestFlight 上传前必须：Xcode → Settings → Accounts 登录 ${TEAM:-对应 Team} 的 Apple ID，"
