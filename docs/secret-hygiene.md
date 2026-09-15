@@ -54,7 +54,7 @@ CI 的 `hygiene` job 已内置第一道（`凭证特征扫描`），提交即拦
 ```bash
 brew install git-filter-repo
 
-cd <仓库路径>
+cd <仓库路径>   # 例如 clone 后的 Tally 目录
 git status                      # 必须干净
 git filter-repo --invert-paths \
   --path ios/Tally.xcodeproj/project.xcworkspace/xcuserdata \

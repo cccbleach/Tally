@@ -82,7 +82,7 @@ node ../scripts/check-compose-live.mjs ../backend/docker-compose.caddy.yml
 复现命令（连真实 daemon）：
 
 ```bash
-DOCKER_HOST=unix://<用户名>/.lima/tally/sock/docker.sock \
+DOCKER_HOST=unix://<你的 docker socket 路径>/tally/sock/docker.sock \
 DOCKER_CONFIG=/tmp/dockercfg \
 JWT_SECRET='<非空32字节以上>' TALLY_DOMAIN='your-domain.cn' ACME_EMAIL='ci@example.com' \
 docker compose -f backend/docker-compose.caddy.yml config --quiet          # exit 0
