@@ -59,6 +59,22 @@ else
 fi
 
 echo
+echo "== gitleaks 深度扫描（可选：安装了才跑，规则库 150+）=="
+if command -v gitleaks >/dev/null 2>&1; then
+  if gitleaks detect --source . --redact --no-banner > /tmp/secrets-gitleaks.txt 2>&1; then
+    echo "  ✅ gitleaks 未发现泄漏"
+  else
+    echo "  ❌ gitleaks 发现疑似泄漏（已打码，详见 /tmp/secrets-gitleaks.txt）："
+    tail -8 /tmp/secrets-gitleaks.txt | sed 's/^/     /'
+    echo "     若确认是测试用假密钥，请在 .gitleaks.toml 里按**secret 内容**加白名单，"
+    echo "     不要整目录放过（那样真实凭据也会被放过）。"
+    status=1
+  fi
+else
+  echo "  ⚠️  未安装 gitleaks（本机：brew install gitleaks；本仓库已提交 .gitleaks.toml 配置）"
+fi
+
+echo
 if [ "$status" -eq 0 ]; then
   echo "凭证扫描通过。"
 else

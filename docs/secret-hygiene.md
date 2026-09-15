@@ -11,22 +11,37 @@
 | 服务器公网 IP | ✅ 无（文档里只有 `203.0.113.x` 等 RFC 文档示例段） |
 | 真实短信签名 / 模板 / 手机号 | ✅ 无 |
 | 生产域名与运维邮箱 | ✅ 已改为占位（`your-domain.cn` / `ops@example.com`）；CI 用的真实域名移到**仓库变量** `PROD_API_BASE_URL` |
-| 历史里的 Xcode 个人状态（`xcuserdata`） | ⚠️ 仍存在于历史（仅含本机路径与用户名，无凭证）→ 见下节清理 |
+| 历史里的 Xcode 个人状态（`xcuserdata`） | ✅ 已清理（`git filter-repo` 剔除 + 全历史强推，2026-09-16） |
+| 历史里的本机路径 `/Users/<用户名>` | ✅ 已清理（全历史文本替换为 `<用户名>` / `<仓库路径>`） |
+| 历史里的生产域名 `loganpc.cn` | ✅ 已清理（替换为 `your-domain.cn`），当前树亦无 |
 
 ## 1. 日常：两道扫描
 
 ```bash
-# 本地（同时扫受跟踪文件与完整历史）
+# 一道命令跑完三层（高置信度特征 + 历史 + gitleaks 深度扫描）
 ./scripts/check-no-secrets.sh
-./scripts/check-no-secrets.sh --worktree   # 只扫工作区，快
-
-# 更强的第三方扫描（规则库 800+，可选）
-brew install gitleaks
-gitleaks detect --source . --redact -v            # 含历史
-gitleaks dir . --redact -v                        # 仅当前文件（v8.19+）
+./scripts/check-no-secrets.sh --worktree   # 只扫工作区，快（不扫历史/gitleaks）
 ```
 
-CI 的 `hygiene` job 已内置第一道（`凭证特征扫描`），提交即拦截。
+三层分别是什么：
+
+| 层 | 实现 | 覆盖 |
+|---|---|---|
+| 高置信度特征 | `scripts/check-no-secrets.sh`（内置正则） | 阿里云 `LTAI`/AWS `AKIA`/腾讯 `AKID`/GitHub·Slack·OpenAI 令牌/私钥头/JWT，**含完整历史** |
+| 熵 + 关键词 | `detect-secrets`（可选，`pip3 install --user detect-secrets`） | 高熵字符串、`*_secret`/`*_key` 赋值等 |
+| 规则库深度扫 | `gitleaks`（可选，`brew install gitleaks`） | 150+ 供应商规则；配置见仓库 `.gitleaks.toml` |
+
+CI 的 `hygiene` job 已内置第一层（提交即拦截，零外部依赖）。
+
+**为什么 CI 只内置第一层**：gitleaks/detect-secrets 需要联网下载或额外安装，
+把网络依赖放进 CI 会引入新的失败模式（构建因为下载失败而红）。深度扫描按需在本地跑，
+或在改公开仓库、上线发版前手动跑一次即可。
+
+**2026-09-16 三层扫描结果**：工作区与全历史均无真实凭证。仅有的命中是两类良性命中，
+已在 `.gitleaks.toml` 按**secret 内容**（而非整目录）加窄白名单：
+
+- `backend/test/*.test.ts` 里测试进程用的假 JWT 密钥（`"…-secret-0123456789"` 形态）
+- `pnpm-lock.yaml` 的 `integrity: sha512-…` 完整性哈希、Xcode 工程的 24 位对象 ID
 
 门禁刻意**只匹配高置信度特征**：低置信度规则（如任意 `SECRET=` 长字符串）会命中测试用的假密钥，
 造成误报——门禁一旦误报就会被绕过，等于没有门禁。
@@ -42,9 +57,13 @@ CI 的 `hygiene` job 已内置第一道（`凭证特征扫描`），提交即拦
 4. **联系 GitHub Support 清除孤儿对象**：强推后旧提交对象在 GitHub 侧**不会立即消失**，
    知道旧 SHA 的人仍可能通过 `…/commit/<旧SHA>` 或 API 取到内容。证书类/密钥类泄漏必须让 Support 彻底清除。
 
-## 3. 清理历史里的 `xcuserdata`（Xcode 个人状态）
+## 3. 清理历史里的 `xcuserdata`（Xcode 个人状态）——**已执行，保留步骤备查**
 
-历史里存在（内容仅本机路径 `/Users/<用户名>/…` 与 Xcode 设备占位串，无凭证）：
+> 已于 2026-09-16 执行：历史里的 9 处 `xcuserdata` 路径、5 个含本机路径的提交、
+> 3 个含生产域名的提交全部清理，并强推（`0482b2f` → `829565d`）。
+> 校验：`HEAD^{tree}` 在重写前后**完全一致**（内容零变化），提交数 65 未变。
+
+历史里曾存在（内容仅本机路径 `/Users/<用户名>/…` 与 Xcode 设备占位串，无凭证）：
 
 - `ios/Tally.xcodeproj/project.xcworkspace/xcuserdata/`
 - `ios/Tally.xcodeproj/xcuserdata/`

@@ -1,0 +1,21 @@
+# gitleaks 配置：在保留默认规则集的基础上，只对"测试用假密钥"做**窄口径**白名单。
+#
+# 背景：`backend/test/*.test.ts` 里为了让测试进程能签发/校验令牌，必须硬编码一个 JWT 密钥
+# （如 `"concurrency-reg-secret-0123456789"`）。这些值只存在于测试进程内，
+# 从不用于任何真实服务，但会被 `generic-api-key` 规则命中。
+#
+# 为什么用"按 secret 内容匹配"而不是"整目录白名单"：
+# 若直接放过 `backend/test/**`，将来真有人在测试文件里粘了真实 AK 就再也拦不住。
+# 这里只放过**明显是占位/测试语义**的值，真实凭据（LTAI…、ghp_… 等）在任何目录下仍会被抓。
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "单元测试用的假 JWT 密钥（仅测试进程内使用，非真实凭据）"
+regexTarget = "secret"
+regexes = [
+  '''(?i)^test[-_]?secret$''',
+  '''(?i)^0123456789abcdef''',
+  '''(?i)(concurrency-reg|liabilities|sms-throttle|currency-guard|prod|phase0)-secret''',
+  '''(?i)^dev-secret-change-me$''',
+]
