@@ -224,7 +224,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
-    getLoan(id, ledgerId); // 存在性校验（不存在即 404）
+    const loan = getLoan(id, ledgerId); // 存在性校验（不存在即 404），并取币种用于下方护栏
     const patch: Partial<typeof loans.$inferInsert> = { updatedAt: new Date().toISOString() };
     if (body.name !== undefined) patch.name = body.name;
     if (body.annualRate !== undefined) patch.annualRate = body.annualRate;
@@ -239,6 +239,10 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
         if (acct.type === "credit" || acct.type === "loan") {
           throw badRequest("INVALID_PAY_ACCOUNT", "还款来源账户不能是信用卡或贷款账户");
         }
+        // 币种护栏（修复已复现的绕过）：创建期校验了币种，但 PATCH 改账户原先完全不校验，
+        // 于是可以把 CNY 贷款改绑到 USD 账户；此后 /loans/:id/pay 会因跨币种被拒，
+        // 用户就卡在一笔无法偿还的贷款上。这里与创建期复用同一护栏。
+        assertCurrencyCompatible(acct, loan.currency);
       }
       patch.accountId = body.accountId;
     }
@@ -251,6 +255,8 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
           .get();
         if (!liab) throw notFound("ACCOUNT_NOT_FOUND", "贷款负债账户不存在");
         if (liab.type !== "loan") throw badRequest("INVALID_LIABILITY_ACCOUNT", "贷款负债账户必须是 loan 类型");
+        // 负债账户代表这笔贷款本身，币种必须与贷款一致（否则负债金额会被按账户币种重新解释）
+        assertCurrencyCompatible(liab, loan.currency);
       }
       patch.liabilityAccountId = body.liabilityAccountId;
     }
