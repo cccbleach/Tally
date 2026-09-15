@@ -23,6 +23,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 改动范围判定（成本控制）：私有仓库的 **macOS runner 按 10 倍计费**，
+  # 而每次 push 默认拉起 3 个 macOS job（联网版 ~7min + 离线版 ~6min + clean-tree ~4min
+  # ≈ 170 计费分钟）。先用一个廉价的 ubuntu job 判断改了哪些目录，再决定是否启动重活：
+  #   - 只改文档/README         → 仅跑卫生检查（省下整轮 macOS 额度）
+  #   - 只改 backend/           → 不跑两个 iOS job
+  #   - 只改 ios/ 或 ios-local/ → 只跑对应那一个 iOS job
+  # scripts/** 与 .github/** 视为"共享改动"（脚本是 CI 自身的依赖），触发全部 job；
+  # 手动 workflow_dispatch 强制全跑（发布前完整验证用）。
+  changes:
+    name: 改动范围判定
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.scope.outputs.backend }}
+      ios: ${{ steps.scope.outputs.ios }}
+      ios_local: ${{ steps.scope.outputs.ios_local }}
+      any_ios: ${{ steps.scope.outputs.any_ios }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发 → 全部 job 都跑"
+            { echo "backend=true"; echo "ios=true"; echo "ios_local=true"; echo "any_ios=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$(git rev-parse -q --verify HEAD~1 || true)"
+          fi
+          if [ -n "$base" ]; then
+            files="$(git diff --name-only "$base" "$GITHUB_SHA" || true)"
+          else
+            files="$(git ls-files)"
+          fi
+          echo "改动文件："; printf '%s\n' "$files"
+          shared=false
+          if printf '%s\n' "$files" | grep -qE '^(scripts/|\.github/)'; then shared=true; fi
+          backend=false
+          if printf '%s\n' "$files" | grep -qE '^backend/'; then backend=true; fi
+          ios=false
+          if printf '%s\n' "$files" | grep -qE '^ios/'; then ios=true; fi
+          ios_local=false
+          if printf '%s\n' "$files" | grep -qE '^ios-local/'; then ios_local=true; fi
+          if [ "$shared" = true ]; then backend=true; ios=true; ios_local=true; fi
+          any_ios=false
+          if [ "$ios" = true ] || [ "$ios_local" = true ]; then any_ios=true; fi
+          { echo "backend=$backend"; echo "ios=$ios"; echo "ios_local=$ios_local"; echo "any_ios=$any_ios"; } >> "$GITHUB_OUTPUT"
+          echo "→ backend=$backend ios=$ios ios_local=$ios_local any_ios=$any_ios"
+
   # ---------------------------------------------------------------- 仓库卫生
   hygiene:
     name: 仓库卫生（git diff --check / 无本地产物 / 无占位域名）
@@ -91,6 +143,8 @@ jobs:
   # ---------------------------------------------------------------- 后端
   backend:
     name: 后端（typecheck/test/audit/build/dist/Docker）
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -248,6 +302,8 @@ jobs:
   # ---------------------------------------------------------- 联网版 iOS 客户端
   ios-online:
     name: iOS 联网版（Debug + Release + 产物校验）
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-15
     defaults:
       run:
@@ -356,6 +412,8 @@ jobs:
   # --------------------------------------------------------- 离线版 iOS 客户端
   ios-local:
     name: iOS 离线版（build + 全量测试）
+    needs: changes
+    if: needs.changes.outputs.ios_local == 'true'
     runs-on: macos-15
     defaults:
       run:
@@ -416,7 +474,12 @@ jobs:
   # ------------------------------------------------- 构建/测试后工作区仍需干净
   clean-tree:
     name: 构建后 git status 必须干净
-    needs: [ios-online, ios-local]
+    needs: [changes, ios-online, ios-local]
+    # 只有 iOS 侧确实构建过（且没失败）时才需要验证"构建没污染工作区"；
+    # 任一 iOS job 被范围判定跳过或失败，这一步就没有意义（always() 保证 needs 被跳过时仍能求值）。
+    if: >-
+      always() && needs.changes.outputs.any_ios == 'true' &&
+      needs.ios-online.result != 'failure' && needs.ios-local.result != 'failure'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
