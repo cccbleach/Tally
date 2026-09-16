@@ -2,6 +2,11 @@
 
 > 本文件记录「生产发布准备」各项验收的实际执行证据与复现命令，作为上线前审计凭据。
 > 关联清单见 [`production-checklist.md`](./production-checklist.md)。本文把历史已落库证据与当前未提交功能重构的本轮证据分开记录，避免把旧结果误写成当前结果。
+>
+> ℹ️ 本文是**验收记录（历史快照）**，迁移水位随时间推进（文中的 22 已不是最新）。生产部署方式见
+> [`production-deploy.md`](./production-deploy.md)：当前生产机为裸机 + systemd + **共享** Caddy；
+> 文中的 Docker/compose 验收仍然有效 —— 它既是仓库自包含方案（机器独占）的回归证据，
+> 也是 CI 里持续执行的容器级回归。
 
 - 验收起点：`main` @ `f805808`；其上的「手机号唯一昵称/单家庭重构」在验收期间为待提交 diff（迁移 22、测试 140、正式域名唯一为 `https://your-domain.cn`），验收通过后随本次交付提交。
 - 验收环境：macOS 主机；Xcode（iPhoneSimulator26.5 SDK）；Node 24；pnpm 11.19.0。历史容器证据来自 lima `vz`/aarch64 虚拟机内 Docker Engine 29.7.2。

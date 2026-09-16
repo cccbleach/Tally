@@ -1,10 +1,45 @@
 # 部署指南
 
-Tally 后端为单文件 SQLite + Node.js 服务，部署极简。任选其一：
+Tally 后端为单文件 SQLite + Node.js 服务，部署极简。**先按「80/443 在谁手里」选一种，不要混用**：
 
-## 方式一：Docker（推荐）
+| 场景 | 用哪种 |
+|---|---|
+| 主机上已有别的站点在用 Caddy（**当前生产环境即如此**） | 方式一：裸机 + systemd + 共享 Caddy（详见 [production-deploy.md](production-deploy.md)） |
+| 机器为 Tally 独占，想「一键含 HTTPS」 | 方式二：Docker Compose + Caddy（Caddy 独占宿主 80/443） |
+| 只想要个常驻进程 / 临时跑 | 方式三/四：直接运行 / pm2（不含 TLS，需自行配反代） |
 
-### 生产（含 HTTPS，推荐）：Caddy + backend 一套起
+## 方式一：裸机 + systemd + 共享 Caddy（**当前生产环境使用**）
+
+适合「主机上已经有一个 Caddy 在跑别的站点」的机器。⛔ **不要**在这类机器上跑下面的 compose：
+它的 Caddy 会抢占宿主 80/443，把同机其他站点全部打掉。
+
+完整步骤（systemd 单元与沙箱参数、发布/回滚、备份校验、共享 Caddy 站点片段）见
+**[docs/production-deploy.md](production-deploy.md)**，最小流程：
+
+```bash
+# 1) 固定版本运行时与发布目录：/opt/tally/{releases,current,runtime}
+#    current 是指向当前 release 的软链（systemd 的 WorkingDirectory）
+# 2) 生产环境变量：/etc/tally/tally.env（0600 root:root，systemd EnvironmentFile 读取）
+#    NODE_ENV=production  HOST=127.0.0.1  PORT=18080
+#    DATABASE_URL=/var/lib/tally/tally.db  JWT_SECRET=<openssl rand -hex 32>
+#    TRUST_PROXY=1  CORS_ORIGINS=https://<你的域名>  ALIYUN_SMS_*=<...>
+# 3) systemd 单元：User=tally、ProtectSystem=strict、ReadWritePaths=/var/lib/tally、MemoryMax=1G
+systemctl enable --now tally-backend
+# 4) 现有（共享）Caddy 追加 site block：reverse_proxy 127.0.0.1:18080
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile   # 先备份 Caddyfile
+systemctl reload caddy          # reload 而非 restart：不中断其他站点
+# 5) 验收
+curl -sS 127.0.0.1:18080/health/ready
+curl -sS https://<你的域名>/health/ready
+```
+
+发布新版本 = 上传到 `/opt/tally/releases/<新id>` → `pnpm install --prod --frozen-lockfile`
+→ `ln -sfn` + `mv -T` 原子替换 `current` → `systemctl restart tally-backend`；
+**回滚就是把软链切回上一个 release 目录**（见 production-deploy.md 第 5 节）。
+
+## 方式二：Docker（机器独占时的一键 HTTPS 方案）
+
+### 生产（含 HTTPS）：Caddy + backend 一套起
 
 ```bash
 cd backend
@@ -34,7 +69,7 @@ JWT_SECRET=$(openssl rand -hex 32) docker compose up -d --build
 > **单实例限制**：当前周期账单生成与进程内限流基于单进程 SQLite；请勿横向多实例共享同一
 > SQLite 文件（如需多实例，先将数据库迁移到 PostgreSQL/MySQL 等共享存储，或加分布式锁）。
 
-## 方式二：直接运行
+## 方式三：直接运行
 
 ```bash
 cd backend
@@ -44,7 +79,7 @@ pnpm build
 node dist/index.js
 ```
 
-## 方式三：pm2 常驻
+## 方式四：pm2 常驻
 
 ```bash
 cd backend
@@ -89,6 +124,11 @@ pm2 save
 sqlite3 data/tally.db ".backup 'backup.db'"
 ```
 
+> ⚠️ **校验**备份时注意 CLI 版本：老发行版自带 `sqlite3` 3.26（2018）读不了新版 schema，
+> `PRAGMA integrity_check` 会报 `malformed database schema (guard_0021_nickname_dup)` —— 那是 CLI
+> 太旧，不是备份坏了（真机实测）。`.backup` 本身是页级拷贝不受影响；校验请改用应用同款引擎：
+> `node -e "const D=require('better-sqlite3');console.log(new D('<备份文件>',{readonly:true}).pragma('integrity_check'))"`。
+
 建议用仓库内的 `scripts/backup.sh` 并配合 cron 每日备份（保留策略见 `scripts/prune-retention.mjs`：
 近 7 天每天一份、8–30 天每周一份、31–180 天每月一份、180 天后删除）：
 
@@ -121,6 +161,8 @@ App 端 ATS 已收紧（不再使用全局 `NSAllowsArbitraryLoads`，仅保留 
 生产环境请：
 
 1. 用 Nginx/Caddy 反向代理并启用 TLS（如 Let's Encrypt），并设置后端 `TRUST_PROXY=1`。
+   若已有 Caddy 在服务别的站点，**不要**另起一套：给现有 Caddyfile 追加 site block 即可
+   （见 [production-deploy.md](production-deploy.md) 第 6 节），否则 80/443 会冲突。
 2. 将 Release 构建配置 `TALLY_API_BASE_URL` 改为 `https://你的域名`（可用 Xcode 的用户自定义构建设置或 `xcodebuild ... TALLY_API_BASE_URL=https://你的域名` 覆盖）。
 3. 如需更严格，可进一步证书锁定（pinning）并移除 `NSAllowsLocalNetworking`。
 

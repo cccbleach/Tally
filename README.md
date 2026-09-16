@@ -60,8 +60,10 @@ Tally/
 │   └── check-ios-release-assets.sh  # 图标/版本号/Bundle ID/签名 的发布资产检查
 └── docs/
     ├── api.md                   # API 契约（含「账号恢复只做短信、不做邮件」的说明）
-    ├── deploy.md                # 部署指南
-    ├── https-deploy.md          # HTTPS/Caddy 上线步骤
+    ├── deploy.md                # 部署指南（先选「80/443 归谁」）
+    ├── production-deploy.md     # ★ 真实生产部署：裸机 + systemd + 共享 Caddy（发布/回滚/备份校验）
+    ├── https-deploy.md          # HTTPS/Caddy 上线步骤（自包含 compose 方案）
+    ├── licensing.md             # 许可证与第三方依赖复核
     ├── openapi.yaml             # OpenAPI 契约（被测试校验）
     └── production-checklist.md  # ★ 生产上线清单（域名/TLS/JWT/CORS/备份/告警）
 ```
@@ -151,9 +153,15 @@ CI（`.github/workflows/ci.yml`）覆盖：后端 typecheck / test / audit / bui
 
 - **上线必读**：[docs/production-checklist.md](docs/production-checklist.md) —— 域名/TLS/JWT/CORS/TRUST_PROXY、
   迁移前备份、异机备份与恢复演练、健康检查/日志/告警、iOS 发布资产与发布流程。
-- 部署方式：[docs/deploy.md](docs/deploy.md)（Docker 一键、直接运行、pm2）。
-- 生产 HTTPS（推荐）：`cd backend && TALLY_DOMAIN=... ACME_EMAIL=... JWT_SECRET=... docker compose -f docker-compose.caddy.yml up -d --build`
-  —— Caddy 只发布 80/443，后端 8080 仅在 Docker 内网可达（见 [docs/https-deploy.md](docs/https-deploy.md)）。
+- 部署方式先按「80/443 在谁手里」二选一（**不要混用**）：
+  - **主机已有别的站点在用 Caddy**（当前生产环境）：裸机 + systemd + **共享** Caddy ——
+    后端只监听 `127.0.0.1:18080`，由现有 Caddy 反代。完整步骤（systemd 沙箱、发布/回滚、
+    备份校验、Caddy 站点片段）见 [docs/production-deploy.md](docs/production-deploy.md)。
+  - **机器为 Tally 独占**：仓库自带的一键 HTTPS 栈
+    `cd backend && TALLY_DOMAIN=... ACME_EMAIL=... JWT_SECRET=... docker compose -f docker-compose.caddy.yml up -d --build`
+    —— Caddy 只发布 80/443，后端 8080 仅在 Docker 内网可达（见 [docs/https-deploy.md](docs/https-deploy.md)）。
+    ⚠️ 在有其他站点的主机上跑这套会抢占 80/443 并打掉那些站点。
+- 其余方式（直接运行、pm2）见 [docs/deploy.md](docs/deploy.md)。
 
 ## API
 
@@ -189,6 +197,9 @@ git diff --check && git status --porcelain    # 两者都必须为空
 
 ## 许可证
 
-本仓库为**私有项目**，暂未附带任何开源许可证（无 `LICENSE` 文件）。在确定开源/对外协作范围之前，
-请勿假定任何使用、复制或再分发授权；对外协作或发布前需补充明确的许可证文件（并在 `docs/` 记录第三方依赖的
-许可证复核结论）。
+本项目以 **MIT License** 开源，见 [LICENSE](LICENSE)（`Copyright (c) 2026 cccbleach`）。
+
+第三方依赖的许可证复核结论见 **[docs/licensing.md](docs/licensing.md)**（2026-09-17 复核）：
+运行时依赖 202 个包均为宽松许可（MIT 147 / ISC 28 / Apache-2.0 12 / BSD-3-Clause 5 等），
+**无 GPL/AGPL 等传染性依赖**；iOS 客户端不含任何第三方包（全部为 Apple 框架）。
+仅 1 个传递依赖 `buffers@0.1.1` 未声明许可证，已在该文件第 2.2 节登记并给出处置选项。

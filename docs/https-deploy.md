@@ -8,7 +8,15 @@
 - 域名 A 记录指向服务器公网 IP（部署方按实际情况填写）。
 - 云厂商安全组放行 `80` 和 `443`。
 
-## 方案一：Caddy（推荐，自动证书/续期）—— 仓库自带可直接运行的生产栈
+## 先选：80/443 归谁（**别混用**）
+
+- **主机上已有 Caddy 在服务别的站点**（当前生产环境即如此）⇒ 不要用下面的 compose
+  （它的 Caddy 会抢占 80/443，把同机其他站点打掉），改走
+  [production-deploy.md](production-deploy.md) 第 6 节：给现有 `/etc/caddy/Caddyfile` 追加一个
+  site block（`reverse_proxy 127.0.0.1:18080`），`caddy validate` 通过后 `systemctl reload caddy`。
+- **机器为 Tally 独占** ⇒ 用下面的方案一（自包含 compose，Caddy 与后端都在容器内）。
+
+## 方案一：Caddy（自动证书/续期）—— 仓库自带可直接运行的生产栈（机器独占时）
 
 仓库提供 `backend/docker-compose.caddy.yml` + `backend/Caddyfile`（Caddy 与后端同网络，
 **只有 Caddy 对宿主发布 80/443**，后端 8080 只在 Docker 内网可达）：
@@ -70,7 +78,8 @@ server {
 完整上线核对见 [production-checklist.md](production-checklist.md)（域名/TLS/JWT/CORS/TRUST_PROXY、
 迁移前备份、异机备份与恢复演练、健康检查/日志/告警）。最少必须勾完：
 
-- [ ] 公网 8080 已关闭（compose 未对后端发布任何端口；安全组只留 22/80/443）
+- [ ] 后端端口未对公网暴露（compose 未给后端发布任何端口；裸机为 `HOST=127.0.0.1`+`PORT=18080`，
+      安全组只留 22/80/443）
 - [ ] 域名已配置，`https://你的域名/health/live` 返回 ok，`/health/ready` 的 `migrationsApplied` > 0
 - [ ] App 通过 https 正常登录/记账/导入
 - [ ] 生产 `JWT_SECRET` 为 ≥32 位强随机且非占位值

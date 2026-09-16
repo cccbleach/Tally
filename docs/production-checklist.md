@@ -10,7 +10,7 @@
 |---|---|---|
 | 生产 API 域名 | `https://your-domain.cn` | 正式生产唯一域名；本仓库文档 / CI（`PROD_API_BASE_URL`）/ iOS Release 均使用它 |
 | 预发/staging API 域名 | 无（不保留 staging） | CI 的 Release 构建 / 主干 Archive / 产物校验统一注入 `https://your-domain.cn` |
-| 部署方式 | `docker compose -f docker-compose.caddy.yml` | Caddy 仅暴露 80/443，后端 8080 只在 Docker 内网 |
+| 部署方式 | 裸机 + systemd + **共享** Caddy（[production-deploy.md](production-deploy.md)）；机器为 Tally 独占时可用 `docker compose -f docker-compose.caddy.yml` | 后端只监听 `127.0.0.1:18080`，由已有 Caddy 反代；compose 方案里 Caddy 独占宿主 80/443 |
 | 单实例约束 | 1 个后端进程 | 周期账单调度与限流都是进程内的；SQLite 不可多实例共享。多实例前必须先换 PG/MySQL |
 
 ---
@@ -26,12 +26,19 @@
 
 ## 2. TLS / HTTPS（Caddy）
 
-- [ ] 只用仓库里的生产栈：`backend/docker-compose.caddy.yml` + `backend/Caddyfile`
-      （站点地址由 `TALLY_DOMAIN` 注入，不设默认值 —— 忘填就起不来，避免占位域名上线）。
+- [ ] 二选一，**不要混用**：
+      - **共享 Caddy**（主机上已有别的站点占着 80/443，当前生产机即如此）：按
+        [production-deploy.md](production-deploy.md) 第 6 节在现有 `/etc/caddy/Caddyfile`
+        追加 site block 反代 `127.0.0.1:18080`，`caddy validate` 后 `systemctl reload caddy`
+        （**不要 restart**，会中断同机其他站点）。
+      - **自包含 compose**（机器为 Tally 独占）：`backend/docker-compose.caddy.yml` + `backend/Caddyfile`
+        （站点地址由 `TALLY_DOMAIN` 注入，不设默认值 —— 忘填就起不来，避免占位域名上线）。
+      ⛔ 严禁在有其他站点的主机上跑 compose 版：其 Caddy 会抢占宿主 80/443。
 - [ ] 设置有效的 `ACME_EMAIL`（无默认值），用于证书异常通知并启用 Caddy 的
       Let's Encrypt → ZeroSSL 双 CA 自动回退。
 - [ ] 安全组/防火墙**只放行 22/80/443**；`443/udp`（HTTP/3）按需，不需要就别开。
-- [ ] 后端 8080 不对宿主/公网发布（compose 里后端只有 `expose`，没有 `ports`）。
+- [ ] 后端端口不对宿主/公网发布：compose 里后端只有 `expose`（无 `ports`）；裸机方案为
+      `HOST=127.0.0.1` + 安全组只留 22/80/443（18080 绝不放行）。
 - [ ] 证书：Caddy 自动签发 + 自动续期；确认 80 端口可达（ACME http-01）。
 - [ ] HSTS 已在 `Caddyfile` 里下发（`max-age=31536000; includeSubDomains`）。
       ⚠️ 一旦下发 HSTS，降级回 HTTP 会让客户端直接失败，回滚只能换域名。
@@ -51,14 +58,18 @@
 
 - [ ] 生产 `JWT_SECRET` = `openssl rand -hex 32`（≥32 位随机、非占位）。
       生产模式启动时会校验：占位/过短密钥**直接拒绝启动**（`backend/src/config.ts`）。
-- [ ] 密钥只存在服务器的 `/etc/tally/env`（或密钥管理服务）里，**不进 Git**、不进镜像层。
+- [ ] 密钥只存在服务器的 `/etc/tally/tally.env`（或密钥管理服务）里，`0600 root:root`，
+      由 systemd `EnvironmentFile` 读取；**不进 Git**、不进镜像层、也不放进 release 目录。
       `backend/.env` 已在 `.gitignore` 内。
 - [ ] 访问令牌 15m / 刷新令牌 30d（`ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL`）按需收紧；
       刷新令牌落库为 SHA-256 哈希；旧会话通过刷新链路轮换（无密码体系，无需“重置密码吊销”）。
 - [ ] 轮换流程（密钥泄漏或例行轮换）：
       1. 公告 → 2. 新密钥写入环境变量 → 3. 重启后端（全部 JWT 立即失效，用户需重新登录）
       → 4. 观察 401 峰值与登录成功率。轮换必须与备份（第 5 节）分开做，别叠加风险。
-- [ ] **判据**：`docker compose exec tally-backend printenv JWT_SECRET | wc -c` ≥ 65，且不等于 `.env.example` 里的开发占位值。
+- [ ] **判据**：`JWT_SECRET` 为 64 位十六进制随机串，且不等于 `.env.example` 里的开发占位值。
+      容器：`docker compose exec tally-backend printenv JWT_SECRET | wc -c` ≥ 65；
+      裸机：`awk -F= '/^JWT_SECRET=/{print length($2)}' /etc/tally/tally.env` ≥ 64，
+      且 `stat -c '%a %U:%G' /etc/tally/tally.env` 为 `600 root:root`。
 
 ## 4. CORS
 
@@ -73,7 +84,8 @@
 
 ## 5. 反向代理与 TRUST_PROXY
 
-- [ ] 后端位于 Caddy 之后 ⇒ 设 `TRUST_PROXY=1`（compose 默认已为 1）。
+- [ ] 后端位于 Caddy 之后 ⇒ 设 `TRUST_PROXY=1`（compose 默认已为 1；裸机在 `/etc/tally/tally.env`
+      里显式写 1 —— 漏了会让限流把所有人算成同一个回环 IP）。
       否则限流会把所有用户算成同一台代理 IP（要么集体 429，要么形同虚设）。
 - [ ] 只有 1 层代理就填 1；再套一层 CDN 才填 2。**不要**盲目调大：
       取值是「X-Forwarded-For 从右往左第 N 个」，N 大于真实层数会把客户端伪造的左侧地址当真实 IP。
@@ -105,8 +117,11 @@
       | `production` | 任意值 + `DISABLE_RATE_LIMIT=true` | ⛔ 拒绝启动 | — |
       | 未设置 | 未设置（默认 development） | ✅ 正常（本地开发/测试） | ⚠️ **会回传**（有意行为，仅供本机联调） |
 
-      **注意**：裸跑 `node dist/index.js`、systemd 单元等未设 `NODE_ENV` 的场景会落入最后一行，
-      即"能回传验证码的开发模式"。对外部署必须显式 `NODE_ENV=production`（compose 与镜像内均已设）。
+      **注意**：裸跑 `node dist/index.js`、或 systemd 单元漏配 `NODE_ENV`，都会落入最后一行，
+      即"能回传验证码的开发模式"。对外部署必须显式 `NODE_ENV=production`：compose / 镜像内已设；
+      **裸机 systemd 方案**靠 `EnvironmentFile=/etc/tally/tally.env` 提供，该文件必须含
+      `NODE_ENV=production`（见 [production-deploy.md](production-deploy.md) 第 2、3 节）——
+      漏配会得到「服务一切正常，但任何人都能用手机号登录他人账号」的最坏组合。
       若开发模式下同时配置了真实短信凭据，启动日志会打印醒目告警。
 - [ ] 用真机跑一遍完整闭环：`/auth/request-code` 收到短信 → `/auth/login-code` 登录 →
       新账号走 `/auth/complete-profile` 强制设置唯一昵称 → 家庭/账本可用。
@@ -145,23 +160,44 @@
 
 - [ ] 迁移由 `src/index.ts` 启动时自动执行（`runMigrations`）—— 所以**先停服 + 先备份**，
       再启动新版本；不要边接流量边迁移。
-- [ ] 步骤：
+- [ ] 步骤（`.backup` 是页级一致性快照，**不必停服**；迁移在进程启动时执行，所以备份必须在重启之前）：
+
+      裸机（当前生产）：
+      ```bash
+      sudo -u tally sqlite3 /var/lib/tally/tally.db \
+        ".backup '/var/lib/tally/backups/pre-migration-$(date +%Y%m%d-%H%M%S).db'"
+      sha256sum /var/lib/tally/backups/pre-migration-*.db | tail -1
+      ```
+
+      compose：
       ```bash
       cd backend
-      # 1) 停容器（避免 WAL 与主库不一致）
       docker compose -f docker-compose.caddy.yml stop tally-backend
-      # 2) 在线备份（一致性快照，含 WAL）
       ../scripts/backup.sh "$(docker volume inspect tally-backend_tally-data -f '{{.Mountpoint}}')/tally.db" /srv/tally-backups/pre-migration
-      # 3) 记录指纹与迁移水位，便于事后核对/回滚
       sha256sum /srv/tally-backups/pre-migration/tally-*.db | tail -1
-      sqlite3 <备份文件> "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;"
       ```
+
+      ⚠️ **校验备份别盲目用系统 `sqlite3` CLI**：老发行版自带 3.26（2018），读不了新 schema，
+      `PRAGMA integrity_check` 会报 `malformed database schema (guard_0021_nickname_dup)` ——
+      看着像"备份损坏"，其实只是 CLI 太旧（真机实测）。请用**应用同款引擎**校验：
+      ```bash
+      cd /opt/tally/current && /opt/tally/runtime/node-v24.20.0-linux-x64/bin/node -e "
+      const D=require('better-sqlite3');const db=new D(process.argv[1],{readonly:true});
+      console.log(db.pragma('integrity_check'));
+      console.log('migrations', db.prepare('SELECT COUNT(*) c FROM schema_migrations').get().c);
+      " /var/lib/tally/backups/<备份文件>.db        # 期望输出 ok（单行）
+      ```
+      （`.backup` 本身是页级拷贝，不受 CLI 版本影响，仍可用 CLI 执行。）
 - [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0023_*.sql`，共 23 个）；
       已上线的迁移文件与数据库里已应用的记录一律不许改（`test/migration.test.ts` 会校验）。
-- [ ] 回滚预案：SQLite 无 down migration —— 回滚 = 停服 → `scripts/restore.sh <迁移前备份> backend/data` →
-      起旧镜像 tag。演练过一次才算有预案（见第 8 节）。
+- [ ] 回滚预案：SQLite 无 down migration，**先判断迁移是不是纯增量**：
+      - 纯增量（只加表/列/索引，旧代码在新库上仍能跑）⇒ 只回代码即可：裸机把 `current` 软链切回上一个
+        release 并 `systemctl restart tally-backend`（[production-deploy.md](production-deploy.md) 第 5 节），
+        compose 用旧 tag `up -d --no-build`。
+      - 否则 ⇒ 停服 → `scripts/restore.sh <迁移前备份> <数据目录>` → 再切回旧版本。
+      演练过一次才算有预案（见第 8 节）。
 - [ ] 完成判据：迁移后 `GET /health/ready` 的 `migrationsApplied` 等于迁移文件数，
-      `PRAGMA integrity_check` 返回 `ok`，关键页面无 500。
+      备份校验输出 `ok`（用应用引擎，见上），关键页面无 500。
 
 ## 8. 异机备份与恢复演练
 
@@ -182,7 +218,8 @@
 - [ ] **恢复演练（每月一次，必须留记录）**：
       ```bash
       scripts/restore.sh /srv/tally-offsite/tally-<时间戳>.db /tmp/tally-restore-drill
-      sqlite3 /tmp/tally-restore-drill/tally.db "PRAGMA integrity_check; SELECT COUNT(*) FROM transactions;"
+      # 校验用应用引擎（老 sqlite3 CLI 会误报 schema 损坏，见第 7 节）
+      cd backend && node -e "const D=require('better-sqlite3');const db=new D('/tmp/tally-restore-drill/tally.db',{readonly:true});console.log(db.pragma('integrity_check'), db.prepare('SELECT COUNT(*) c FROM transactions').get().c)"
       # 用恢复出的库拉起一个隔离实例，验证能登录/能查流水（不接生产流量）
       DATABASE_URL=/tmp/tally-restore-drill/tally.db PORT=18099 node dist/index.js &
       curl -sS localhost:18099/health/ready
@@ -197,27 +234,37 @@
 | 探针 | 用途 | 语义 |
 |---|---|---|
 | `GET /health` | 人工快速确认 | 进程 + `SELECT 1` |
-| `GET /health/live` | k8s/compose liveness | 只看进程活着，不依赖 DB |
+| `GET /health/live` | liveness（compose/k8s/systemd 探活） | 只看进程活着，不依赖 DB |
 | `GET /health/ready` | readiness / 拨测 | DB 可达 **且** `schema_migrations` 有记录，返回 `migrationsApplied` |
 
-- [ ] compose 里两个服务都有 `healthcheck`（后端用 Node fetch 打 `/health/live`；Caddy 镜像无 bash，
-      用镜像自带的 busybox `nc -z` 探活 80/443），`restart: unless-stopped`，
-      `caddy` 通过 `depends_on: condition: service_healthy` 等后端就绪。
+- [ ] 进程与反代都要探活，按部署方式二选一：
+      - compose：两个服务都有 `healthcheck`（后端用 Node fetch 打 `/health/live`；Caddy 镜像无 bash，
+        用镜像自带的 busybox `nc -z` 探活 80/443），`restart: unless-stopped`，
+        `caddy` 通过 `depends_on: condition: service_healthy` 等后端就绪。
+      - 裸机：`systemctl is-active tally-backend`（单元已配 `Restart=on-failure` + `StartLimitBurst=5`）
+        与 `systemctl is-active caddy` **都要纳入监控** —— 反代挂了后端照样"活着"，只探后端发现不了。
 - [ ] 外部拨测（独立于本机，能区分「服务器挂」与「网络挂」）：每 60s 打一次
       `https://your-domain.cn/health/ready`，连续 3 次失败告警。
-- [ ] 反代层加探活：Caddy 挂了也要能发现（`docker compose ps` / `systemctl` 级监控）。
+- [ ] 反代层加探活：Caddy 挂了也要能发现（`docker compose ps` / `systemctl is-active caddy`）。
 
 ## 10. 日志
 
 - [ ] 后端：`LOG_LEVEL=info`（Fastify pino JSON）；**验证码 / reset token / JWT / 密码永不落日志**
       （`src/lib/sms.ts` 只打印发送结果，不回显内容）。
-- [ ] 访问日志：Caddy JSON 落 `/data/access.log`（命名卷持久化，10MB × 5 滚动，最多 30 天）。
-- [ ] 容器日志轮转：compose 已配 `json-file max-size=10m max-file=5`，防日志撑爆磁盘。
+- [ ] 访问日志：Caddy JSON 落盘并滚动（compose：命名卷 `/data/access.log`；裸机：共享 Caddy 的
+      `log { output file /var/log/caddy/tally-access.log }`），10MB × 5 滚动、保留 30 天。
+- [ ] 日志轮转：compose 已配 `json-file max-size=10m max-file=5`；裸机走 journald
+      （`SyslogIdentifier=tally-backend`，由 journald 自带轮转与上限），防日志撑爆磁盘。
 - [ ] 链路追踪：每个响应带 `x-request-id`，报障时以它为线索串后端日志。
 - [ ] 关键操作有审计：`audit_logs` 表（迁移 `0011_audit_logs.sql`），排障先查它。
-- [ ] 采集：`docker logs` / journald → 集中收集（Loki/Vector/CloudWatch 任一）；保留 ≥ 30 天。
+- [ ] 采集：`journalctl -u tally-backend` / `docker logs` → 集中收集（Loki/Vector/CloudWatch 任一）；保留 ≥ 30 天。
 - [ ] 命令速查：
       ```bash
+      # 裸机（当前生产）
+      journalctl -u tally-backend --since '30 min ago' --no-pager | tail -200
+      journalctl -u caddy --since '30 min ago' --no-pager | tail -100
+      tail -n 100 /var/log/caddy/tally-access.log
+      # compose
       docker compose -f docker-compose.caddy.yml logs --since 30m --tail 200 tally-backend
       docker compose -f docker-compose.caddy.yml exec caddy tail -n 100 /data/access.log
       ```
@@ -229,7 +276,7 @@
 | # | 触发条件 | 级别 | 建议实现 |
 |---|---|---|---|
 | 1 | `/health/ready` 连续 3 次失败或 > 2s | P1 | 外部拨测（Uptime Kuma / Blackbox Exporter） |
-| 2 | 容器 `unhealthy` 或非 `Up` | P1 | `docker compose ps` 巡检脚本 / cAdvisor |
+| 2 | 服务不健康：容器 `unhealthy`/非 `Up`，或 `systemctl is-active tally-backend`/`caddy` 非 `active` | P1 | `docker compose ps` / `systemctl` 巡检脚本 |
 | 3 | 备份文件 26h 内没有新增，或 `sha256sum -c` 失败 | P1 | cron 任务退出码 + 心跳（healthchecks.io 类） |
 | 4 | TLS 证书剩余有效期 < 21 天 / 续期日志报错 | P2 | `openssl s_client` 定时探测 |
 | 5 | 磁盘使用 > 80%（尤其 SQLite 与备份目录） | P2 | `df` 巡检；SQLite 增长快时提前扩盘 |
@@ -268,21 +315,31 @@
 
 1. 冻结变更 → `git status --porcelain` 为空，CI 全绿。
 2. 第 7 节「迁移前备份」+ 校验和。
-3. `docker compose -f docker-compose.caddy.yml build` → 记录镜像 tag/digest。
-4. `docker compose -f docker-compose.caddy.yml up -d`（新版本容器自动跑迁移）。
-5. 健康检查：`/health/ready` 的 `migrationsApplied` 与迁移文件数一致。
+3. 出包（二选一）：
+   - 裸机（当前生产）：本地 `pnpm build` → `COPYFILE_DISABLE=1 tar` 上传到新 release 目录 →
+     服务器 `pnpm install --prod --frozen-lockfile` + better-sqlite3/`smoke-dist-xlsx` 自检
+     （完整命令见 [production-deploy.md](production-deploy.md) 第 4 节）。
+   - compose：`docker compose -f docker-compose.caddy.yml build` → 记录镜像 tag/digest。
+4. 切换（启动即自动跑迁移）：
+   - 裸机：`ln -sfn` + `mv -T` 原子替换 `current` 软链 → `systemctl restart tally-backend`。
+   - compose：`docker compose -f docker-compose.caddy.yml up -d`。
+5. 健康检查：`/health/ready` 的 `migrationsApplied` 与迁移文件数一致；**新增路由要单独探一次**
+   （例：`POST /api/v1/auth/logout-all` 应为 401，而旧版本是 404 —— 防止"部署成功但跑的是旧代码"）。
 6. 冒烟：注册/验证码恢复/记账/预算/统计/家庭/负债/导入各跑一遍真实链路。
-7. 观察 15 分钟日志与 5xx；确认无异常后关闭变更窗口。
-8. 回滚：`docker compose -f docker-compose.caddy.yml up -d --no-build`（旧 tag）+ 必要时
-   `scripts/restore.sh <本次迁移前备份> backend/data`。
+7. 观察 15 分钟日志与 5xx；确认无异常后关闭变更窗口，并把本次发布追加到服务器
+   `/opt/tally/DEPLOYMENT.md`（release、commit、迁移号、备份路径、验收结果、回滚命令）。
+8. 回滚：裸机切回上一个 release 软链并重启（[production-deploy.md](production-deploy.md) 第 5 节），
+   compose 起旧 tag（`up -d --no-build`）；**只有迁移非纯增量时**才需要
+   `scripts/restore.sh <本次迁移前备份> <数据目录>`（见第 7 节）。
 
 ## 14. 发布后 24 小时观察
 
 - [ ] 5xx、P95 延迟、401 比例（JWT/CORS 改错会立刻表现为 401/CORS 报错）。
 - [ ] 磁盘、SQLite 文件大小、`-wal` 是否异常膨胀（异常膨胀常意味着长事务未提交）。
-- [ ] 备份任务实际产出文件并可 `sqlite3 ... "PRAGMA integrity_check"`。
+- [ ] 备份任务实际产出文件，且用**应用引擎**校验为 `ok`（老 `sqlite3` CLI 会误报损坏，见第 7 节）。
 - [ ] 至少一次真实用户恢复/登录成功记录（说明短信通道正常）。
-- [ ] 证书续期由 Caddy 自动完成，检查 `docker compose logs caddy | grep -i tls`。
+- [ ] 证书续期由 Caddy 自动完成：`journalctl -u caddy | grep -i tls`（共享 Caddy）或
+      `docker compose logs caddy | grep -i tls`。
 
 ---
 
@@ -296,8 +353,8 @@
       `1` 个手机号账号、`0` 个邮箱账号），且无旧家庭/成员/邀请数据（0022 不迁移旧邀请）。
 - [ ] 发布前对生产 SQLite 做一致备份并保留到观察期结束（`scripts/backup.sh` +
       `sqlite3 ... PRAGMA integrity_check`）。
-- [ ] 先部署支持新协议的后端，启动后确认 `schema_migrations` 共 **22** 个迁移
-      （`0001` → `0022` 全部应用），再安装新版 iOS；如迁移中途失败（含 0021 守门触发），
+- [ ] 先部署支持新协议的后端，启动后确认 `schema_migrations` 与 `backend/migrations/` 的文件数一致
+      （该次为 22；**当前最新为 23**，`0001` → `0023` 全部应用），再安装新版 iOS；如迁移中途失败（含 0021 守门触发），
       SQLite 会整体回滚到 0020，可用备份直接恢复。
 - [ ] 每次应用 0021 都会吊销全部旧会话：旧客户端必须重新登录；旧“用户”昵称账号
       下次通过短信验证后进入强制昵称设置页。

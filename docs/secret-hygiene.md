@@ -13,7 +13,8 @@
 | 生产域名与运维邮箱 | ✅ 已改为占位（`your-domain.cn` / `ops@example.com`）；CI 用的真实域名移到**仓库变量** `PROD_API_BASE_URL` |
 | 历史里的 Xcode 个人状态（`xcuserdata`） | ✅ 已清理（`git filter-repo` 剔除 + 全历史强推，2026-09-16） |
 | 历史里的本机路径 `/Users/<用户名>` | ✅ 已清理（全历史文本替换为 `<用户名>` / `<仓库路径>`） |
-| 历史里的生产域名 `loganpc.cn` | ✅ 已清理（替换为 `your-domain.cn`），当前树亦无 |
+| 历史里的生产域名 | ✅ 已清理（全历史文本替换为 `your-domain.cn`，2026-09-16）。**域名原文不再写入本仓库** —— 包括本表：把被清理的字符串当成"已完成记录"再抄一遍，等于二次泄漏 |
+| 当前树的生产域名 | ✅ 仅占位（`your-domain.cn`）；真实域名只存在于部署机的 `/etc/tally/tally.env`、Caddyfile 与仓库变量 `PROD_API_BASE_URL`，均不在源码里 |
 
 ## 1. 日常：两道扫描
 
