@@ -17,11 +17,20 @@ struct BiometricToggleRaceTests {
 
     /// Test double that lets the test control exactly when each authentication
     /// prompt returns, so the race is exercised deterministically.
+    ///
+    /// **必须隔离到 MainActor**（修复间歇性失败，实测约 1/5 概率）：
+    /// 它原先是个普通 class，`pendingCount += 1` 与 `continuations.append(...)` 会跑在
+    /// **非隔离的 async 上下文（后台线程）**，而测试在 MainActor 上读 `pendingCount`、
+    /// 调用 `completePending` —— 这是真实的数据竞争。表现是：测试先看到 `pendingCount == 2`，
+    /// 但第二次 append 对 MainActor 尚不可见，于是 `completePending` 只 resume 了第一个
+    /// continuation，**最新的 ON 永远挂起**，等待超时后 `applied` 仍为空。
+    /// 隔离到 MainActor 后，计数、追加、resume 与测试读取在同一串行域内，不再有竞争。
+    @MainActor
     private final class AuthGate {
         private var continuations: [CheckedContinuation<Bool, Never>] = []
         private(set) var pendingCount = 0
 
-        func makeAuthenticator() -> (String) async -> Bool {
+        func makeAuthenticator() -> @MainActor (String) async -> Bool {
             { [self] _ in
                 pendingCount += 1
                 return await withCheckedContinuation { continuation in
