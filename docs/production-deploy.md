@@ -312,16 +312,28 @@ systemctl reload caddy        # reload 不中断其他站点（证书在后台�
 
 ## 7. 备份与恢复（生产必须落地的部分）
 
-```bash
-# 每日备份（保留策略由 scripts/prune-retention.mjs 负责：7 天日备 / 30 天内周备 / 180 天内月备）
+以 `tally` 身份安装（`crontab -u tally <文件>`）：
+
+```cron
+PATH=/opt/tally/runtime/node-v24.20.0-linux-x64/bin:/usr/bin:/bin
+SHELL=/bin/sh
 15 3 * * * /opt/tally/scripts/backup.sh /var/lib/tally/tally.db /var/lib/tally/backups/daily >> /var/log/tally-backup.log 2>&1
 ```
 
-- 把仓库的 `scripts/backup.sh`、`scripts/restore.sh`、`scripts/prune-retention.mjs` 放到
-  `/opt/tally/scripts/`（**在 release 之外**，否则每次发布都被覆盖），并确认该目录属主是
-  执行 cron 的用户（cron 以 root 跑就 `root:root 0755`）。
-- 备份目录 `/var/lib/tally/backups/daily` 必须对 cron 执行用户可写：`install -d -o tally -g tally
-  -m 0750 …` 或 `-o root -g root -m 0750 …`，与 `scripts/backup.sh` 的执行身份保持一致。
+- **`PATH` 那行不能省**：`backup.sh` 备份完会调用 `prune-retention.mjs` 做保留策略，
+  脚本里是 `command -v node` 判空后才执行 —— cron 的默认 PATH 里没有固定版本 Node，
+  于是**备份照做、清理静默跳过**（保留策略失效，磁盘只会一直涨）。
+- 脚本放 `/opt/tally/scripts/`（**在 release 之外**，否则每次发布被覆盖）。上传后**必须**
+  `chown -R root:root /opt/tally/scripts && chmod 0755 /opt/tally/scripts/*`：从 macOS 用 `tar`
+  上传会带异常权限位（实测落到 `711`，`tally` 读不了 `.mjs` → 保留策略再次静默跳过）。
+- 目录/日志准备（幂等；执行身份与下面 cron 一致）：
+  ```bash
+  install -d -o tally -g tally -m 0750 /var/lib/tally/backups/daily
+  install -m 0640 -o tally -g tally /dev/null /var/log/tally-backup.log
+  ```
+- **验证方式不是"看一眼 crontab"**：先临时装一个 `* * * * *` 的调度真实触发一次，
+  确认「新备份文件生成 + 日志写入 + 保留策略执行」三件事都发生，再换回正式的每日调度。
+  cron 的环境变量、PATH、权限与交互式 shell 都不同，只配不验是这类任务最常见的翻车点。
 - 备份脚本需要 `sqlite3` CLI 执行 `.backup`（本机 3.26 可用，见 4.4 的说明）；
   脚本里的完整性校验若用 `PRAGMA integrity_check`，在本机会失败 —— 请按 4.6 换成应用引擎校验，
   或把该步骤单独交给 Node 脚本。
