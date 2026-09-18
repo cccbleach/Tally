@@ -3,7 +3,7 @@ import type { AppDb } from "../db/client.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import {
-  assetDebtSummary,
+  netAssetsSummary,
   dailyTotals,
   expenseByAccount,
   expenseByCategory,
@@ -26,7 +26,7 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
     const { year, month } = parseYearMonthQuery(q, cur);
 
     const totals = monthlyTotals(db, userId, ledgerId, year, month);
-    const ad = assetDebtSummary(db, userId, ledgerId);
+    const ad = netAssetsSummary(db, userId, ledgerId);
 
     const byCategory = expenseByCategory(db, userId, ledgerId, year, month).map((c) => ({
       ...c,
@@ -43,7 +43,6 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
       net: totals.income - totals.expense,
       balance: ad.net,
       totalAssets: ad.assets,
-      totalDebt: ad.debts,
       byCategory,
       byAccount,
       daily,

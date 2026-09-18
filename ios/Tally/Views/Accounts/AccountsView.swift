@@ -5,7 +5,6 @@ func accountTypeName(_ type: String) -> String {
     case "cash": return "现金"
     case "bank": return "银行卡"
     case "e-wallet": return "电子钱包"
-    case "credit": return "信用卡"
     default: return "其他"
     }
 }
@@ -15,7 +14,6 @@ func accountTypeIcon(_ type: String) -> String {
     case "cash": return "yensign.circle.fill"
     case "bank": return "building.columns.fill"
     case "e-wallet": return "wallet.pass.fill"
-    case "credit": return "creditcard.fill"
     default: return "circle.fill"
     }
 }
@@ -29,23 +27,12 @@ struct AccountsView: View {
 
     private var activeAccounts: [Account] { store.accounts.filter { !$0.isArchived } }
 
-    // 负债账户（信用卡）单独核算：欠款不计入“资产”，避免与净资产混淆
-    private var assetAccounts: [Account] {
-        activeAccounts.filter { !($0.isLiability ?? false) || ($0.balance > 0) }
-    }
-    private var liabilityAccounts: [Account] {
-        activeAccounts.filter { $0.isLiability == true && ($0.debt ?? 0) > 0 }
-    }
-    // 优先用服务端折算后的口径（StatsSummary.totalAssets/totalDebt 已按本位币换算）；
+    // 优先用服务端折算后的口径（StatsSummary.totalAssets 已按本位币换算）；
     // 账户余额是各自币种的原生值，本地直接相加在多币种账本下会算错。
     // summary 尚未加载时退回本地求和（与历史行为一致，单币种账本下结果相同）。
     private var totalAssets: Int {
-        store.summary?.totalAssets ?? assetAccounts.reduce(0) { $0 + $1.balance }
+        store.summary?.totalAssets ?? activeAccounts.reduce(0) { $0 + $1.balance }
     }
-    private var totalDebt: Int {
-        store.summary?.totalDebt ?? liabilityAccounts.reduce(0) { $0 + ($1.debt ?? 0) }
-    }
-    private var netWorth: Int { totalAssets - totalDebt }
 
     var body: some View {
         NavigationStack {
@@ -55,18 +42,6 @@ struct AccountsView: View {
                         Text("总资产").foregroundColor(.secondary)
                         Spacer()
                         Text(Money.format(totalAssets, currency: store.baseCurrencyCode)).font(.title3.bold()).monospacedDigit()
-                    }
-                    if totalDebt > 0 {
-                        HStack {
-                            Text("负债").foregroundColor(.secondary)
-                            Spacer()
-                            Text(Money.format(totalDebt, currency: store.baseCurrencyCode)).font(.headline).foregroundColor(.red).monospacedDigit()
-                        }
-                        HStack {
-                            Text("净资产").foregroundColor(.secondary)
-                            Spacer()
-                            Text(Money.format(netWorth, currency: store.baseCurrencyCode)).font(.headline).monospacedDigit()
-                        }
                     }
                 }
                 Section("账户") {
@@ -134,15 +109,7 @@ struct AccountRow: View {
                 Text(accountTypeName(account.type)).font(.caption).foregroundColor(.secondary)
             }
             Spacer()
-            if account.isLiability == true, let debt = account.debt, debt > 0 {
-                VStack(alignment: .trailing, spacing: 2) {
-                    // debt 字段由服务端折算到本位币；balance 是账户原生币种余额
-                    Text("欠款 " + Money.format(debt, currency: store.baseCurrencyCode)).font(.headline).foregroundColor(.red).monospacedDigit()
-                    Text(Money.format(account.balance, currency: account.currency)).font(.caption).foregroundColor(.secondary)
-                }
-            } else {
-                Text(Money.format(account.balance, currency: account.currency)).font(.headline).monospacedDigit()
-            }
+            Text(Money.format(account.balance, currency: account.currency)).font(.headline).monospacedDigit()
         }
     }
 }
@@ -159,7 +126,7 @@ struct AccountFormView: View {
     @State private var errorMessage: String?
 
     private let types: [(String, String)] = [
-        ("cash", "现金"), ("bank", "银行卡"), ("e-wallet", "电子钱包"), ("credit", "信用卡"), ("other", "其他")
+        ("cash", "现金"), ("bank", "银行卡"), ("e-wallet", "电子钱包"), ("other", "其他")
     ]
 
     init(existing: Account? = nil) {

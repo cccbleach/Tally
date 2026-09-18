@@ -103,13 +103,20 @@ test("全新数据库与已有数据库（0001-0018 老库 → 0022）两条迁�
     assert.ok(names.includes("uniq_budget_total"), "应有 uniq_budget_total");
     assert.ok(names.includes("uniq_budget_cat"), "应有 uniq_budget_cat");
 
-    // 验证 0020：loan_payment_idempotency 表结构与 (actor_user_id, loan_id, idempotency_key) 唯一索引
-    const idemCols = sqlite.prepare("PRAGMA table_info(loan_payment_idempotency)").all() as { name: string }[];
-    for (const col of ["actor_user_id", "loan_id", "idempotency_key", "request_fingerprint", "status", "result_json", "created_at"]) {
-      assert.ok(idemCols.some((c) => c.name === col), `loan_payment_idempotency 应有列 ${col}`);
+    // 0020 曾建 loan_payment_idempotency（贷款还款幂等）；0025 随负债域下线把它删掉了。
+    // 这里断言「全套迁移跑完后它不存在」，把最终状态钉死（历史结构由 git 记录保留）。
+    const idemTableAfter = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loan_payment_idempotency'")
+      .get();
+    assert.equal(idemTableAfter, undefined, "0025 之后 loan_payment_idempotency 应已被删除");
+    for (const t of ["loans", "loan_payments", "credit_card_bills"]) {
+      const gone = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(t);
+      assert.equal(gone, undefined, `0025 之后 ${t} 应已被删除`);
     }
-    const idemIdx = sqlite.prepare("PRAGMA index_list(loan_payment_idempotency)").all() as { name: string; unique: number }[];
-    assert.ok(idemIdx.some((i) => i.name === "uniq_loan_pay_idem" && i.unique === 1), "应有唯一索引 uniq_loan_pay_idem");
+    const acctCols = sqlite.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+    for (const col of ["credit_limit", "billing_day", "repayment_day"]) {
+      assert.ok(!acctCols.some((c) => c.name === col), `0025 之后 accounts 不应再有 ${col} 列`);
+    }
 
     // 验证 0021：users 身份字段 + 迁移质量（老“用户”不迁移为公开昵称）
     const userCols = sqlite.prepare("PRAGMA table_info(users)").all() as { name: string }[];

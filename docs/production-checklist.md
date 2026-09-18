@@ -132,7 +132,7 @@
       `test/api.test.ts` + `completeProfileAtomic.test.ts` 覆盖短信登录与强制昵称闭环）；
       编排层由 `scripts/check-compose-auth-mode.mjs` 守门（CI 已接入）。
 
-## 6.5 数据审计：币种与负债口径（本次修复后的上线前检查）
+## 6.5 数据审计：币种口径（本次修复后的上线前检查）
 
 - [ ] **币种合法性审计**：历史版本允许写入任意币种字符串（如 `hello`），统计侧对未知币种按 1:1 兜底
       会静默算错金额。升级后写接口已强校验，存量数据请用下面的 SQL 确认一次：
@@ -140,16 +140,10 @@
       sqlite3 /app/data/tally.db "
         SELECT 'accounts' t, currency, COUNT(*) FROM accounts GROUP BY currency
         UNION ALL SELECT 'transactions', currency, COUNT(*) FROM transactions GROUP BY currency
-        UNION ALL SELECT 'loans', currency, COUNT(*) FROM loans GROUP BY currency;"
+        UNION ALL SELECT 'recurring', currency, COUNT(*) FROM recurring GROUP BY currency;"
       ```
       期望：所有 `currency` 都是 3 位大写字母（`CNY`/`USD`…）。小写值（如 `usd`）已被读侧自动归一；
       非 3 字母的脏值需要人工确认后修正（例如按实际来源改为 `CNY`）。
-- [ ] **负债口径一致性**：同一账本下 `/stats/summary.totalDebt` 与 `/liabilities.totalDebt` 必须相等
-      （外币信用卡欠款与外币贷款都要按汇率折算后再相加）。
-      ```bash
-      curl -sS -H "Authorization: Bearer $TOKEN" https://<域名>/api/v1/liabilities | jq .totalDebt
-      curl -sS -H "Authorization: Bearer $TOKEN" "https://<域名>/api/v1/stats/summary" | jq .totalDebt
-      ```
 - [ ] **账户改币种限制**：升级后，已被流水/贷款/信用卡账单引用的账户改币种会返回
       400 `ACCOUNT_CURRENCY_LOCKED`。若业务上确需改，请"新建同币种账户 → 迁移流水 → 归档旧账户"。
 - [ ] **短信频控参数**（当前为代码内默认值，**没有**环境变量开关；要改需改代码或注入
@@ -333,7 +327,7 @@
    - compose：`docker compose -f docker-compose.caddy.yml up -d`。
 5. 健康检查：`/health/ready` 的 `migrationsApplied` 与迁移文件数一致；**新增路由要单独探一次**
    （例：`POST /api/v1/auth/logout-all` 应为 401，而旧版本是 404 —— 防止"部署成功但跑的是旧代码"）。
-6. 冒烟：注册/验证码恢复/记账/预算/统计/家庭/负债/导入各跑一遍真实链路。
+6. 冒烟：注册/验证码恢复/记账/预算/统计/家庭/导入各跑一遍真实链路。
 7. 观察 15 分钟日志与 5xx；确认无异常后关闭变更窗口，并把本次发布追加到服务器
    `/opt/tally/DEPLOYMENT.md`（release、commit、迁移号、备份路径、验收结果、回滚命令）。
 8. 回滚：裸机切回上一个 release 软链并重启（[production-deploy.md](production-deploy.md) 第 5 节），

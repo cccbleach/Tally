@@ -420,60 +420,6 @@ struct APIService {
         let _: OKResponse = try await client.request("POST", "/api/v1/ledgers/switch", body: Body(ledgerId: id))
     }
 
-    // 负债
-    func liabilities() async throws -> LiabilitySummary {
-        try await client.request("GET", "/api/v1/liabilities")
-    }
-
-    func loans() async throws -> [LoanItem] {
-        let res: ListResponse<LoanItem> = try await client.request("GET", "/api/v1/loans")
-        return res.items
-    }
-
-    // 贷款还款：数据库级幂等。
-    // - 偿还下一期（installmentId == nil）必须传 idempotencyKey，服务端 400 否则；
-    // - 显式还款应传 installmentId（避免不同 key 双击连续偿还下一期）；
-    // - 同一 key + 相同请求重放返回完全相同结果（replayed=true）。
-    func payLoan(id: String, payFromAccountId: String, ledgerId: String, installmentId: String?, idempotencyKey: String?, date: String?) async throws -> LoanPayResponse {
-        struct Body: Encodable {
-            let payFromAccountId: String
-            let ledgerId: String
-            let installmentId: String?
-            let idempotencyKey: String?
-            let date: String?
-        }
-        return try await client.request("POST", "/api/v1/loans/\(id)/pay", body: Body(payFromAccountId: payFromAccountId, ledgerId: ledgerId, installmentId: installmentId, idempotencyKey: idempotencyKey, date: date))
-    }
-
-    // 信用卡账单
-    func creditCardBills() async throws -> [CreditCardBillItem] {
-        struct Res: Decodable { let items: [CreditCardBillItem] }
-        let res: Res = try await client.request("GET", "/api/v1/credit-card-bills")
-        return res.items
-    }
-
-    func createCreditCardBill(accountId: String, period: String, statementBalance: Int, minimumPayment: Int?, dueDate: String?) async throws {
-        struct Body: Encodable {
-            let period: String
-            let statementBalance: Int
-            let minimumPayment: Int?
-            let dueDate: String?
-        }
-        let _: ItemResponse<CreditCardBillItem> = try await client.request(
-            "POST",
-            "/api/v1/credit-cards/\(accountId)/bills",
-            body: Body(period: period, statementBalance: statementBalance, minimumPayment: minimumPayment, dueDate: dueDate)
-        )
-    }
-
-    func payCreditCardBill(id: String, payFromAccountId: String, payDate: String?) async throws {
-        struct Body: Encodable {
-            let payFromAccountId: String
-            let payDate: String?
-        }
-        let _: PayResponse = try await client.request("POST", "/api/v1/credit-card-bills/\(id)/pay", body: Body(payFromAccountId: payFromAccountId, payDate: payDate))
-    }
-
     // ---- 暂存导入（阶段 3）----
 
     // multipart 上传账单文件，返回创建的暂存任务（不直接写流水）
@@ -508,23 +454,6 @@ struct APIService {
         let res: ImportCommitResult = try await client.request("POST", "/api/v1/imports/jobs/\(id)/commit", query: [URLQueryItem(name: "ledgerId", value: ledgerId)])
         return res
     }
-}
-
-struct PayResponse: Decodable {
-    let ok: Bool
-    let transactionId: String?
-}
-
-struct LoanPayResponse: Decodable {
-    let ok: Bool
-    let replayed: Bool
-    let paidDate: String
-    let installment: Int
-    let installmentId: String
-    // 0 利率贷款的利息腿、或本金已还完的期次不生成流水，服务端返回 null
-    let principalTransactionId: String?
-    let interestTransactionId: String?
-    let paymentGroupId: String
 }
 
 // AppState 通过 AuthServicing 依赖认证能力（便于测试注入替身）

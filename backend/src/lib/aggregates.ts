@@ -1,6 +1,6 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { DB } from "../db/client.js";
-import { accounts, categories, loans, transactions } from "../db/schema.js";
+import { accounts, categories, transactions } from "../db/schema.js";
 import { currentYearMonth, daysInMonth, todayStr } from "./date.js";
 import { convert } from "./currency.js";
 import { config } from "../config.js";
@@ -25,44 +25,23 @@ export function computeAccountBalances(db: DB, _userId: string, ledgerId: string
   return map;
 }
 
-export interface AssetDebtSummary { assets: number; debts: number; net: number; }
+export interface NetAssetsSummary { assets: number; net: number; }
 
-// 资产负债拆分（基准币种）：资产=非负债账户净值+信用卡溢缴；负债=信用卡欠款；net=净值。
-// 归档账户不计入总资产/负债/净值。
-export function assetDebtSummary(db: DB, userId: string, ledgerId: string): AssetDebtSummary {
+// 账户净值（基准币）：非归档账户余额之和，借/贷已无负债域后的唯一口径。
+// 历史版本还返回 debts（信用卡欠款 + 贷款剩余本金），负债功能下线后一并移除。
+export function netAssetsSummary(db: DB, userId: string, ledgerId: string): NetAssetsSummary {
   const balances = computeAccountBalances(db, userId, ledgerId);
   const accts = db
     .select()
     .from(accounts)
     .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.isArchived, false)))
     .all();
-  let net = 0;
   let assets = 0;
-  let debts = 0;
   for (const a of accts) {
     const native = balances.get(a.id) ?? a.initialBalance;
-    const base = convert(db, userId, native, a.currency, config.baseCurrency);
-    net += base;
-    if (a.type === "credit") {
-      debts += convert(db, userId, Math.max(0, -native), a.currency, config.baseCurrency);
-      assets += convert(db, userId, Math.max(0, native), a.currency, config.baseCurrency);
-    } else if (a.type === "loan") {
-      // loan 类型账户的负债由 remainingPrincipal 表达，这里跳过账户循环避免重复计。
-      continue;
-    } else {
-      assets += base;
-    }
+    assets += convert(db, userId, native, a.currency, config.baseCurrency);
   }
-  // 贷款负债：以 remainingPrincipal 为负债口径（计划表缓存，定期与负债账户余额对账）。
-  // 不在上方把 loan 账户余额再算一遍，因此不会双重计负债。
-  // 必须按贷款自身币种换算成基准币：历史缺陷是直接原样累加，
-  // 导致一笔 $1000 的贷款被当成 ¥1000 计入 totalDebt/net（净资产虚高）。
-  const loanRows = db.select().from(loans).where(eq(loans.ledgerId, ledgerId)).all();
-  const loanDebt = loanRows.reduce(
-    (s, l) => s + convert(db, userId, l.remainingPrincipal, l.currency, config.baseCurrency),
-    0,
-  );
-  return { assets, debts: debts + loanDebt, net: assets - debts - loanDebt };
+  return { assets, net: assets };
 }
 
 export function monthRange(year: number, month: number): { from: string; to: string } {

@@ -54,9 +54,7 @@ struct Account: Codable, Identifiable, Hashable {
     var icon: String?
     var color: String?
     var isArchived: Bool
-    var isLiability: Bool?
     var balance: Int
-    var debt: Int?  // 负债账户当前欠款（本币正数），非负债账户为 0
     let createdAt: String
     var updatedAt: String?
 }
@@ -171,7 +169,6 @@ struct StatsSummary: Codable {
     let net: Int
     let balance: Int
     let totalAssets: Int?
-    let totalDebt: Int?
     let byCategory: [CategoryStat]
     let byAccount: [AccountStat]
     let daily: [DailyStat]
@@ -341,50 +338,6 @@ struct InvitationLine: Codable, Identifiable, Hashable {
 
 struct FamilyDetailResponse: Codable {
     let item: FamilyDetail
-}
-
-struct LiabilitySummary: Codable {
-    let totalDebt: Int
-    let creditCards: [CreditCardLiability]
-    let loans: [LoanItem]
-    let creditCardBills: [CreditCardBillItem]
-}
-
-struct CreditCardLiability: Codable, Identifiable, Hashable {
-    let accountId: String
-    let name: String
-    let debt: Int
-    let creditLimit: Int?
-    let billingDay: Int?
-    let repaymentDay: Int?
-    var id: String { accountId }
-}
-
-struct LoanItem: Codable, Identifiable, Hashable {
-    let id: String
-    let name: String
-    let type: String
-    var currency: String?
-    let remainingPrincipal: Int
-    let monthlyPayment: Int
-    let nextPaymentDate: String?
-    var accountId: String?
-    // 贷款负债账户（type=loan），其负余额 = 剩余本金
-    var liabilityAccountId: String?
-    var status: String?
-}
-
-struct CreditCardBillItem: Codable, Identifiable, Hashable {
-    let id: String
-    let accountId: String
-    let period: String
-    let statementBalance: Int
-    let minimumPayment: Int
-    let dueDate: String?
-    let paid: Bool
-    /// 卡的原币种（服务端 /liabilities 返回；兼容旧响应时可能缺失）。
-    /// 还款账户必须与卡同币种，否则服务端 400 CURRENCY_MISMATCH。
-    var currency: String?
 }
 
 struct ImportJob: Codable, Identifiable, Hashable {

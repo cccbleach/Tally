@@ -3,7 +3,8 @@
 > 本文件是共享账本 / 负债功能的设计过程记录，部分接口与现状不符：
 > `POST /families/:id/members` 直接加人已下线（410 `FAMILY_FLOW_REMOVED`，改为按昵称邀请）、
 > 账本切换实为 `POST /ledgers/switch`（`{ledgerId}`）、`GET /transactions/duplicates` 不存在。
-> **当前口径以 docs/api.md 与 docs/openapi.yaml 为准**，不要把本文当实施依据。
+> **负债域（贷款 / 信用卡 / 负债统计）已整体下线**：代码、接口与库表都已删除（migration 0025），
+> 本文的负债设计仅作历史记录。**当前口径以 docs/api.md 与 docs/openapi.yaml 为准**，不要把本文当实施依据。
 
 # Tally 家庭 / 去重 / 负债 优化计划
 

@@ -69,11 +69,6 @@
 
 | 错误码 | 场景 |
 |---|---|
-| `PAY_REQUIRED` / `BILL_PAID_IMMUTABLE` / `NOTHING_TO_UPDATE` | 信用卡账单的 `paid` 只能由 `/pay` 写入：直接改 `true`、把已还改回未还、或提交空 body 分别返回 |
-| `INVALID_PAY_ACCOUNT` | 还款/还款来源账户是信用卡或贷款负债账户；贷款还款来源等于其负债账户本身 |
-| `BILL_ALREADY_PAID` | 同一期账单重复还款（409，且不会产生第二套流水） |
-| `LOAN_AMOUNT_TOO_SMALL` | 贷款本金 < 期数（每期不足 1 分，会生成「0 元期次」的假还款计划） |
-| `INSTALLMENT_DEGENERATE` | 历史退化贷款（应还本金与利息均为 0）无法生成还款流水 |
 | `INVALID_YEAR` / `INVALID_MONTH` | `year`/`month` 查询参数越界（如 `month=13`），不再静默返回空统计 |
 
 ## 账户 Accounts
@@ -89,12 +84,12 @@
 - `type` 取值：`cash | bank | e-wallet | credit | loan | other`（与后端 `ACCOUNT_TYPES` 一致）
 - `currency` 为 3 位字母代码（`^[A-Za-z]{3}$`，大小写不敏感，落库统一大写）。非法值返回 400。
 - 账户余额 = 初始余额 + 收入 − 支出 + 转入 − 转出（**账户本位币**口径）
-- 信用卡（`credit`）为负债账户：返回 `isLiability=true`，`balance` 为账户本位币净额（欠款为负），
+
   `debt` 为当前未结清欠款且**已换算为基准币**（供客户端跨账户求和算净资产）
-- **改币种受限**：账户一旦被流水/贷款/信用卡账单引用，`PATCH /accounts/:id` 改 `currency` 返回
+- **改币种受限**：账户一旦被流水引用，`PATCH /accounts/:id` 改 `currency` 返回
   400 `ACCOUNT_CURRENCY_LOCKED`（否则历史金额会被重新解释成另一种币种）。需改请新建账户后迁移。
 - **跨币种暂不支持**：流水的 `currency` 必须与目标账户币种一致，否则 400 `CURRENCY_MISMATCH`。
-  该护栏覆盖创建、修改（含改挂账户）、导入、导入暂存与提交，以及贷款/还款币种一致性。
+  该护栏覆盖创建、修改（含改挂账户）、导入、导入暂存与提交。
 
 ## 分类 Categories
 
@@ -186,9 +181,9 @@
 | GET | /stats/trend?months=6 | `{months:[{year,month,income,expense}]}` |
 
 - `net = income - expense`；`balance` 为各账户余额按汇率折算到基准币种（默认 CNY）后的净值总和。
-- `totalAssets` 为不含负债的资产；`totalDebt` 为负债合计（信用卡未结清欠款 + 贷款剩余本金），
+- `totalAssets` 为非归档账户余额合计（负债域已下线，不再有 `totalDebt` 字段），
   **两部分均按各自币种汇率折算为基准币后求和**；`balance = totalAssets - totalDebt`（兼容字段，保持净值口径）。
-  不变量：同一账本下 `/stats/summary.totalDebt` 与 `/liabilities.totalDebt` 必须相等。
+  负债域已下线：账户不再有负债类型，统计也不再有 `totalDebt`（见「统计 Stats」）。
 - 账户级 `balance`（见账户接口）以该账户本位币计价；跨账户的 `income/expense/net/balance/byCategory/byAccount/daily` 均按汇率折算到基准币种，不再直接相加。
 - 汇率：优先用户级 → 全局 → 内置兜底；未知币种按 1:1 兜底。内置常见币种（USD/EUR/GBP/JPY/HKD/KRW/SGD/AUD/CAD）为人民币视角的近似参考值。
 - `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
@@ -219,32 +214,6 @@
 - 产品界面只暴露“个人账本 / 共享账本”；`family` 仅作为后端兼容的成员关系命名。
 - 账户/分类/流水/预算/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
 - 访问控制：个人账本仅创建者；共享账本仅活跃成员；越权返回 403。
-
-## 贷款 / 负债
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | /loans | 创建贷款（车贷/房贷/其他），自动生成等额本息还款计划 |
-| GET | /loans | 当前账本贷款列表 |
-| GET | /loans/:id | 贷款详情 + 还款计划 |
-| PATCH | /loans/:id | 更新贷款（名称/利率/扣款账户） |
-| — | — | 创建/还款时贷款币种必须与还款来源账户币种一致（创建期即校验，避免建出一笔无法偿还的贷款） |
-| DELETE | /loans/:id | 删除贷款：同一事务内清理还款计划与幂等记录、**归档**该贷款的负债账户、写审计；已产生的还款流水保留（真实资金流水不随贷款删除消失） |
-| POST | /loans/:id/pay | 标记一期已还，自动更新剩余本金。响应中的 `principalTransactionId`/`interestTransactionId` 可能为 `null`：0 利率贷款的利息为 0、或本金已还完时不生成对应流水（0 元流水无意义且被数据库拒绝） |
-| GET | /liabilities | 负债总览（返回 `baseCurrency` + `totalDebt` + `creditCards[]` + `loans[]` + `creditCardBills[]`；金额均为基准币） |
-| POST | /credit-cards/:accountId/bills | 创建信用卡账单（还款账户币种必须与信用卡一致，否则 400 `CURRENCY_MISMATCH`） |
-| POST | /credit-card-bills/:id/pay | 还该期账单：生成「还款账户 → 信用卡」转账并把账单标记已还（重复还款 409 `BILL_ALREADY_PAID`；还款账户不能是信用卡或贷款账户） |
-| GET | /credit-card-bills | 当前账本信用卡账单列表（金额为基准币，另附 `*Native` 原币值） |
-| PATCH | /credit-card-bills/:id | `paid` 是还款派生的只读状态，**不可修改**：改 `true` 返回 400 `PAY_REQUIRED`（必须走 `/pay` 生成转账），改 `false` 返回 400 `BILL_PAID_IMMUTABLE`（否则可「取消已还 → 再还一次」重复扣款）；同值提交为幂等空操作 200，空 body 返回 400 `NOTHING_TO_UPDATE` |
-
-- 净资产 = 资产 −（信用卡欠款 + 贷款剩余本金）
-- 账户接口的信用卡支持 `creditLimit/billingDay/repaymentDay`
-
-## 审计日志
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /audit-logs?entityType&entityId | 当前账本的审计记录（贷款/家庭/导入/信用卡账单等关键写操作；`before/after` 为 JSON） |
 
 ## 账单导入去重
 

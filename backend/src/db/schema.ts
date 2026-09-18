@@ -173,95 +173,15 @@ export const accounts = sqliteTable(
     icon: text("icon"),
     color: text("color"),
     isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
-    creditLimit: integer("credit_limit"),       // 信用卡额度（分）
-    billingDay: integer("billing_day"),         // 账单日 1-28
-    repaymentDay: integer("repayment_day"),     // 还款日 1-28
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(), // 乐观锁：PATCH 可带 expectedUpdatedAt 比对
   },
   (t) => [index("idx_accounts_user").on(t.userId), index("idx_accounts_ledger").on(t.ledgerId)],
 );
 
-export const loans = sqliteTable(
-  "loans",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    ledgerId: text("ledger_id"),
-    name: text("name").notNull(),
-    type: text("type").notNull().default("other"), // car | mortgage | other
-    currency: text("currency").notNull().default("CNY"),
-    principal: integer("principal").notNull(),      // 分
-    annualRate: real("annual_rate").notNull().default(0),
-    termMonths: integer("term_months").notNull(),
-    startDate: text("start_date").notNull(),
-    monthlyPayment: integer("monthly_payment").notNull().default(0),
-    remainingPrincipal: integer("remaining_principal").notNull(),
-    accountId: text("account_id"),                  // 还款来源账户（银行卡/现金）
-    liabilityAccountId: text("liability_account_id"), // 贷款负债账户（type=loan）
-    repaymentMethod: text("repayment_method").notNull().default("equal_installment"),
-    status: text("status").notNull().default("active"), // active | paid_off | closed
-    nextPaymentDate: text("next_payment_date"),
-    createdAt: text("created_at").notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (t) => [index("idx_loans_ledger").on(t.ledgerId)],
-);
 
-export const loanPayments = sqliteTable(
-  "loan_payments",
-  {
-    id: text("id").primaryKey(),
-    loanId: text("loan_id").notNull(),
-    installmentNo: integer("installment_no").notNull(),
-    dueDate: text("due_date").notNull(),
-    principalDue: integer("principal_due").notNull(),
-    interestDue: integer("interest_due").notNull(),
-    principalPaid: integer("principal_paid").notNull().default(0),
-    interestPaid: integer("interest_paid").notNull().default(0),
-    total: integer("total").notNull(),
-    paid: integer("paid", { mode: "boolean" }).notNull().default(false),
-    paidAt: text("paid_at"),
-    paymentTransactionId: text("payment_transaction_id"),
-    status: text("status").notNull().default("pending"), // pending | paid
-  },
-  (t) => [
-    index("idx_loan_payments_loan").on(t.loanId),
-    uniqueIndex("uniq_loan_payment_installment").on(t.loanId, t.installmentNo),
-  ],
-);
 
-export const creditCardBills = sqliteTable(
-  "credit_card_bills",
-  {
-    id: text("id").primaryKey(),
-    accountId: text("account_id").notNull(),
-    period: text("period").notNull(), // YYYY-MM
-    statementBalance: integer("statement_balance").notNull(),
-    minimumPayment: integer("minimum_payment").notNull().default(0),
-    dueDate: text("due_date"),
-    paid: integer("paid", { mode: "boolean" }).notNull().default(false),
-  },
-  (t) => [index("idx_cc_bills_account").on(t.accountId)],
-);
 
-export const loanPaymentIdempotency = sqliteTable(
-  "loan_payment_idempotency",
-  {
-    id: text("id").primaryKey(),
-    actorUserId: text("actor_user_id").notNull(),
-    loanId: text("loan_id").notNull(),
-    idempotencyKey: text("idempotency_key").notNull(),
-    requestFingerprint: text("request_fingerprint").notNull(),
-    status: text("status").notNull().default("completed"), // completed
-    resultJson: text("result_json").notNull(),
-    createdAt: text("created_at").notNull(),
-  },
-  (t) => [
-    uniqueIndex("uniq_loan_pay_idem").on(t.actorUserId, t.loanId, t.idempotencyKey),
-    index("idx_loan_pay_idem_loan").on(t.loanId),
-  ],
-);
 
 export const categories = sqliteTable(
   "categories",
@@ -447,9 +367,6 @@ export type UserRow = typeof users.$inferSelect;
 export type LedgerRow = typeof ledgers.$inferSelect;
 export type FamilyRow = typeof families.$inferSelect;
 export type FamilyMemberRow = typeof familyMembers.$inferSelect;
-export type LoanRow = typeof loans.$inferSelect;
-export type LoanPaymentRow = typeof loanPayments.$inferSelect;
-export type CreditCardBillRow = typeof creditCardBills.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type CategoryRow = typeof categories.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;

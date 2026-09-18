@@ -486,42 +486,6 @@ test("多币种流水按汇率折算到基准币种（不直接相加）", async
   assert.equal(s.json().expense, expenseBefore + 250, "外币支出应按汇率折算为基准币种");
 });
 
-test("信用卡负债方向与资产负债拆分正确", async () => {
-  const card = await req("POST", "/api/v1/accounts", {
-    name: "信用卡",
-    type: "credit",
-    currency: "CNY",
-    initialBalance: 0,
-  });
-  assert.equal(card.statusCode, 200, card.body);
-  const cardId = card.json().item.id;
-  assert.equal(card.json().item.isLiability, true, "信用卡应标记为负债账户");
-
-  // 刷卡消费 3000，欠款应为 +3000（负债方向），净值口径余额为 -3000
-  const tx = await req("POST", "/api/v1/transactions", {
-    type: "expense",
-    amount: 3000,
-    accountId: cardId,
-    categoryId: expCat,
-    currency: "CNY",
-    date: todayStr(),
-  });
-  assert.equal(tx.statusCode, 200, tx.body);
-
-  const list = await req("GET", "/api/v1/accounts");
-  const c = (list.json().items as Array<{ id: string; balance: number; debt: number; isLiability: boolean }>).find(
-    (a) => a.id === cardId,
-  )!;
-  assert.equal(c.isLiability, true);
-  assert.equal(c.balance, -3000, "净值口径余额为负");
-  assert.equal(c.debt, 3000, "欠款方向应为正数");
-
-  const s = await req("GET", "/api/v1/stats/summary");
-  assert.equal(s.statusCode, 200, s.body);
-  assert.ok(s.json().totalDebt >= 3000, "统计应披露负债");
-  assert.ok(s.json().totalAssets >= 0, "统计应披露资产");
-});
-
 test("账本隔离：非默认账本的数据不出现在默认 API 中", async () => {
   const u = db.select().from(users).where(eq(users.phone, "+8613800000001")).get()!;
   const otherLedgerId = randomUUID();
@@ -769,164 +733,6 @@ test("跨来源去重：同一笔在不同来源（不同 externalId）导入只
   assert.ok(second.json().suspectedDuplicates.length >= 1, "应返回疑似重复信息");
 });
 
-test("贷款创建、还款本金/利息拆分、转账与负债统计", async () => {
-  // 还款来源银行卡
-  const bank = await req("POST", "/api/v1/accounts", {
-    name: "还款卡",
-    type: "bank",
-    currency: "CNY",
-    initialBalance: 5000000,
-  });
-  assert.equal(bank.statusCode, 200, bank.body);
-  const bankId = bank.json().item.id as string;
-
-  // 先创建一个 loan 类型负债账户
-  const loanAccount = await req("POST", "/api/v1/accounts", {
-    name: "房贷负债",
-    type: "loan",
-    currency: "CNY",
-    initialBalance: 0,
-  });
-  assert.equal(loanAccount.statusCode, 200, loanAccount.body);
-  const loanAccountId = loanAccount.json().item.id as string;
-
-  // 贷款不能绑定普通银行卡作为贷款负债账户（必须 loan 类型）
-  const badBind = await req("POST", "/api/v1/loans", {
-    name: "非法绑定",
-    type: "mortgage",
-    principal: 100000,
-    annualRate: 4.9,
-    termMonths: 12,
-    startDate: "2026-01-01",
-    liabilityAccountId: bankId,
-  });
-  assert.equal(badBind.statusCode, 400, "把银行卡绑定为贷款负债账户应失败");
-
-  const created = await req("POST", "/api/v1/loans", {
-    name: "房贷",
-    type: "mortgage",
-    principal: 1_000_000, // 1万元（分）
-    annualRate: 4.9,
-    termMonths: 12,
-    startDate: "2026-01-01",
-    accountId: bankId,
-    liabilityAccountId: loanAccountId,
-  });
-  assert.equal(created.statusCode, 200, created.body);
-  const loanId = created.json().item.id as string;
-  assert.ok(created.json().item.monthlyPayment > 0);
-  assert.equal(created.json().item.liabilityAccountId, loanAccountId);
-
-  const detail = await req("GET", "/api/v1/loans/" + loanId);
-  assert.equal(detail.statusCode, 200, detail.body);
-  assert.equal(detail.json().schedule.length, 12);
-
-  const firstPayDue = detail.json().schedule[0] as { principalDue: number; interestDue: number; total: number; installmentNo: number };
-  const principalPart = firstPayDue.principalDue;
-  const interestPart = firstPayDue.interestDue;
-  assert.ok(principalPart > 0 && interestPart > 0, "首期应含本金与利息");
-
-  // 还款：用银行卡还第一期（偿还下一期必须携带幂等键）
-  const pay = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-1" });
-  assert.equal(pay.statusCode, 200, pay.body);
-  const payBody = pay.json();
-  assert.ok(payBody.paymentGroupId, "还款应返回 paymentGroupId");
-  assert.ok(payBody.principalTransactionId && payBody.interestTransactionId, "应返回本金/利息两条流水 id");
-
-  const txs = await req("GET", "/api/v1/transactions");
-  const items = txs.json().items as Array<{ id: string; accountId: string; transferToAccountId: string | null; type: string; sourceType: string; amount: number; paymentGroupId: string | null }>;
-  // 本金转账：银行卡 → 贷款负债账户，不计入收支
-  const principalTx = items.find((t) => t.id === payBody.principalTransactionId);
-  assert.ok(principalTx, "本金转账应存在");
-  assert.equal(principalTx!.type, "transfer");
-  assert.equal(principalTx!.accountId, bankId);
-  assert.equal(principalTx!.transferToAccountId, loanAccountId, "本金转账目标为贷款负债账户");
-  assert.equal(principalTx!.amount, principalPart, "本金转账金额为本金部分");
-  assert.equal(principalTx!.paymentGroupId, payBody.paymentGroupId, "本金与利息共用 paymentGroupId");
-  // 利息支出：银行卡 → 支出，计入消费
-  const interestTx = items.find((t) => t.id === payBody.interestTransactionId);
-  assert.ok(interestTx, "利息支出应存在");
-  assert.equal(interestTx!.type, "expense");
-  assert.equal(interestTx!.accountId, bankId);
-  assert.equal(interestTx!.amount, interestPart, "利息支出金额为利息部分");
-  assert.equal(interestTx!.paymentGroupId, payBody.paymentGroupId, "利息与本金共用 paymentGroupId");
-
-  const liabilities = await req("GET", "/api/v1/liabilities");
-  assert.equal(liabilities.statusCode, 200, liabilities.body);
-  const loan = (liabilities.json().loans as Array<{ id: string; remainingPrincipal: number; liabilityAccountId: string | null }>).find((l) => l.id === loanId);
-  assert.ok(loan, "负债列表应包含贷款");
-  assert.equal(loan!.liabilityAccountId, loanAccountId);
-  assert.equal(loan!.remainingPrincipal, 1_000_000 - principalPart, "剩余本金只减少本金部分");
-
-  // 审计日志记录本次还款（含本金/利息拆分）
-  const audit = await req("GET", "/api/v1/audit-logs?entityType=loan&entityId=" + loanId);
-  assert.equal(audit.statusCode, 200, audit.body);
-  const payAudit = (audit.json().items as Array<{ action: string; after: { principal: number; interest: number; paymentGroupId: string } }>).find((a) => a.action === "loan_pay");
-  assert.ok(payAudit, "审计日志应包含 loan_pay 记录");
-  assert.equal(payAudit!.after.principal, principalPart);
-  assert.equal(payAudit!.after.interest, interestPart);
-  assert.equal(payAudit!.after.paymentGroupId, payBody.paymentGroupId);
-
-  // 资产负债恒等：银行减少总月供，负债只减少本金；利息计入支出、本金不计入支出
-  // （用增量断言，避免测试库中其他月份/历史流水干扰绝对数值）
-  const summaryUrl = `/api/v1/stats/summary?year=${todayStr().slice(0, 4)}&month=${Number(todayStr().slice(5, 7))}`;
-  const second = detail.json().schedule[1] as { principalDue: number; interestDue: number };
-  const beforePay = (await req("GET", summaryUrl)).json();
-  const txsBefore = (await req("GET", "/api/v1/transactions")).json().items.length as number;
-  const paySecond = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-2" });
-  assert.equal(paySecond.statusCode, 200, paySecond.body);
-  const s = (await req("GET", summaryUrl)).json();
-  const txsAfter = (await req("GET", "/api/v1/transactions")).json().items.length as number;
-  assert.equal(s.expense - beforePay.expense, second.interestDue, "第二期利息应计入当月支出，本金不计入");
-  assert.equal(txsAfter - txsBefore, 2, "第二期仍只新增 2 条流水（本金+利息）");
-  const remainingAfterSecond = 1_000_000 - principalPart - second.principalDue;
-  // 用增量验证负债（避免测试库中其他历史负债干扰绝对数值）
-  assert.equal(s.totalDebt, beforePay.totalDebt - second.principalDue, "负债随还款只减少本金部分");
-
-  // 还款后负债账户余额应等于 -(剩余本金)
-  const accountsRes = await req("GET", "/api/v1/accounts");
-  const loanAcctOut = (accountsRes.json().items as Array<{ id: string; balance: number; isLiability: boolean }>).find((a) => a.id === loanAccountId);
-  assert.ok(loanAcctOut, "负债账户应存在");
-  assert.equal(loanAcctOut!.isLiability, true, "loan 类型账户标记为负债");
-  assert.equal(loanAcctOut!.balance, -remainingAfterSecond, "负债账户余额 = -(剩余本金)，不重复计负债");
-
-  // 继续还完全部剩余期次后返回已还清；再还返回 400 LOAN_PAID_OFF
-  for (let i = 0; i < 10; i++) {
-    const r = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-" + (i + 3) });
-    assert.equal(r.statusCode, 200, `补还第 ${i + 3} 期失败: ${r.body}`);
-  }
-  const over = await req("POST", "/api/v1/loans/" + loanId + "/pay", { payFromAccountId: bankId, date: todayStr(), idempotencyKey: "api-test-pay-13" });
-  assert.equal(over.statusCode, 400, "还清后再还款应返回 400");
-  assert.match(over.body, /LOAN_PAID_OFF/);
-});
-
-test("贷款不传负债账户时自动创建 loan 类型账户", async () => {
-  const bank = await req("POST", "/api/v1/accounts", {
-    name: "还款卡2",
-    type: "bank",
-    currency: "CNY",
-    initialBalance: 1000000,
-  });
-  const bankId = bank.json().item.id as string;
-  const created = await req("POST", "/api/v1/loans", {
-    name: "车贷",
-    type: "car",
-    principal: 500000,
-    annualRate: 0,
-    termMonths: 10,
-    startDate: "2026-01-01",
-    accountId: bankId,
-  });
-  assert.equal(created.statusCode, 200, created.body);
-  const liabilityAccountId = created.json().item.liabilityAccountId as string;
-  assert.ok(liabilityAccountId, "应自动创建负债账户");
-  const accountsRes = await req("GET", "/api/v1/accounts");
-  const acct = (accountsRes.json().items as Array<{ id: string; type: string; balance: number }>).find((a) => a.id === liabilityAccountId);
-  assert.ok(acct, "自动创建的负债账户应存在");
-  assert.equal(acct!.type, "loan");
-  assert.equal(acct!.balance, -500000, "自动创建时负余额 = 贷款本金");
-});
-
 test("导入 force=true 可强制保留重复项", async () => {
   const item = { date: todayStr(), amount: 321, type: "expense", note: "重复保留测试", externalId: "force-001" };
   const first = await req("POST", "/api/v1/transactions/import", { mode: "items", items: [item] });
@@ -941,108 +747,6 @@ test("导入 force=true 可强制保留重复项", async () => {
   assert.equal(dup.json().imported, 1, "force=true 应强制新增");
 });
 
-test("信用卡账单创建、还款生成转账并标记已还", async () => {
-  const credit = await req("POST", "/api/v1/accounts", {
-    name: "信用卡账单测试",
-    type: "credit",
-    currency: "CNY",
-    initialBalance: 0,
-  });
-  assert.equal(credit.statusCode, 200, credit.body);
-  const accountId = credit.json().item.id as string;
-
-  const bank = await req("POST", "/api/v1/accounts", {
-    name: "还款银行卡",
-    type: "bank",
-    currency: "CNY",
-    initialBalance: 100000,
-  });
-  assert.equal(bank.statusCode, 200, bank.body);
-  const bankId = bank.json().item.id as string;
-
-  const create = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
-    period: "2026-08",
-    statementBalance: 10000,
-    minimumPayment: 1000,
-    dueDate: "2026-08-25",
-  });
-  assert.equal(create.statusCode, 200, create.body);
-
-  const bills = await req("GET", "/api/v1/credit-card-bills");
-  assert.equal(bills.statusCode, 200, bills.body);
-  const bill = (bills.json().items as Array<{ id: string; accountId: string }>).find((b) => b.accountId === accountId);
-  assert.ok(bill, "应能查到新账单");
-
-  // 直接 PATCH paid=true 必须被拒绝（不能只改已还状态）
-  const reject = await req("PATCH", `/api/v1/credit-card-bills/${bill!.id}`, { paid: true });
-  assert.equal(reject.statusCode, 400, "直接标记已还应被拒绝");
-
-  // 走还款接口：生成还款账户→信用卡的转账
-  const pay = await req("POST", `/api/v1/credit-card-bills/${bill!.id}/pay`, {
-    payFromAccountId: bankId,
-    payDate: "2026-08-26",
-  });
-  assert.equal(pay.statusCode, 200, pay.body);
-  assert.ok(pay.json().transactionId, "应返回生成的转账流水 id");
-
-  // 流水中应有该笔转账（转出为银行卡）
-  const txs = await req("GET", "/api/v1/transactions");
-  assert.equal(txs.statusCode, 200, txs.body);
-  const transfer = (txs.json().items as Array<{ id: string; type: string; accountId: string; transferToAccountId: string; amount: number }>).find(
-    (t) => t.id === pay.json().transactionId,
-  );
-  assert.ok(transfer, "应能查到还款转账");
-  assert.equal(transfer!.type, "transfer");
-  assert.equal(transfer!.accountId, bankId);
-  assert.equal(transfer!.transferToAccountId, accountId);
-  assert.equal(transfer!.amount, 10000);
-
-  // 账单已标记为已还
-  const after = await req("GET", "/api/v1/credit-card-bills");
-  const paidBill = (after.json().items as Array<{ id: string; paid: boolean }>).find((b) => b.id === bill!.id);
-  assert.equal(paidBill!.paid, true, "还款后账单应为已还");
-
-  // 再次还款应 409
-  const again = await req("POST", `/api/v1/credit-card-bills/${bill!.id}/pay`, { payFromAccountId: bankId });
-  assert.equal(again.statusCode, 409, "已还账单不能重复还款");
-});
-
-test("越权防护：B 看不到 A 账本的信用卡账单", async () => {
-  const regA = await smsRegister(app, "13820000001", "信用卡甲");
-  const hA = { authorization: "Bearer " + regA.token };
-
-  const regB = await smsRegister(app, "13820000002", "信用卡乙");
-  const hB = { authorization: "Bearer " + regB.token };
-
-  const acc = await app.inject({
-    method: "POST",
-    url: "/api/v1/accounts",
-    headers: hA,
-    payload: { name: "A的信用卡", type: "credit", currency: "CNY", initialBalance: 0 },
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-  const accountId = acc.json().item.id as string;
-
-  const bill = await app.inject({
-    method: "POST",
-    url: `/api/v1/credit-cards/${accountId}/bills`,
-    headers: hA,
-    payload: { period: "2026-09", statementBalance: 88800, minimumPayment: 8880, dueDate: "2026-09-25" },
-  });
-  assert.equal(bill.statusCode, 200, bill.body);
-
-  const liabB = await app.inject({ method: "GET", url: "/api/v1/liabilities", headers: hB });
-  assert.equal(liabB.statusCode, 200, liabB.body);
-  const billsFromLiab = liabB.json().creditCardBills ?? [];
-  assert.equal(billsFromLiab.length, 0, "B 的负债中心不应出现任何他人的信用卡账单");
-
-  const listB = await app.inject({ method: "GET", url: "/api/v1/credit-card-bills", headers: hB });
-  assert.equal(listB.statusCode, 200, listB.body);
-  const itemsB = listB.json().items ?? [];
-  assert.equal(itemsB.length, 0, "B 的账单列表不应包含 A 的账单");
-  assert.ok(!itemsB.some((x) => x.accountId === accountId), "B 不应看到 A 的账户账单");
-});
-
 test("健康检查：live 只探活，ready 校验数据库与迁移", async () => {
   const live = await app.inject({ method: "GET", url: "/health/live" });
   assert.equal(live.statusCode, 200, live.body);
@@ -1051,30 +755,6 @@ test("健康检查：live 只探活，ready 校验数据库与迁移", async () 
   const ready = await app.inject({ method: "GET", url: "/health/ready" });
   assert.equal(ready.statusCode, 200, ready.body);
   assert.ok(ready.json().migrationsApplied >= 1, "应报告已应用的迁移数量");
-});
-
-test("信用卡账单：同一账户同一期不可重复创建（409）", async () => {
-  const acc = await req("POST", "/api/v1/accounts", {
-    name: "信用卡去重测试",
-    type: "credit",
-    currency: "CNY",
-    initialBalance: 0,
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-  const accountId = acc.json().item.id as string;
-
-  const first = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
-    period: "2026-10",
-    statementBalance: 5000,
-  });
-  assert.equal(first.statusCode, 200, first.body);
-
-  const dup = await req("POST", `/api/v1/credit-cards/${accountId}/bills`, {
-    period: "2026-10",
-    statementBalance: 6000,
-  });
-  assert.equal(dup.statusCode, 409, "同一期重复创建应返回 409");
-  assert.equal(dup.json().error.code, "BILL_PERIOD_EXISTS");
 });
 
 test("导入暂存流程：建任务→预览→提交，不静默丢弃", async () => {
@@ -1216,7 +896,8 @@ test("OpenAPI 契约与已注册路由集合相等（双向差集为空）", asy
     [],
     "以下契约端点并未在服务端注册（文档写了不存在的接口）：\n  " + extraInSpec.join("\n  "),
   );
-  assert.ok(registered.size >= 70, "路由数量异常偏少，可能解析出错: " + registered.size);
+  // 下限只用来抓「路由表解析失败」，不锁具体条数（负债域下线后从 77 → 69）
+  assert.ok(registered.size >= 60, "路由数量异常偏少，可能解析出错: " + registered.size);
 });
 
 test("OpenAPI 关键契约细节：公开端点免鉴权 + 账户类型枚举与实现一致", async () => {

@@ -50,7 +50,7 @@ function httpPost(port: number, path: string, token: string | null, body: unknow
 
 function spawnServer(): Promise<{ worker: Worker; port: number }> {
   return new Promise((resolvePromise, reject) => {
-    const worker = new Worker(new URL("./loanConcWorker.cjs", import.meta.url), {
+    const worker = new Worker(new URL("./concurrencyWorker.cjs", import.meta.url), {
       workerData: { dbFile, jwtSecret: JWT_SECRET },
       execArgv: ["--require", tsxCjsRequireHook],
     });

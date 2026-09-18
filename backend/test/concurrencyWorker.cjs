@@ -1,4 +1,5 @@
 // 并发测试专用 worker（CommonJS 版）：在独立线程中启动一个真实的 Fastify App + 独立 SQLite 连接。
+// 被 concurrencyRegression.test.ts 等并发用例复用（原名 loanConcWorker，贷款域下线后改名）。
 //
 // 为什么是 .cjs 而不是 .ts：
 //   测试/开发环境由 tsx 注入 ESM loader（--import loader.mjs），worker 线程继承后，
@@ -9,7 +10,7 @@
 //   因此**不存在**上述 FD 告警；同时仍能用 require() 加载 TypeScript 源码（显式 .ts 扩展）。
 //
 // 两个 worker 各自监听随机端口，主测试线程同时对两者发起真正并发的 HTTP 请求，
-// 以验证数据库级幂等认领（UNIQUE 索引）在真实并发下的行为。
+// 以验证数据库级约束（UNIQUE 索引 / 条件更新）在真实并发下的行为。
 "use strict";
 const { parentPort, workerData } = require("node:worker_threads");
 // 显式 .ts 扩展：tsx 的 CJS require 钩子（tsx/cjs）会按 TS 编译加载；不写 .js 是为了

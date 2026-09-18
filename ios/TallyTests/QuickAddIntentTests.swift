@@ -12,7 +12,7 @@ final class QuickAddIntentTests: XCTestCase {
 
     private func makeAccount(id: String = "acc-1", name: String = "微信钱包", currency: String = "CNY", archived: Bool = false) -> Account {
         Account(id: id, name: name, type: "e-wallet", currency: currency, initialBalance: 0,
-                icon: nil, color: nil, isArchived: archived, isLiability: false, balance: 0, debt: 0,
+                icon: nil, color: nil, isArchived: archived, balance: 0,
                 createdAt: "2026-01-01T00:00:00Z")
     }
 

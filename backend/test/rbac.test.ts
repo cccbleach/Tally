@@ -100,28 +100,6 @@ test("A 创建家庭、按昵称邀请 B，B 接受后 member 可写共享账本
   });
   assert.equal(recurring.statusCode, 200, "member 创建周期账单应成功: " + recurring.body);
 
-  // member 可写：贷款
-  const loanAcc = await api(hB, "POST", "/api/v1/accounts", { name: "家庭借款", type: "loan", currency: "CNY", ledgerId: familyLedger });
-  const loan = await api(hB, "POST", "/api/v1/loans", {
-    name: "房贷",
-    type: "mortgage",
-    principal: 1000000,
-    annualRate: 4,
-    termMonths: 360,
-    startDate: todayStr(),
-    liabilityAccountId: loanAcc.json().item.id,
-    ledgerId: familyLedger,
-  });
-  assert.equal(loan.statusCode, 200, "member 创建贷款应成功: " + loan.body);
-
-  // member 可写：信用卡账单
-  const creditCard = await api(hB, "POST", "/api/v1/accounts", { name: "家庭卡", type: "credit", currency: "CNY", ledgerId: familyLedger });
-  const bill = await api(hB, "POST", `/api/v1/credit-cards/${creditCard.json().item.id}/bills`, {
-    period: "2026-08",
-    statementBalance: 1000,
-    ledgerId: familyLedger,
-  });
-  assert.equal(bill.statusCode, 200, "member 创建信用卡账单应成功: " + bill.body);
 
   // member 可写：导入任务
   const imp = await api(hB, "POST", "/api/v1/imports/jobs", {
