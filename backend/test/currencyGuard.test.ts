@@ -197,4 +197,3 @@ test("导入暂存：明细改挂外币账户时提交仍被拒绝", async () =>
   assert.equal(patched.statusCode, 400, "改挂外币账户必须被拒绝: " + patched.body);
   assert.equal(patched.json().error.code, "CURRENCY_MISMATCH");
 });
-

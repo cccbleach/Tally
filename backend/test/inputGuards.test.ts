@@ -90,4 +90,3 @@ test("year/month 查询参数：非法值返回 400 而不是空统计", async (
   assert.equal((await req("GET", "/api/v1/stats/summary")).statusCode, 200);
   assert.equal((await req("GET", "/api/v1/budgets?year=2026&month=1")).statusCode, 200);
 });
-
