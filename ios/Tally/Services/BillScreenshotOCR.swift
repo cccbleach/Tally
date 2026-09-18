@@ -20,16 +20,24 @@ enum BillScreenshotOCR {
         var type: String  // "expense" | "income"
         var merchant: String?
         var isSuccessful: Bool
+        /// 截图上识别到的原始状态文本（如「支付失败」「已取消」「待付款」）。
+        /// 非成功页必须把真实状态写进合成文本：服务端只拦「状态非空且不含成功」的行，
+        /// 历史上这里留空字符串，等于让失败/取消的截图也进了账。
+        var statusText: String?
     }
 
     enum OCRError: LocalizedError {
         case noText
         case noAmount
+        /// 识别到的是失败/取消/待付款页（statusText 为截图上识别到的原始状态）
+        case notSuccessfulPage(String?)
 
         var errorDescription: String? {
             switch self {
             case .noText: return "截图里没有识别到文字，请确认是支付成功页截图"
             case .noAmount: return "没能从截图中识别出金额，请换一张更清晰的支付截图"
+            case .notSuccessfulPage(let status):
+                return "这张截图不是支付成功页（识别为「\(status ?? "非成功交易")」），未导入"
             }
         }
     }
@@ -103,14 +111,38 @@ enum BillScreenshotOCR {
             ? "income" : "expense"
 
         let merchant = merchantFrom(lines: lines)
+        let statusText = statusFrom(lines: lines)
+
+        // 成功判定：**否定标记优先**。
+        // 只看「含成功」会把「支付未成功」「退款成功」这类页面判成成功页并记成支出；
+        // 反过来（把成功页判成失败页）只是少导入一条，用户可从预览里补，代价小得多。
+        let negativeMarkers = ["失败", "未成功", "已取消", "已关闭", "待付款", "处理中", "退款"]
+        let hasNegative = negativeMarkers.contains { joined.contains($0) }
+        let isSuccessful = !hasNegative
+            && (joined.contains("成功") || joined.contains("已支付") || joined.contains("已收账"))
 
         return RecognizedBill(
             occurredAt: dateFrom(lines: lines, now: now),
             minorUnits: minorUnits,
             type: type,
             merchant: merchant,
-            isSuccessful: joined.contains("成功") || joined.contains("已支付") || joined.contains("已收账")
+            isSuccessful: isSuccessful,
+            statusText: statusText
         )
+    }
+
+    /// 状态行识别：命中任一状态关键词的整行即认为是状态行（「支付失败」「已取消」「待付款」…）。
+    /// 识别不到就返回 nil，由调用方决定兜底文本。
+    private static func statusFrom(lines: [String]) -> String? {
+        let keywords = ["支付成功", "支付失败", "已支付", "已收账", "已取消", "待付款", "处理中", "失败", "取消"]
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.count <= 20 else { continue }
+            if keywords.contains(where: { trimmed.contains($0) }) {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     /// 整行只有金额（可带正负号与 ¥/￥ 前缀）："−25.00" / "¥1,234.50"。
@@ -217,7 +249,15 @@ enum BillScreenshotOCR {
         let merchant = sanitizeText(bill.merchant ?? "截图识别")
         let type = bill.type == "income" ? "收入" : "支出"
         let amount = Currencies.cny.decimalString(minor)
-        let status = bill.isSuccessful ? "支付成功" : ""
+        // 服务端的放行规则是「状态非空且不含『成功』→ 丢弃」，两个方向都要照顾：
+        //   - 成功页：必须写成含「成功」的文本（识别到的原始状态可能是「已支付」，不含「成功」，
+        //     直接透传反而会被服务端丢掉）；
+        //   - 非成功页：写真实状态（「支付失败」…）；识别不到时用「状态未识别」兜底，
+        //     兜底文案本身绝不能含「成功」，否则等于放行。
+        // 历史缺陷：非成功页写空字符串，而空状态不受该规则约束 → 失败截图被当支出入账。
+        let status = bill.isSuccessful
+            ? "支付成功"
+            : (bill.statusText.map { $0.contains("成功") ? "交易状态异常" : $0 } ?? "状态未识别")
         let externalId = syntheticExternalId(bill: bill, occurredAt: occurredAt, salt: fileNameSalt)
 
         let header = "交易时间,交易单号,商品,收/支,金额,当前状态"

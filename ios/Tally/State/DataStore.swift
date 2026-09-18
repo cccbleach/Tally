@@ -40,9 +40,15 @@ final class DataStore {
     /// 先清空内存数据，避免把上一个用户/账本的数据带进新界面，再切换缓存命名空间。
     func setContext(userId: String?, ledgerId: String?) {
         self.userId = userId
-        self.ledgerId = ledgerId
+        // 冷启动（含离线冷启动）时 ledgerId 还是 nil：用该用户上次使用的账本兜底，
+        // 否则命名空间会算成 "default"，而缓存实际存在 "<ledgerId>" 分区下 → 读到空数据。
+        let effectiveLedger = ledgerId ?? userId.flatMap { SessionIdentityCache.lastLedgerId(forUser: $0) }
+        self.ledgerId = effectiveLedger
+        if let userId, let effectiveLedger {
+            SessionIdentityCache.rememberLedger(userId: userId, ledgerId: effectiveLedger)
+        }
         let u = userId ?? "anon"
-        let l = ledgerId ?? (userId == nil ? "anon" : "default")
+        let l = effectiveLedger ?? (userId == nil ? "anon" : "default")
         LocalCache.setNamespace("u-\(u)-l-\(l)")
         clearState()
     }

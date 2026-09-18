@@ -214,6 +214,11 @@ struct StagedImportView: View {
             guard bill.minorUnits != nil, bill.minorUnits! > 0 else {
                 throw BillScreenshotOCR.OCRError.noAmount
             }
+            // 只接受支付成功页：失败/取消/待付款的截图不能当支出入账（服务端也会按状态丢弃，
+            // 这里提前拦是为了给出可读提示，而不是让用户面对一个「已识别但全是无效项」的空任务）
+            guard bill.isSuccessful else {
+                throw BillScreenshotOCR.OCRError.notSuccessfulPage(bill.statusText)
+            }
             let text = BillScreenshotOCR.synthesizeBillText(bill)
             let created = try await APIService.shared.uploadImportData(
                 name: BillScreenshotOCR.suggestedFileName(),

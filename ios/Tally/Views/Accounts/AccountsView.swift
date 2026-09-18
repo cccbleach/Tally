@@ -214,7 +214,13 @@ struct AccountFormView: View {
     }
 
     private func save() async {
-        let balance = Money.minorUnits(fromInput: initialBalance, currency: currency) ?? 0
+        // 解析失败必须报错：`?? 0` 会让「12.345」（CNY 只允许 2 位小数）静默变成 0 元账户，
+        // 用户以为存了余额、实际记成 0，属于不可见的账实不符。
+        let trimmedBalance = initialBalance.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let balance = Money.minorUnits(fromInput: trimmedBalance.isEmpty ? "0" : trimmedBalance, currency: currency) else {
+            errorMessage = "\(Currencies.info(for: currency).code) 金额格式不正确：最多 \(Currencies.info(for: currency).minorUnits) 位小数，请检查后重试"
+            return
+        }
         do {
             if let existing {
                 // 乐观锁：带上编辑时的版本号，另一端已改过则 409 提示刷新

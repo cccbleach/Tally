@@ -164,8 +164,12 @@ targets:
       path: Tally/Support/Info.plist
       properties:
         CFBundleDisplayName: Tally
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        # 版本号必须引用 build setting（MARKETING_VERSION / CURRENT_PROJECT_VERSION），
+        # 不能写死字面量：小组件已经是 $(MARKETING_VERSION)，写死会让「只改 MARKETING_VERSION」
+        # 的常规发版动作把 app 与扩展的版本号改得不一致，Archive 上传时报
+        # "Invalid Bundle ... CFBundleShortVersionString mismatch" 直接失败。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # 由构建配置（TALLY_API_BASE_URL）注入，避免源码/Info.plist 写死地址
         TallyAPIBaseURL: $(TALLY_API_BASE_URL)
         UILaunchScreen: {}

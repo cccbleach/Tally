@@ -130,8 +130,12 @@ struct BudgetFormView: View {
     }
 
     private func save() async {
-        // 预算金额按账本本位币解析（服务端统计口径折算到本位币）
-        guard let amount = Money.minorUnits(fromInput: amountString, currency: store.baseCurrencyCode) else { return }
+        // 预算金额按账本本位币解析（服务端统计口径折算到本位币）。
+        // 解析失败要提示：静默 return 表现为「保存没反应」。
+        guard let amount = Money.minorUnits(fromInput: amountString, currency: store.baseCurrencyCode) else {
+            errorMessage = "金额格式不正确：最多 \(Currencies.info(for: store.baseCurrencyCode).minorUnits) 位小数，且必须大于 0"
+            return
+        }
         do {
             try await APIService.shared.upsertBudget(
                 year: store.selectedYear,

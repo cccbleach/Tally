@@ -105,14 +105,59 @@ final class BillScreenshotOCRTests: XCTestCase {
         XCTAssertTrue(text.contains("\"2026-09-12\""), "识别不到日期时按当天入账（预览阶段用户可改判）")
     }
 
-    func testUnsuccessfulBillLeavesStatusEmpty() {
-        // 服务端规则：状态为空字符串时不再要求包含「成功」（等价于不拦截）
+    func testUnsuccessfulBillCarriesRealStatusSoServerDropsIt() {
+        // 服务端规则：状态非空且不含「成功」→ 丢弃该行。
+        // 历史缺陷：非成功页写空状态，而空状态不受该规则约束，于是失败/取消的截图会被当作支出入账。
         let bill = BillScreenshotOCR.RecognizedBill(
             occurredAt: "2026-09-12", minorUnits: 100, type: "expense",
-            merchant: nil, isSuccessful: false
+            merchant: nil, isSuccessful: false, statusText: "支付失败"
         )
         let text = BillScreenshotOCR.synthesizeBillText(bill)
-        XCTAssertTrue(text.contains(",\"\""))
+        let fields = parseQuotedCsv(text.split(separator: "\n").map(String.init)[1])
+        XCTAssertEqual(fields[5], "支付失败", "必须把真实状态写进合成文本")
+        XCTAssertFalse(fields[5].isEmpty, "空状态会让服务端放行失败交易")
+        XCTAssertFalse(fields[5].contains("成功"), "含「成功」会被服务端当成成功交易")
+
+        // 识别不到状态时也不能留空（否则服务端放行）
+        let unknown = BillScreenshotOCR.RecognizedBill(
+            occurredAt: "2026-09-12", minorUnits: 100, type: "expense",
+            merchant: nil, isSuccessful: false, statusText: nil
+        )
+        let unknownFields = parseQuotedCsv(BillScreenshotOCR.synthesizeBillText(unknown).split(separator: "\n").map(String.init)[1])
+        XCTAssertFalse(unknownFields[5].isEmpty, "未知状态也要写占位文本，绝不能留空")
+        XCTAssertFalse(unknownFields[5].contains("成功"))
+    }
+
+    func testNegativeMarkersBeatSuccessKeyword() {
+        // 「支付未成功」「退款成功」这类页面含「成功」二字，但绝不是要入账的支出
+        for negative in ["支付未成功", "退款成功", "已取消", "待付款"] {
+            let bill = BillScreenshotOCR.extractBill(from: [negative, "¥28.50", "2026-09-12 08:31:05"])
+            XCTAssertFalse(bill.isSuccessful, "「\(negative)」不应判为成功页")
+            let fields = parseQuotedCsv(BillScreenshotOCR.synthesizeBillText(bill).split(separator: "\n").map(String.init)[1])
+            XCTAssertFalse(fields[5].contains("成功"), "状态文本必须让服务端丢弃这行：\(fields[5])")
+        }
+    }
+
+    func testSuccessfulPageStatusAlwaysContainsSuccessKeywordForServer() {
+        // 支付宝成功页常见状态是「已支付」（不含「成功」），必须归一成服务端认得的文本
+        let bill = BillScreenshotOCR.extractBill(from: ["已支付", "¥28.50", "2026-09-12 08:31:05"])
+        XCTAssertTrue(bill.isSuccessful)
+        let fields = parseQuotedCsv(BillScreenshotOCR.synthesizeBillText(bill).split(separator: "\n").map(String.init)[1])
+        XCTAssertTrue(fields[5].contains("成功"), "成功页状态必须含「成功」否则被服务端丢弃：\(fields[5])")
+    }
+
+    func testStatusLineIsExtractedFromFailedPaymentPage() {
+        let lines = [
+            "支付失败",
+            "¥28.50",
+            "瑞幸咖啡",
+            "2026-09-12 08:31:05",
+        ]
+        let bill = BillScreenshotOCR.extractBill(from: lines)
+        XCTAssertFalse(bill.isSuccessful, "页面没有成功关键词，不应判为成功")
+        XCTAssertEqual(bill.statusText, "支付失败", "应识别出状态行")
+        let fields = parseQuotedCsv(BillScreenshotOCR.synthesizeBillText(bill).split(separator: "\n").map(String.init)[1])
+        XCTAssertFalse(fields[5].contains("成功"), "合成文本必须让服务端能丢弃这行：\(fields[5])")
     }
 
     // MARK: - 稳定去重 ID

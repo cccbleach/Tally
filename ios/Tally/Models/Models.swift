@@ -382,6 +382,9 @@ struct CreditCardBillItem: Codable, Identifiable, Hashable {
     let minimumPayment: Int
     let dueDate: String?
     let paid: Bool
+    /// 卡的原币种（服务端 /liabilities 返回；兼容旧响应时可能缺失）。
+    /// 还款账户必须与卡同币种，否则服务端 400 CURRENCY_MISMATCH。
+    var currency: String?
 }
 
 struct ImportJob: Codable, Identifiable, Hashable {

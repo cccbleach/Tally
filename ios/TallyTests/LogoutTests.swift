@@ -197,3 +197,119 @@ private actor MockAuthService: AuthServicing {
         }
     }
 }
+
+// MARK: - 离线冷启动（断网时不得掉回登录页）
+
+/// 资料拉取替身：按需返回用户或抛网络错误。
+private struct StubProfileService: SessionProfileServing {
+    enum Mode: Sendable {
+        case user(User)
+        case transportFailure
+        case unauthorized
+    }
+    let mode: Mode
+
+    func me() async throws -> User {
+        switch mode {
+        case .user(let u): return u
+        case .transportFailure: throw URLError(.notConnectedToInternet)
+        case .unauthorized: throw APIError.unauthorized
+        }
+    }
+}
+
+/// 历史缺陷：/auth/me 遇网络错误时只 return，`isAuthenticated` 保持 false，
+/// RootView 于是渲染 LoginView —— 断网启动进不了主界面，本地缓存与离线队列全用不上，
+/// 与「离线记账」的承诺矛盾。这里锁死离线恢复的三条不变量。
+@MainActor
+final class OfflineSessionTests: XCTestCase {
+    private let testUser = User(
+        id: "offline-user-1", phone: "+8613800000001", nickname: "离线用户",
+        nicknameChangeAvailableAt: nil, createdAt: "2026-01-01T00:00:00Z", phoneMasked: nil
+    )
+
+    override func setUp() async throws {
+        KeychainStore.deleteTokens()
+        SessionIdentityCache.clear()
+    }
+
+    override func tearDown() async throws {
+        KeychainStore.deleteTokens()
+        SessionIdentityCache.clear()
+    }
+
+    func testTransportFailureKeepsSessionAndEntersOfflineMode() async {
+        KeychainStore.saveTokens(token: "access", refreshToken: "refresh")
+        SessionIdentityCache.save(user: testUser)
+
+        let state = AppState(auth: MockAuthService(), profile: StubProfileService(mode: .transportFailure))
+        await state.bootstrap()
+
+        XCTAssertTrue(state.isAuthenticated, "断网启动必须保留会话（否则掉回登录页，离线缓存读不到）")
+        XCTAssertEqual(state.currentUserId, "offline-user-1", "离线也要能给出用户 id，缓存分区依赖它")
+        XCTAssertNil(state.user, "离线时资料拉不到，user 保持 nil（界面按占位展示）")
+        XCTAssertNotNil(KeychainStore.loadToken(), "网络错误不得删除令牌")
+    }
+
+    func testOfflineRestoreRequiresCachedIdentity() async {
+        // 只有令牌、没有身份缓存（例如换过设备/清过数据）→ 不能凭令牌假装已登录
+        KeychainStore.saveTokens(token: "access", refreshToken: "refresh")
+
+        let state = AppState(auth: MockAuthService(), profile: StubProfileService(mode: .transportFailure))
+        await state.bootstrap()
+
+        XCTAssertFalse(state.isAuthenticated, "没有本地身份缓存时应回到登录页")
+        XCTAssertNil(state.currentUserId)
+    }
+
+    func testUnauthorizedClearsIdentityCache() async {
+        KeychainStore.saveTokens(token: "access", refreshToken: "refresh")
+        SessionIdentityCache.save(user: testUser)
+
+        let state = AppState(auth: MockAuthService(), profile: StubProfileService(mode: .unauthorized))
+        await state.bootstrap()
+
+        XCTAssertFalse(state.isAuthenticated, "401 必须登出")
+        XCTAssertNil(KeychainStore.loadToken(), "401 必须删除令牌")
+        XCTAssertNil(SessionIdentityCache.load(), "401 必须清掉身份缓存，否则下次断网启动会复活会话")
+    }
+
+    func testLogoutClearsCachedIdentityAndLedgerContext() async {
+        SessionIdentityCache.save(user: testUser)
+        SessionIdentityCache.rememberLedger(userId: testUser.id, ledgerId: "ledger-1")
+        XCTAssertNotNil(SessionIdentityCache.lastLedgerId(forUser: testUser.id), "前置条件")
+
+        let state = AppState(auth: MockAuthService())
+        state.isAuthenticated = true
+        state.logout()
+
+        XCTAssertNil(SessionIdentityCache.load(), "登出必须清身份缓存")
+        XCTAssertNil(SessionIdentityCache.lastLedgerId(forUser: testUser.id), "登出必须清账本上下文")
+    }
+
+    func testLedgerContextIsScopedToUser() {
+        SessionIdentityCache.rememberLedger(userId: "user-A", ledgerId: "ledger-A")
+        XCTAssertEqual(SessionIdentityCache.lastLedgerId(forUser: "user-A"), "ledger-A")
+        XCTAssertNil(SessionIdentityCache.lastLedgerId(forUser: "user-B"), "换账号不得复用别人的账本上下文")
+    }
+
+    func testSetContextFallsBackToRememberedLedgerSoCacheNamespaceMatches() {
+        let store = DataStore()
+        SessionIdentityCache.rememberLedger(userId: "user-A", ledgerId: "ledger-A")
+
+        // 冷启动：ledgerId 还是 nil，命名空间必须回落到上次的 ledger-A（否则读 "default" 分区扑空）
+        store.setContext(userId: "user-A", ledgerId: nil)
+        XCTAssertEqual(store.ledgerId, "ledger-A", "冷启动应回落到上次账本")
+        LocalCache.save(["缓存的账户"], forKey: "accounts")
+        XCTAssertNotNil(LocalCache.load([String].self, forKey: "accounts"))
+
+        // 模拟下次启动再进一次：同样的 setContext 必须落在同一命名空间，缓存才读得到
+        let store2 = DataStore()
+        store2.setContext(userId: "user-A", ledgerId: nil)
+        XCTAssertEqual(
+            LocalCache.load([String].self, forKey: "accounts"), ["缓存的账户"],
+            "同名空间必须能读到上次写的缓存（离线冷启动可见数据的前提）"
+        )
+        LocalCache.clearAll()
+    }
+}

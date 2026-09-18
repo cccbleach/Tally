@@ -18,8 +18,9 @@ struct MainTabView: View {
             SettingsView()
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
-        .task(id: appState.user?.id) {
-            sharedLedgerStore.bind(userId: appState.user?.id, dataManager: store)
+        // 用 currentUserId（离线冷启动时为缓存里的用户 id），保证离线也能绑定到正确的缓存分区
+        .task(id: appState.currentUserId) {
+            sharedLedgerStore.bind(userId: appState.currentUserId, dataManager: store)
             // 先确认服务端当前账本，再加载对应缓存，避免启动时短暂展示另一个账本的数据。
             let didReload = await sharedLedgerStore.refresh()
             if !didReload {

@@ -102,10 +102,20 @@ struct LiabilitiesView: View {
 
     private func markPaid(_ id: String) async {
         // 还款需要生成「还款账户 → 信用卡」的转账，不能只改状态。
-        // 自动选择账本下第一张非信用卡账户作为还款来源。
-        let payFrom = store.accounts.first(where: { $0.type != "credit" })
-        guard let payFrom else {
-            errorMessage = "请先创建一张银行卡/现金账户用于还款"
+        // 选还款来源的三条硬约束（服务端都会拒绝，但不能让用户按键后才发现）：
+        //   1) 不能是信用卡/贷款负债账户（服务端 INVALID_PAY_ACCOUNT）；
+        //   2) 必须与信用卡同币种（服务端 CURRENCY_MISMATCH）——多币种账本里
+        //      「第一张非信用卡账户」很可能是别的币种；
+        //   3) 不能是已归档账户（store.accounts 包含归档账户）。
+        let billCurrency = summary?.creditCardBills.first(where: { $0.id == id })?.currency
+        let candidate = store.accounts.first { account in
+            guard account.type != "credit", account.type != "loan", !account.isArchived else { return false }
+            guard let billCurrency else { return true }
+            return account.currency == billCurrency
+        }
+        guard let payFrom = candidate else {
+            errorMessage = billCurrency.map { "请先创建一张 \($0) 的银行卡/现金账户（还款账户必须与信用卡同币种且未归档）" }
+                ?? "请先创建一张银行卡/现金账户用于还款"
             return
         }
         do {
@@ -269,7 +279,9 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Text("Tally v0.1.0").font(.caption).foregroundColor(.secondary)
+                    // 版本号从 Bundle 读，避免写死值与 MARKETING_VERSION 漂移（历史上写的是 v0.1.0，
+                    // 而工程版本早已是 1.0.0）。构建号一并展示，方便核对测试包。
+                    Text(Self.versionText).font(.caption).foregroundColor(.secondary)
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -296,6 +308,15 @@ struct SettingsView: View {
             }
             .errorAlert($errorMessage)
         }
+    }
+
+    /// 形如 "Tally v1.0.0 (1)"；Info.plist 缺失时退化为 "Tally"
+    private static var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? ""
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        guard !version.isEmpty else { return "Tally" }
+        return build.isEmpty ? "Tally v\(version)" : "Tally v\(version) (\(build))"
     }
 
     /// 退出全部设备：服务端吊销成功与否都要完成本地登出；

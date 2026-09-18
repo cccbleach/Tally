@@ -37,7 +37,9 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: lockService.isLocked)
-        .onChange(of: appState.user?.id) { _, newUser in
+        // 用 currentUserId：离线冷启动时 user 为 nil，但 offlineUserId 有值，同样要切到
+        // 该用户的缓存命名空间（否则离线启动会读到 anon 命名空间，界面全空）
+        .onChange(of: appState.currentUserId) { _, newUser in
             // 换账号/退出登录时：清空内存并切换缓存命名空间，避免串数据
             lockService.isAuthenticated = appState.isAuthenticated
             if appState.isAuthenticated {

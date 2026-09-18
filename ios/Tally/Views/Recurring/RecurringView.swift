@@ -178,7 +178,11 @@ struct RecurringFormView: View {
     }
 
     private func save() async {
-        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else { return }
+        // 解析失败要明确提示：静默 return 会表现为「保存按钮没反应」，用户不知道哪里错了
+        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else {
+            errorMessage = "金额格式不正确：\(Currencies.info(for: entryCurrency).code) 最多 \(Currencies.info(for: entryCurrency).minorUnits) 位小数，且必须大于 0"
+            return
+        }
         let df = TallyDate.dayFormatter
         do {
             _ = try await APIService.shared.createRecurring(

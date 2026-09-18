@@ -521,8 +521,9 @@ struct LoanPayResponse: Decodable {
     let paidDate: String
     let installment: Int
     let installmentId: String
-    let principalTransactionId: String
-    let interestTransactionId: String
+    // 0 利率贷款的利息腿、或本金已还完的期次不生成流水，服务端返回 null
+    let principalTransactionId: String?
+    let interestTransactionId: String?
     let paymentGroupId: String
 }
 
