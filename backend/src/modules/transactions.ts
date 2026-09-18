@@ -22,6 +22,8 @@ import {
 import { buildDedupKey } from "../lib/dedup.js";
 import { assertCurrencyCompatible, currencySchema } from "../lib/currency.js";
 import { badRequest as _badRequest } from "../lib/errors.js";
+import { isUniqueViolation } from "../lib/sqliteErrors.js";
+import { dateStr } from "../lib/schemas.js";
 import type { Jwt } from "../auth/jwt.js";
 
 // xlsx 解析错误统一转为 400（旧版导入接口）
@@ -41,11 +43,10 @@ async function safeParseWechatXlsx(buf: Uint8Array): Promise<ParsedBill[]> {
   }
 }
 
-const dateRe = /^\d{4}-\d{2}-\d{2}$/;
 
 const commonFields = {
   amount: z.number().int("金额必须为整数（分）").positive("金额必须大于 0"),
-  date: z.string().regex(dateRe, "日期格式应为 YYYY-MM-DD"),
+  date: dateStr(),
   note: z.string().max(500, "备注过长").optional(),
   // 币种统一走 currencySchema：3 位字母、大小写归一为大写，拒绝 "hello" 这类脏值
   currency: currencySchema.default("CNY"),
@@ -63,7 +64,7 @@ const createSchema = z.discriminatedUnion("type", [
 
 const updateSchema = z.object({
   amount: z.number().int().positive().optional(),
-  date: z.string().regex(dateRe, "日期格式应为 YYYY-MM-DD").optional(),
+  date: dateStr().optional(),
   note: z.string().max(500).nullable().optional(),
   accountId: z.string().min(1).optional(),
   categoryId: z.string().min(1).nullable().optional(),
@@ -83,7 +84,7 @@ const billImportSchema = z
     items: z
       .array(
         z.object({
-          date: z.string().regex(dateRe, "日期格式应为 YYYY-MM-DD"),
+          date: dateStr(),
           amount: z.number().int().positive(),
           type: z.enum(["income", "expense"]),
           note: z.string().max(500).nullable().optional(),
@@ -283,8 +284,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     } catch (error) {
       // 并发竞态：另一个请求已用同一幂等键插入（唯一索引 uniq_tx_client_request）。
       // 重读并返回已存在的流水，保证「至多一次入账 + 调用方拿到成功」。
-      const message = error instanceof Error ? error.message : "";
-      if (body.clientRequestId && message.includes("uniq_tx_client_request")) {
+      // 判定必须看 err.code：SQLite 的报错文本不含索引名（详见 lib/sqliteErrors.ts）。
+      if (body.clientRequestId && isUniqueViolation(error, ["transactions.client_request_id"])) {
         const winner = db
           .select()
           .from(transactions)

@@ -44,6 +44,21 @@ export function parseDateStr(s: string): Date {
   return new Date(y as number, (m as number) - 1, d as number);
 }
 
+// 严格日期校验：/^\d{4}-\d{2}-\d{2}$/ 只保证「形状」，2026-02-31 这类不存在的日期
+// 会被 parseDateStr（new Date(y, m-1, d)）静默滚到 3 月 3 日 —— 流水日期/还款日会莫名错位。
+// 因此凡是接受用户日期的写入路径都必须做「回读一致」校验。
+export function isValidDateStr(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  return toDateStr(parseDateStr(s)) === s;
+}
+
+// YYYY-MM，且月份必须在 01-12（形状正则挡不住 2026-13）
+export function isValidYearMonth(s: string): boolean {
+  if (!/^\d{4}-\d{2}$/.test(s)) return false;
+  const m = Number(s.slice(5, 7));
+  return m >= 1 && m <= 12;
+}
+
 // 日期字符串比较（词法序即时间序，YYYY-MM-DD 格式保证）
 export function dateStrCmp(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;

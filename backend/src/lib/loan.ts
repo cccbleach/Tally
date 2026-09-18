@@ -9,12 +9,16 @@ export interface LoanScheduleItem {
 }
 
 // 等额本息月供（分）
+// 下限 1 分：principal=1 分 / 36 期这类极端输入会让 Math.round(principal/termMonths) 得 0，
+// 整张计划表变成「每期 0 元」——贷款可以一路「还清」而本金分文未动。
+// 调用方仍需拒绝 principal < termMonths 的退化贷款（见 modules/loans.ts 的创建校验）。
 export function monthlyPayment(principal: number, annualRate: number, termMonths: number): number {
   if (termMonths <= 0) return 0;
-  if (annualRate <= 0) return Math.round(principal / termMonths);
+  if (principal <= 0) return 0;
+  if (annualRate <= 0) return Math.max(1, Math.round(principal / termMonths));
   const r = annualRate / 100 / 12;
   const factor = Math.pow(1 + r, termMonths);
-  return Math.round((principal * r * factor) / (factor - 1));
+  return Math.max(1, Math.round((principal * r * factor) / (factor - 1)));
 }
 
 // 生成等额本息还款计划
@@ -31,8 +35,12 @@ export function amortizationSchedule(
   const items: LoanScheduleItem[] = [];
   for (let i = 0; i < termMonths; i++) {
     const interest = Math.round(remaining * r);
-    let principalPart = payment - interest;
+    // 最后一期用剩余本金收口：月供是取整后的整数分，前 n-1 期还完后往往还剩几分钱
+    // （如 100000 分 / 12 期，每期 8333 分 → 余 4 分），若不收口 remainingPrincipal
+    // 永远归不了零、贷款无法结清，本金部分之和也不等于本金。
+    let principalPart = i === termMonths - 1 ? remaining : payment - interest;
     if (principalPart > remaining) principalPart = remaining;
+    if (principalPart < 0) principalPart = 0;
     const total = principalPart + interest;
     remaining -= principalPart;
     items.push({

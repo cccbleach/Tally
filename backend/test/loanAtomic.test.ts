@@ -144,7 +144,10 @@ test("贷款还款幂等：idempotencyKey 重放返回相同结果、不偿还�
   const g1 = first.json().paymentGroupId as string;
   assert.equal(first.json().installment, 1);
   const txAfterFirst = db.select().from(transactions).where(eq(transactions.paymentGroupId, g1)).all().length;
-  assert.equal(txAfterFirst, 2, "每期还款应恰好生成 2 条流水");
+  // 0 利率贷款：利息为 0，只写「本金转账」一条腿（0 元流水无信息量，
+  // 且会被 transactions 的 CHECK (amount > 0) 拒绝）。有息贷款的「本金+利息」两条腿
+  // 由 api.test.ts 的 4.9% 贷款用例覆盖。
+  assert.equal(txAfterFirst, 1, "0 利率贷款每期还款应恰好生成 1 条流水（本金转账）");
 
   // 顺序重放：同一 idempotencyKey 应返回相同结果，且不偿还第 2 期
   const replay = await req("POST", `/api/v1/loans/${loanId}/pay`, {
@@ -157,9 +160,9 @@ test("贷款还款幂等：idempotencyKey 重放返回相同结果、不偿还�
   assert.equal(replay.json().paymentGroupId, g1, "重放应返回相同的 paymentGroupId");
   assert.equal(replay.json().installment, 1, "重放不应推进到下一期");
 
-  // 数据层：第 1 期恰好带一组 paymentGroupId、2 条流水；第 2、3 期仍未还
+  // 数据层：第 1 期恰好带一组 paymentGroupId、1 条流水（0 利率）；第 2、3 期仍未还
   const g1Tx = db.select().from(transactions).where(eq(transactions.paymentGroupId, g1)).all();
-  assert.equal(g1Tx.length, 2, "第 1 期只有一组 2 条流水");
+  assert.equal(g1Tx.length, 1, "第 1 期只有一组 1 条流水（0 利率只有本金腿）");
   const schedule = db.select().from(loanPayments).where(eq(loanPayments.loanId, loanId)).orderBy(asc(loanPayments.installmentNo)).all();
   assert.equal(schedule.filter((p) => p.paid).length, 1, "只有第 1 期已还");
   assert.equal(schedule.find((p) => p.installmentNo === 2)!.paid, false, "第 2 期不应被重放误还");
@@ -172,7 +175,7 @@ test("贷款还款幂等：idempotencyKey 重放返回相同结果、不偿还�
   });
   assert.equal(dupInstallment.statusCode, 409, "显式重复支付同一期应 409: " + dupInstallment.body);
   const txStill = db.select().from(transactions).where(eq(transactions.paymentGroupId, g1)).all().length;
-  assert.equal(txStill, 2, "重复支付不应新增流水");
+  assert.equal(txStill, 1, "重复支付不应新增流水（0 利率只有本金腿）");
 });
 
 test("偿还下一期必须提供 idempotencyKey（无 key 返回 400）", async () => {
@@ -223,7 +226,7 @@ test("只有 1 期的贷款：用 idempotencyKey 偿还最后一期后，完全�
   assert.equal(replay.json().paymentGroupId, groupId, "重放应返回相同的 paymentGroupId");
   assert.equal(replay.json().installment, 1);
 
-  // 数据层：仍只有 1 条幂等记录、2 条流水、1 期 paid
+  // 数据层：仍只有 1 条幂等记录、1 条流水（0 利率）、1 期 paid
   const idems = db
     .select()
     .from(loanPaymentIdempotency)
@@ -231,7 +234,7 @@ test("只有 1 期的贷款：用 idempotencyKey 偿还最后一期后，完全�
     .all();
   assert.equal(idems.length, 1, "应只有一条幂等记录");
   const groupTx = db.select().from(transactions).where(eq(transactions.paymentGroupId, groupId)).all();
-  assert.equal(groupTx.length, 2, "应恰好 2 条流水");
+  assert.equal(groupTx.length, 1, "0 利率贷款应恰好 1 条流水（本金转账）");
   const payments = db.select().from(loanPayments).where(eq(loanPayments.loanId, loanId)).all();
   assert.equal(payments.length, 1, "应有 1 期");
   assert.equal(payments[0]!.paid, true, "该期应已 paid");

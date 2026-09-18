@@ -1,8 +1,6 @@
 process.env.ALIYUN_SMS_ENABLED = "false";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync, copyFileSync, readdirSync } from "node:fs";
@@ -206,5 +204,98 @@ test("fk-off 迁移：DDL 与 schema_migrations 记录同一事务提交，记�
   } finally {
     sqlite.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 回归：0016 重建 transactions 时漏抄了 0005 的 CHECK 约束，且此后 21 个迁移都没补回，
+// 实际库里「金额必须为正、类型必须合法」只剩应用层 zod 一道（实测 .schema 无任何 CHECK）。
+// 0024 第三次重建补回：升级保留数据与索引，同时非法历史行必须阻断迁移而不是被静默吞掉。
+test("迁移 0024：补回 transactions 的 CHECK 约束，升级保留数据/索引，非法历史行阻断迁移", () => {
+  const repo = resolve("./migrations");
+  const files = readdirSync(repo).filter((f) => f.endsWith(".sql")).sort();
+  const dir = mkdtempSync(join(tmpdir(), "tally-mig-check-restore-"));
+  const migDir = join(dir, "migrations");
+  mkdirSync(migDir, { recursive: true });
+  const { sqlite } = createDb(join(dir, "t.db"));
+  const seedParents = () => {
+    sqlite.prepare("INSERT INTO users (id, phone, created_at, updated_at) VALUES (?,?,?,?)").run("U1", "+8613800000001", "x", "x");
+    sqlite.prepare("INSERT INTO ledgers (id, user_id, name, created_at, updated_at) VALUES (?,?,?,?,?)").run("L1", "U1", "L", "x", "x");
+    sqlite.prepare("INSERT INTO accounts (id, user_id, name, ledger_id, created_at, updated_at) VALUES (?,?,?,?,?,?)").run("A1", "U1", "A", "L1", "x", "x");
+  };
+  const insertTx = (id: string, type: string, amount: number) =>
+    sqlite
+      .prepare("INSERT INTO transactions (id,user_id,ledger_id,account_id,type,amount,currency,date,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run(id, "U1", "L1", "A1", type, amount, "CNY", "2026-01-01", "x", "x");
+  const txIndexNames = () =>
+    (sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='transactions' AND sql IS NOT NULL ORDER BY name").all() as { name: string }[]).map((r) => r.name);
+
+  try {
+    // 老库阶段：只应用到 0023
+    for (const f of files.filter((f) => f < "0024")) copyFileSync(join(repo, f), join(migDir, f));
+    runMigrations(sqlite, migDir);
+    sqlite.pragma("foreign_keys = OFF");
+    seedParents();
+    insertTx("tx1", "expense", 100);
+    insertTx("tx2", "transfer", 200);
+    // 旧实现给 0 利率贷款每期写一条 0 元「贷款利息」支出：0024 必须先清掉它，
+    // 否则 CHECK (amount > 0) 会让迁移失败、应用起不来（0 元对账目没有任何影响）
+    sqlite
+      .prepare("INSERT INTO transactions (id,user_id,ledger_id,account_id,type,amount,currency,date,created_at,updated_at,source_type,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run("zero-interest", "U1", "L1", "A1", "expense", 0, "CNY", "2026-01-01", "x", "x", "loan-interest", "贷款利息 X 第1期");
+    sqlite.pragma("foreign_keys = ON");
+
+    // 升级前：确无 CHECK（这就是被漏掉的防线）
+    const before = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='transactions'").get() as { sql: string }).sql;
+    assert.ok(!before.includes("CHECK"), "0023 阶段的 transactions 不应有 CHECK（历史缺陷现场）");
+
+    copyFileSync(join(repo, "0024_transactions_check_restore.sql"), join(migDir, "0024_transactions_check_restore.sql"));
+    runMigrations(sqlite, migDir);
+
+    const after = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='transactions'").get() as { sql: string }).sql;
+    assert.ok(after.includes("CHECK (type IN ('income', 'expense', 'transfer'))"), "应补回 type 枚举 CHECK");
+    assert.ok(after.includes("CHECK (amount > 0)"), "应补回 amount > 0 CHECK");
+
+    // 数据与索引必须完整保留
+    const rows = sqlite.prepare("SELECT id, type, amount FROM transactions ORDER BY id").all() as { id: string }[];
+    assert.deepEqual(rows.map((r) => r.id), ["tx1", "tx2"], "重建后数据必须保留，且 0 元贷款利息流水已被清理");
+    assert.deepEqual(
+      txIndexNames(),
+      ["idx_tx_dedup", "idx_tx_ledger", "idx_tx_user_account", "idx_tx_user_date", "uniq_recurring_tx", "uniq_tx_client_request", "uniq_tx_external_source"],
+      "7 个索引必须全部重建（含 0023 的部分唯一索引）",
+    );
+    assert.deepEqual(sqlite.pragma("foreign_key_check"), [], "重建后外键检查必须无误");
+    assert.throws(() => insertTx("tx3", "expense", 0), /CHECK constraint failed: amount > 0/, "0 元流水必须被数据库拒绝");
+    assert.throws(() => insertTx("tx4", "bogus", 100), /CHECK constraint failed/, "非法类型必须被数据库拒绝");
+  } finally {
+    sqlite.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 非法历史行：迁移必须失败并整体回滚（不静默丢数据、不标记已应用）
+  const dir2 = mkdtempSync(join(tmpdir(), "tally-mig-check-bad-"));
+  const migDir2 = join(dir2, "migrations");
+  mkdirSync(migDir2, { recursive: true });
+  const { sqlite: sq2 } = createDb(join(dir2, "t.db"));
+  try {
+    for (const f of files.filter((f) => f < "0024")) copyFileSync(join(repo, f), join(migDir2, f));
+    runMigrations(sq2, migDir2);
+    sq2.pragma("foreign_keys = OFF");
+    sq2.prepare("INSERT INTO users (id, phone, created_at, updated_at) VALUES (?,?,?,?)").run("U1", "+8613800000001", "x", "x");
+    sq2.prepare("INSERT INTO ledgers (id, user_id, name, created_at, updated_at) VALUES (?,?,?,?,?)").run("L1", "U1", "L", "x", "x");
+    sq2.prepare("INSERT INTO accounts (id, user_id, name, ledger_id, created_at, updated_at) VALUES (?,?,?,?,?,?)").run("A1", "U1", "A", "L1", "x", "x");
+    sq2.prepare("INSERT INTO transactions (id,user_id,ledger_id,account_id,type,amount,currency,date,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("bad", "U1", "L1", "A1", "expense", 0, "CNY", "2026-01-01", "x", "x");
+    sq2.pragma("foreign_keys = ON");
+
+    copyFileSync(join(repo, "0024_transactions_check_restore.sql"), join(migDir2, "0024_transactions_check_restore.sql"));
+    assert.throws(() => runMigrations(sq2, migDir2), /CHECK constraint failed/, "存在非法历史行时迁移必须失败");
+
+    const applied = sq2.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get() as { n: number };
+    assert.equal(applied.n, 23, "失败迁移不应被记录");
+    const kept = sq2.prepare("SELECT COUNT(*) AS n FROM transactions").get() as { n: number };
+    assert.equal(kept.n, 1, "回滚后原始数据必须完好");
+  } finally {
+    sq2.close();
+    rmSync(dir2, { recursive: true, force: true });
   }
 });

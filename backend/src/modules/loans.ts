@@ -17,7 +17,9 @@ import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { assertCurrencyCompatible, convert, currencySchema } from "../lib/currency.js";
 import { config } from "../config.js";
 import { getAccessibleLedger } from "../lib/access.js";
-import { requireLedgerPermission } from "../lib/authorization.js";
+import { requireLedgerPermission, requireTransactionModify } from "../lib/authorization.js";
+import { isUniqueViolation } from "../lib/sqliteErrors.js";
+import { dateStr, yearMonthStr } from "../lib/schemas.js";
 import { amortizationSchedule, monthlyPayment } from "../lib/loan.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
 import { computeAccountBalances } from "../lib/aggregates.js";
@@ -32,7 +34,7 @@ const createLoanSchema = z.object({
   principal: z.number().int().positive(),
   annualRate: z.number().min(0).max(100).default(0),
   termMonths: z.number().int().min(1).max(600),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  startDate: dateStr(),
   accountId: z.string().optional(),           // 还款来源账户（银行卡/现金）
   liabilityAccountId: z.string().optional(),  // 已有 loan 类型负债账户；缺省则自动创建
   ledgerId: z.string().optional(),
@@ -47,7 +49,7 @@ const updateLoanSchema = z.object({
 });
 
 const payLoanSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  date: dateStr().optional(),
   payFromAccountId: z.string().optional(),
   ledgerId: z.string().optional(),
   // 幂等控制：客户端可显式指定要还的期次（installmentId），
@@ -78,6 +80,14 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const now = new Date().toISOString();
     const id = randomUUID();
     const payment = monthlyPayment(body.principal, body.annualRate, body.termMonths);
+    // 退化贷款护栏：本金小于期数（或月供不足 1 分）时计划表里会出现「0 元期次」，
+    // 用户能把贷款标记成已还清而本金分文未动（且 0 元流水会被 DB CHECK 拒绝）。
+    if (payment < 1 || body.principal < body.termMonths) {
+      throw badRequest(
+        "LOAN_AMOUNT_TOO_SMALL",
+        "本金过小或期数过长：每期至少要偿还 1 分，请缩短期数或提高本金",
+      );
+    }
 
     // 还款来源账户（可选）：必须是账本内非负债账户。
     if (body.accountId) {
@@ -269,25 +279,54 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const userId = getUserId(req);
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
-    requireLedgerPermission(db, userId, ledgerId, "transaction:update");
     const { id } = req.params as { id: string };
-    getLoan(id, ledgerId);
-    db.delete(loanPayments).where(eq(loanPayments.loanId, id)).run();
-    db.delete(loans).where(eq(loans.id, id)).run();
-    return { ok: true };
+    const loan = getLoan(id, ledgerId);
+    // 删除贷款归属「修改该资源」：与流水删除同口径（owner/admin 任意，member 仅本人创建）。
+    // 历史缺陷：这里只要求 transaction:update，任何成员都能删掉别人建的贷款。
+    requireTransactionModify(db, userId, ledgerId, loan.userId);
+
+    // 一次事务内完成：还款计划 → 幂等记录 → 贷款 → 归档负债账户 → 审计。
+    // 历史缺陷：只删 loan_payments + loans，把 loan 类型负债账户（余额 -本金）和还款流水留在库里，
+    // 于是 /stats/summary 负债归零、/accounts 仍显示一笔没有任何贷款对应的负债账户。
+    // 负债账户只归档不物理删除：transactions.account_id 是 ON DELETE CASCADE，
+    // 硬删会连带删掉历史还款流水（本金转账/利息支出），那是真实的资金流水，不能因为删贷款而消失。
+    const liabilityAccount = loan.liabilityAccountId
+      ? db.select().from(accounts).where(eq(accounts.id, loan.liabilityAccountId)).get()
+      : undefined;
+    const paymentCount = db.select().from(loanPayments).where(eq(loanPayments.loanId, id)).all().length;
+
+    db.transaction((tx) => {
+      tx.delete(loanPayments).where(eq(loanPayments.loanId, id)).run();
+      tx.delete(loanPaymentIdempotency).where(eq(loanPaymentIdempotency.loanId, id)).run();
+      tx.delete(loans).where(eq(loans.id, id)).run();
+      if (liabilityAccount) {
+        tx.update(accounts)
+          .set({ isArchived: true, updatedAt: new Date().toISOString() })
+          .where(eq(accounts.id, liabilityAccount.id))
+          .run();
+      }
+      writeAudit(tx, {
+        ledgerId,
+        actorUserId: userId,
+        entityType: "loan",
+        entityId: id,
+        action: "loan_delete",
+        beforeJson: {
+          name: loan.name,
+          currency: loan.currency,
+          remainingPrincipal: loan.remainingPrincipal,
+          installments: paymentCount,
+          liabilityAccountId: loan.liabilityAccountId,
+        },
+        afterJson: { liabilityAccountArchived: Boolean(liabilityAccount) },
+      });
+    });
+    return { ok: true, liabilityAccountArchived: Boolean(liabilityAccount) };
   });
 
   // 并发认领失败（同一 (actor_user_id, loan_id, idempotency_key) 唯一索引冲突）
-  // 时，说明另一请求已先提交同一幂等键。返回 true 表示是唯一约束冲突。
-  function isUniqueClaimError(e: unknown): boolean {
-    return (
-      e instanceof Error &&
-      "code" in e &&
-      typeof (e as { code?: unknown }).code === "string" &&
-      ((e as { code: string }).code === "SQLITE_CONSTRAINT_UNIQUE" ||
-        (e as { code: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY")
-    );
-  }
+  // 时，说明另一请求已先提交同一幂等键 → 重读已完成结果返回。
+  // 判定逻辑与流水幂等共用一份实现（lib/sqliteErrors.ts，按 err.code 而非索引名）。
 
   function findIdempotency(userIdArg: string, loanIdArg: string, key: string) {
     return db
@@ -404,8 +443,17 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
 
     const now = new Date().toISOString();
     const paymentGroupId = randomUUID();
-    const principalTxId = randomUUID();
-    const interestTxId = randomUUID();
+    // 0 元的腿不写流水：0 利率贷款的利息、或本金已还完的期次，其金额为 0。
+    // 这类流水没有任何信息量，而且会被 transactions 的 CHECK (amount > 0) 直接拒绝（迁移 0024）。
+    const principalTxId = next.principalDue > 0 ? randomUUID() : null;
+    const interestTxId = next.interestDue > 0 ? randomUUID() : null;
+    if (!principalTxId && !interestTxId) {
+      // 历史退化数据（本金 < 期数，月供被取整成 0）才会走到这里：不能既标记已还又不产生流水。
+      throw conflict(
+        "INSTALLMENT_DEGENERATE",
+        "该期应还本金与利息均为 0（贷款本金/期数配置异常），无法生成还款流水，请重建这笔贷款",
+      );
+    }
     const result = {
       paidDate: date,
       installment: next.installmentNo,
@@ -439,46 +487,50 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
         }
 
         // 2) 本金：还款来源账户 → 贷款负债账户（转账）
-        tx.insert(transactions)
-          .values({
-            id: principalTxId,
-            userId,
-            ledgerId,
-            accountId: payFrom.id,
-            categoryId: null,
-            type: "transfer",
-            amount: next.principalDue,
-            currency: payFrom.currency || "CNY",
-            note: `贷款本金还款 ${loan.name} 第${next.installmentNo}期`,
-            date,
-            transferToAccountId: transferTarget,
-            sourceType: "loan-payment",
-            paymentGroupId,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .run();
+        if (principalTxId) {
+          tx.insert(transactions)
+            .values({
+              id: principalTxId,
+              userId,
+              ledgerId,
+              accountId: payFrom.id,
+              categoryId: null,
+              type: "transfer",
+              amount: next.principalDue,
+              currency: payFrom.currency || "CNY",
+              note: `贷款本金还款 ${loan.name} 第${next.installmentNo}期`,
+              date,
+              transferToAccountId: transferTarget,
+              sourceType: "loan-payment",
+              paymentGroupId,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+        }
 
-        // 3) 利息：还款来源账户 → 利息分类（支出）
-        tx.insert(transactions)
-          .values({
-            id: interestTxId,
-            userId,
-            ledgerId,
-            accountId: payFrom.id,
-            categoryId: interestCat?.id ?? null,
-            type: "expense",
-            amount: next.interestDue,
-            currency: payFrom.currency || "CNY",
-            note: `贷款利息 ${loan.name} 第${next.installmentNo}期`,
-            date,
-            transferToAccountId: null,
-            sourceType: "loan-interest",
-            paymentGroupId,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .run();
+        // 3) 利息：还款来源账户 → 利息分类（支出）；0 利率时利息为 0，不写这条腿
+        if (interestTxId) {
+          tx.insert(transactions)
+            .values({
+              id: interestTxId,
+              userId,
+              ledgerId,
+              accountId: payFrom.id,
+              categoryId: interestCat?.id ?? null,
+              type: "expense",
+              amount: next.interestDue,
+              currency: payFrom.currency || "CNY",
+              note: `贷款利息 ${loan.name} 第${next.installmentNo}期`,
+              date,
+              transferToAccountId: null,
+              sourceType: "loan-interest",
+              paymentGroupId,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .run();
+        }
 
         // 4) 期次条件更新（WHERE paid=false）：对非幂等重复（显式重复支付、不同 key 竞态）
         //    起第二道防线，后到的请求 changes===0 直接抛 409 并回滚本事务。
@@ -489,7 +541,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
             principalPaid: next.principalDue,
             interestPaid: next.interestDue,
             paidAt: now,
-            paymentTransactionId: JSON.stringify([principalTxId, interestTxId]),
+            paymentTransactionId: JSON.stringify([principalTxId, interestTxId].filter(Boolean)),
             status: "paid",
           })
           .where(and(eq(loanPayments.id, next.id), eq(loanPayments.paid, false)))
@@ -535,7 +587,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     } catch (e) {
       // 并发冲突：唯一索引认领失败 —— 另一请求已先提交同一 key。
       // 这里重新读取已完成结果并原样返回，绝不得仅返回 INSTALLMENT_ALREADY_PAID。
-      if (body.idempotencyKey && isUniqueClaimError(e)) {
+      if (body.idempotencyKey && isUniqueViolation(e)) {
         const existing = findIdempotency(userId, id, body.idempotencyKey);
         if (existing) {
           if (existing.requestFingerprint === fingerprint) {
@@ -557,10 +609,13 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const balances = computeAccountBalances(db, userId, ledgerId);
+    // 归档账户必须排除：assetDebtSummary 不计归档账户，这里若不过滤就会出现
+    // 「归档一张有欠款的信用卡后 /liabilities.totalDebt 仍显示欠款、/stats/summary.totalDebt 已归零」
+    // 的负债口径分裂（下方 totalDebt 的不变量断言依赖两者一致）。
     const creditAccounts = db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.type, "credit")))
+      .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.type, "credit"), eq(accounts.isArchived, false)))
       .all();
     const creditCards = creditAccounts.map((a) => ({
       accountId: a.id,
@@ -580,16 +635,18 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       name: l.name,
       type: l.type,
       currency: l.currency,
-      // 同上：remainingPrincipal 按贷款币种换算为基准币
+      // 同上：remainingPrincipal / monthlyPayment 按贷款币种换算为基准币
       remainingPrincipal: convert(db, userId, l.remainingPrincipal, l.currency, config.baseCurrency),
       remainingPrincipalNative: l.remainingPrincipal,
-      monthlyPayment: l.monthlyPayment,
+      monthlyPayment: convert(db, userId, l.monthlyPayment, l.currency, config.baseCurrency),
+      monthlyPaymentNative: l.monthlyPayment,
       nextPaymentDate: l.nextPaymentDate,
       accountId: l.accountId,
       liabilityAccountId: l.liabilityAccountId,
       status: l.status,
     }));
     const creditBillAccounts = creditAccounts.map((a) => a.id);
+    const currencyByCreditAccount = new Map(creditAccounts.map((a) => [a.id, a.currency]));
     const creditBills =
       creditBillAccounts.length > 0
         ? db
@@ -598,19 +655,33 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
             .where(and(inArray(creditCardBills.accountId, creditBillAccounts), eq(creditCardBills.paid, false)))
             .all()
         : [];
+    // 账单金额同样必须折算：客户端按 baseCurrency 格式化（docs/api.md「金额均为基准币」），
+    // 历史缺陷是这里返回卡的原币金额 → 一张 $500 的账单在 ¥ 账本里显示成 ¥500。
+    const creditBillsOut = creditBills.map((b) => ({
+      id: b.id,
+      accountId: b.accountId,
+      period: b.period,
+      currency: currencyByCreditAccount.get(b.accountId) ?? config.baseCurrency,
+      statementBalance: convert(db, userId, b.statementBalance, currencyByCreditAccount.get(b.accountId) ?? config.baseCurrency, config.baseCurrency),
+      statementBalanceNative: b.statementBalance,
+      minimumPayment: convert(db, userId, b.minimumPayment, currencyByCreditAccount.get(b.accountId) ?? config.baseCurrency, config.baseCurrency),
+      minimumPaymentNative: b.minimumPayment,
+      dueDate: b.dueDate,
+      paid: b.paid,
+    }));
     // 两张表的金额都已是基准币，可直接相加（不变量：与 /stats/summary.totalDebt 必须相等）
     const totalDebt = creditCards.reduce((s, c) => s + c.debt, 0) + loansOut.reduce((s, l) => s + l.remainingPrincipal, 0);
-    return { totalDebt, baseCurrency: config.baseCurrency, creditCards, loans: loansOut, creditCardBills: creditBills };
+    return { totalDebt, baseCurrency: config.baseCurrency, creditCards, loans: loansOut, creditCardBills: creditBillsOut };
   });
 
   app.post("/api/v1/credit-cards/:accountId/bills", { preHandler: auth }, async (req) => {
     const userId = getUserId(req);
     const body = z
       .object({
-        period: z.string().regex(/^\d{4}-\d{2}$/),
+        period: yearMonthStr(),
         statementBalance: z.number().int().min(0),
         minimumPayment: z.number().int().min(0).optional(),
-        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        dueDate: dateStr().optional(),
         ledgerId: z.string().optional(),
       })
       .parse(req.body);
@@ -671,8 +742,27 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .where(eq(accounts.ledgerId, ledgerId))
       .all();
     const ids = accts.map((a) => a.id);
+    const currencyByAccount = new Map(accts.map((a) => [a.id, a.currency]));
     const bills = ids.length > 0 ? db.select().from(creditCardBills).where(inArray(creditCardBills.accountId, ids)).all() : [];
-    return { items: bills };
+    // 与 /liabilities 同一币种口径：对外金额一律折算基准币（原币值放 *Native），
+    // 否则客户端按 baseCurrency 格式化会把 $500 显示成 ¥500。
+    return {
+      items: bills.map((b) => {
+        const cur = currencyByAccount.get(b.accountId) ?? config.baseCurrency;
+        return {
+          id: b.id,
+          accountId: b.accountId,
+          period: b.period,
+          currency: cur,
+          statementBalance: convert(db, userId, b.statementBalance, cur, config.baseCurrency),
+          statementBalanceNative: b.statementBalance,
+          minimumPayment: convert(db, userId, b.minimumPayment, cur, config.baseCurrency),
+          minimumPaymentNative: b.minimumPayment,
+          dueDate: b.dueDate,
+          paid: b.paid,
+        };
+      }),
+    };
   });
 
   // 还款：必须生成一条「还款账户 → 信用卡账户」的转账流水，再标记已还。
@@ -682,7 +772,7 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
     const body = z
       .object({
         payFromAccountId: z.string().min(1, "还款账户不能为空"),
-        payDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        payDate: dateStr().optional(),
         ledgerId: z.string().optional(),
       })
       .parse(req.body);
@@ -707,7 +797,11 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .get();
     if (!payFrom) throw badRequest("ACCOUNT_NOT_FOUND", "还款账户不存在");
     if (payFrom.id === bill.accountId) throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是同一张信用卡");
-    if (payFrom.type === "credit") throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是信用卡");
+    // 与贷款还款同一口径：信用卡不能互相还，贷款负债账户也不能当还款来源——
+    // 从 loan 账户转出会减少该账户余额，却不减 remainingPrincipal，破坏贷款的不变量。
+    if (payFrom.type === "credit" || payFrom.type === "loan") {
+      throw badRequest("INVALID_PAY_ACCOUNT", "还款账户不能是信用卡或贷款账户");
+    }
     if (payFrom.currency !== creditAcct.currency) {
       throw badRequest("CURRENCY_MISMATCH", "跨币种还款暂不支持，请先开通汇率换算");
     }
@@ -776,13 +870,24 @@ export function registerLoanRoutes(app: FastifyInstance, deps: { db: AppDb["db"]
       .where(and(eq(accounts.id, bill.accountId), eq(accounts.ledgerId, ledgerId)))
       .get();
     if (!acct) throw notFound("BILL_NOT_FOUND", "账单不存在");
-    if (body.paid === true) {
-      // 标记已还必须走 /pay 生成转账，不能只改 paid
-      throw badRequest("PAY_REQUIRED", "请使用还款接口生成转账后再标记已还");
+    // paid 是「已生成还款转账」的派生状态，只能由 /pay 写入：
+    //   - 改 true  → 必须走 /pay 生成转账，否则余额与流水无法追溯；
+    //   - 改 false → 会把已还账单重新打开，再调一次 /pay 就会重复生成一笔还款转账。
+    //     历史缺陷：这里只拦了 true，导致「取消已还 → 再还一次」重复扣款、信用卡变溢缴。
+    // 同值提交（已还再发 true / 未还再发 false）视为幂等空操作；整包无字段按校验错误拒绝
+    // （历史缺陷：set({}) 让 drizzle 抛 "No values to set" → 500）。
+    if (body.paid !== undefined && body.paid !== bill.paid) {
+      if (body.paid) {
+        throw badRequest("PAY_REQUIRED", "请使用还款接口生成转账后再标记已还");
+      }
+      throw badRequest(
+        "BILL_PAID_IMMUTABLE",
+        "已还账单不能取消标记；如需撤销请删除对应的还款转账流水后重新还款",
+      );
     }
-    const patch: Partial<typeof creditCardBills.$inferInsert> = {};
-    if (body.paid !== undefined) patch.paid = body.paid;
-    db.update(creditCardBills).set(patch).where(eq(creditCardBills.id, id)).run();
+    if (body.paid === undefined) {
+      throw badRequest("NOTHING_TO_UPDATE", "没有可更新的字段：账单已还状态只能通过还款接口变更");
+    }
     return { ok: true };
   });
 }

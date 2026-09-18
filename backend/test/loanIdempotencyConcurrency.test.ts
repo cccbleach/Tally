@@ -222,7 +222,11 @@ test("两个独立 App 实例 + 两个 SQLite 连接真正并发：同 key 同�
       .from(transactions)
       .where(eq(transactions.paymentGroupId, a.paymentGroupId!))
       .all();
-    assert.equal(groupTx.length, 2, "一个还款分组应恰好 2 条流水");
+    // 0 利率贷款：利息为 0，只写「本金转账」这一条腿（0 元流水无信息量，
+    // 且会被 transactions 的 CHECK (amount > 0) 拒绝）——历史断言是 2 条。
+    assert.equal(groupTx.length, 1, "0 利率贷款一个还款分组应恰好 1 条流水（本金转账）");
+    assert.equal(groupTx[0]!.type, "transfer", "唯一的流水应是本金转账");
+    assert.ok(groupTx[0]!.amount > 0, "流水金额必须为正");
     const idems = v.db
       .select()
       .from(loanPaymentIdempotency)
