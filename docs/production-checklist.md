@@ -52,7 +52,7 @@
       echo | openssl s_client -connect your-domain.cn:443 -servername your-domain.cn 2>/dev/null \
         | openssl x509 -noout -dates -issuer                            # 证书未过期、签发者为受信任公网 CA
       ```
-- [ ] 证书到期前 30 天内有告警（见第 9 节）。
+- [ ] 证书到期前有告警（见第 11 节的 TLS 告警项，触发阈值为剩余 21 天）。
 
 ## 3. JWT 密钥
 
@@ -99,7 +99,7 @@
       没有邮件 reset-token。身份 = 手机号（E.164）+ 全局唯一公开昵称。
 - [ ] 旧 `POST /auth/register`、`/auth/login`、`/auth/reset-code`、`/auth/reset-password` 已下线，
       后端保留路由但统一返回 `410 AUTH_METHOD_REMOVED`，不要再调用它们。
-- [ ] 生产必须配好阿里云短信，否则登录接口（`/auth/login-code` 路径）会返回 `503 SMS_SEND_FAILED`
+- [ ] 生产必须配好阿里云短信，否则**发码**接口（`POST /auth/request-code`，不是 `/auth/login-code`）会返回 `503 SMS_SEND_FAILED`
       （这是刻意行为：绝不「返回成功但用户拿不到验证码」）：
       `ALIYUN_SMS_ENABLED=true`、`ALIYUN_ACCESS_KEY_ID/SECRET`、`ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`。
 - [ ] **认证模式必须为 `production`**（生产编排已显式钉住，勿改动）。`AUTH_MODE=development` 会把短信验证码
@@ -152,9 +152,11 @@
       ```
 - [ ] **账户改币种限制**：升级后，已被流水/贷款/信用卡账单引用的账户改币种会返回
       400 `ACCOUNT_CURRENCY_LOCKED`。若业务上确需改，请"新建同币种账户 → 迁移流水 → 归档旧账户"。
-- [ ] **短信频控参数**（可用环境变量调，生产建议保留默认）：
-      `SMS_SEND_COOLDOWN_SECONDS`（默认 60）、`SMS_SEND_DAILY_LIMIT`（默认 5/号码/天）、
-      `SMS_SEND_GLOBAL_DAILY_BUDGET`（默认 2000/天）；另建议在阿里云控制台再设一层号码级频控。
+- [ ] **短信频控参数**（当前为代码内默认值，**没有**环境变量开关；要改需改代码或注入
+      `SmsThrottleOptions`）：同号码冷却 60 秒、同号码 5 条/天、全局 2000 条/天。
+      另建议在阿里云控制台再设一层号码级频控。
+      ⚠️ 历史文档写的 `SMS_SEND_COOLDOWN_SECONDS` / `SMS_SEND_DAILY_LIMIT` /
+      `SMS_SEND_GLOBAL_DAILY_BUDGET` 三个环境变量并不存在，设了没有任何效果。
 
 ## 7. 迁移前备份（**执行任何 migration 之前**）
 
@@ -173,8 +175,9 @@
       ```bash
       cd backend
       docker compose -f docker-compose.caddy.yml stop tally-backend
-      ../scripts/backup.sh "$(docker volume inspect tally-backend_tally-data -f '{{.Mountpoint}}')/tally.db" /srv/tally-backups/pre-migration
-      sha256sum /srv/tally-backups/pre-migration/tally-*.db | tail -1
+      # 卷名由 compose 的顶层 `name: tally` 决定（不是目录名 backend），实际为 tally_tally-data
+      ../scripts/backup.sh "$(docker volume inspect tally_tally-data -f '{{.Mountpoint}}')/tally.db" /var/lib/tally/backups/pre-migration
+      sha256sum /var/lib/tally/backups/pre-migration/tally-*.db | tail -1
       ```
 
       ⚠️ **校验备份别盲目用系统 `sqlite3` CLI**：老发行版自带 3.26（2018），读不了新 schema，
@@ -203,15 +206,18 @@
 
 - [ ] 每日备份 cron（保留策略：近 7 天每天 / 8–30 天每周 / 31–180 天每月 / 180 天后删除）：
       ```cron
-      15 3 * * * /opt/tally/scripts/backup.sh /srv/tally/data/tally.db /srv/tally-backups/daily >> /var/log/tally-backup.log 2>&1
+      15 3 * * * /opt/tally/scripts/backup.sh /var/lib/tally/tally.db /var/lib/tally/backups/daily >> /var/log/tally-backup.log 2>&1
+      # 路径必须与真实生产一致（见 docs/production-deploy.md 第 7 节）：
+      # 数据库 /var/lib/tally/tally.db、备份目录 /var/lib/tally/backups/daily。
+      # 写成 /srv/tally/... 时 cron 会静默失败（备份文件根本不存在，直到真需要恢复才发现）。
       ```
 - [ ] **异机副本**（本机留一份不算备份）：备份目录再同步到另一台机器/对象存储，并只追加、加密：
       ```bash
       # 方式 A：rsync 到异机（-e ssh，仅追加，避免覆盖）
       rsync -aPH --append-verify --delete-excluded --include='tally-*.db' --exclude='*' \
-        /srv/tally-backups/ backup@offsite.example-host:/srv/tally-offsite/
+        /var/lib/tally/backups/ backup@offsite.example-host:/srv/tally-offsite/
       # 方式 B：rclone 到对象存储（建议开服务端加密 + 生命周期 180 天）
-      rclone copy /srv/tally-backups/daily remote:tally-backup/daily --immutable
+      rclone copy /var/lib/tally/backups/daily remote:tally-backup/daily --immutable
       ```
       （目标主机名/桶名必须换成真实值，本仓库文档里的名字只是占位示例）
 - [ ] 副本完整性校验：把 sha256 清单一起同步；异机侧 `sha256sum -c` 必须全通过。
@@ -221,7 +227,9 @@
       # 校验用应用引擎（老 sqlite3 CLI 会误报 schema 损坏，见第 7 节）
       cd backend && node -e "const D=require('better-sqlite3');const db=new D('/tmp/tally-restore-drill/tally.db',{readonly:true});console.log(db.pragma('integrity_check'), db.prepare('SELECT COUNT(*) c FROM transactions').get().c)"
       # 用恢复出的库拉起一个隔离实例，验证能登录/能查流水（不接生产流量）
-      DATABASE_URL=/tmp/tally-restore-drill/tally.db PORT=18099 node dist/index.js &
+      # NODE_ENV=production + HOST=127.0.0.1 缺一不可：默认（NODE_ENV 未设）是开发模式，
+      # 会把短信验证码直接回传，且 HOST 默认 0.0.0.0 —— 在生产机上等于开放任意账号接管入口。
+      NODE_ENV=production HOST=127.0.0.1 DATABASE_URL=/tmp/tally-restore-drill/tally.db PORT=18099 node dist/index.js &
       curl -sS localhost:18099/health/ready
       ```
 - [ ] 演练记录表（写进运维日历/工单）：日期、备份文件、sha256、恢复耗时、`integrity_check` 结果、
@@ -351,8 +359,8 @@
 
 - [ ] 上线前确认生产库满足迁移前提：**只有大陆手机号账号、无邮箱账号**（当前生产库为
       `1` 个手机号账号、`0` 个邮箱账号），且无旧家庭/成员/邀请数据（0022 不迁移旧邀请）。
-- [ ] 发布前对生产 SQLite 做一致备份并保留到观察期结束（`scripts/backup.sh` +
-      `sqlite3 ... PRAGMA integrity_check`）。
+- [ ] 发布前对生产 SQLite 做一致备份并保留到观察期结束（`scripts/backup.sh`；
+      完整性校验必须用应用引擎 better-sqlite3，老 sqlite3 CLI 会误报 schema 损坏，见第 7 节）。
 - [ ] 先部署支持新协议的后端，启动后确认 `schema_migrations` 与 `backend/migrations/` 的文件数一致
       （该次为 22；**当前最新为 23**，`0001` → `0023` 全部应用），再安装新版 iOS；如迁移中途失败（含 0021 守门触发），
       SQLite 会整体回滚到 0020，可用备份直接恢复。
@@ -375,7 +383,7 @@
 ```bash
 # 后端全量
 cd backend && pnpm install --frozen-lockfile
-pnpm typecheck && pnpm test && pnpm audit --audit-level=critical --prod
+pnpm typecheck && pnpm test && pnpm audit --audit-level=high --prod   # 与 CI 一致（high/critical 硬失败）
 pnpm build && node scripts/smoke-dist-xlsx.mjs
 
 # 容器编排与镜像（需要 Docker 环境）

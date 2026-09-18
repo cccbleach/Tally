@@ -843,12 +843,10 @@ paths:
     post:
       tags: [budgets]
       operationId: createBudget
-      summary: 新建预算（同账本同月同分类唯一）
+      summary: 新建或更新预算（upsert，同账本同月同分类唯一；已存在则更新金额并返回该项）
       responses:
         "200":
-          description: 已创建
-        "409":
-          description: 该月该分类的预算已存在
+          description: 已创建或已更新（同月同分类重复提交不会 409，而是覆盖金额）
   /api/v1/budgets/overview:
     get:
       tags: [budgets]

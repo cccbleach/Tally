@@ -1,3 +1,11 @@
+# ⚠️ 历史文档（已被取代）
+
+> 本文件是早期优化计划的过程记录，部分「已完成」条目对应的实现**已整体下线**：
+> 邮箱/密码注册登录、找回密码（`/auth/forgot-password` 404、`/auth/reset-password` 410）、
+> 登录返回 `refreshToken` 的旧形态等，现为「手机号 + 短信验证码 + 全局唯一昵称」。
+> 备份保留策略也不是「最近 14 份」，而是 7 天每天 / 8–30 天每周 / 31–180 天每月（见 `scripts/prune-retention.mjs`）。
+> **当前口径以 README、docs/api.md、docs/openapi.yaml 为准**，不要把本文当实施依据。
+
 # Tally 修复优化计划
 
 > 基于对 backend / ios / docs 的整体审查。本计划按“先止血、再正确性、再架构、后加固”的顺序排列，

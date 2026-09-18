@@ -68,7 +68,7 @@ UniformTypeIdentifiers、Vision、WidgetKit）**全部是 Apple 平台框架**�
   与 `pdfExtract.*` 是本项目自己的解析封装，仅**调用**依赖库。
 - **Alibaba Cloud SDK**（`@alicloud/*`）为 Apache-2.0，用于短信与凭据；不以任何形式随客户端分发。
 - **字体 / 图标 / 图片**：App 图标与界面图形为本项目自制，无第三方素材授权问题。
-- **CI 附加检查**：`pnpm audit --audit-level=critical --prod`（安全公告），以及
+- **CI 附加检查**：`pnpm audit --audit-level=high --prod`（安全公告；CI 步骤名为「audit（生产依赖，high/critical 硬失败）」），以及
   `scripts/check-no-secrets.sh`（凭证特征）。**许可证复核目前是人工定期执行**，不在 CI 里（依赖变更时重跑本文第 4 节）。
 
 ## 4. 复核方法
@@ -95,7 +95,7 @@ let raw="";process.stdin.on("data",d=>raw+=d).on("end",()=>{
 pnpm why <包名>
 
 # 顺带安全公告
-pnpm audit --audit-level=critical --prod
+pnpm audit --audit-level=high --prod
 ```
 
 > 判定标准：出现 `GPL-*` / `AGPL-*` / `SSPL` / `CDDL` / `EPL` / `MPL` 且**不是**"OR 宽松许可"的

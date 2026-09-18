@@ -63,7 +63,18 @@
 
 ### 冲突错误
 
-- `PHONE_EXISTS` / `NICKNAME_TAKEN` / `NICKNAME_CHANGE_COOLDOWN` / `ALREADY_IN_FAMILY` / `INVITATION_EXISTS` / `INVALID_ONBOARDING_TOKEN`。
+- `NICKNAME_TAKEN` / `NICKNAME_CHANGE_COOLDOWN` / `ALREADY_IN_FAMILY` / `INVITATION_EXISTS` / `INVALID_ONBOARDING_TOKEN`。
+
+### 其他常见错误码（写路径护栏）
+
+| 错误码 | 场景 |
+|---|---|
+| `PAY_REQUIRED` / `BILL_PAID_IMMUTABLE` / `NOTHING_TO_UPDATE` | 信用卡账单的 `paid` 只能由 `/pay` 写入：直接改 `true`、把已还改回未还、或提交空 body 分别返回 |
+| `INVALID_PAY_ACCOUNT` | 还款/还款来源账户是信用卡或贷款负债账户；贷款还款来源等于其负债账户本身 |
+| `BILL_ALREADY_PAID` | 同一期账单重复还款（409，且不会产生第二套流水） |
+| `LOAN_AMOUNT_TOO_SMALL` | 贷款本金 < 期数（每期不足 1 分，会生成「0 元期次」的假还款计划） |
+| `INSTALLMENT_DEGENERATE` | 历史退化贷款（应还本金与利息均为 0）无法生成还款流水 |
+| `INVALID_YEAR` / `INVALID_MONTH` | `year`/`month` 查询参数越界（如 `month=13`），不再静默返回空统计 |
 
 ## 账户 Accounts
 
@@ -114,7 +125,8 @@
 - 可传查询参数 `ledgerId`，将上传、预览、确认和提交固定在同一个账本。
 - 支持 TXT/CSV/XLSX，以及银行导出的文字版 PDF；XLSX ≤5MB，其余 ≤20MB，单次 ≤5000 条。ZIP 请先解压，加密 PDF 请先解密，扫描件暂不支持。
 - 银行 CSV/XLSX 当前支持标准表头：记账日期/交易日期、交易金额/发生额、余额/联机余额/账户余额，可附币种、收支、摘要和流水号；不是所有银行的任意导出格式都能解析。
-- 返回 `{item,counts}` 暂存结果，`item.source` 是识别结果；经 `/imports/jobs/{id}` 预览、`/imports/items/{id}` 确认后，再 `POST /imports/jobs/{id}/commit` 正式入账。
+- 返回 `{item,counts}` 暂存结果，`item.source` 是识别结果；经 `GET /imports/jobs/{id}` 预览、`PATCH /imports/items/{id}` 确认后，再 `POST /imports/jobs/{id}/commit` 正式入账。
+- `GET /imports/jobs` 列出当前账本的历史导入任务（含状态与计数），用于「导入记录」回看。
 - 需要当前账本至少一个非归档账户；iOS 在选文件前提供“添加账户”入口，不会自动创建或猜测账户。
 - iOS 从“设置 → 导入账单”进入，不再手动选择微信/支付宝/银行；文件选择器授权在协调读取结束后释放，multipart 上传与普通请求共用登录续期。
 
@@ -194,6 +206,13 @@
 | POST | /families/invitations/:id/decline | 拒绝邀请 |
 | PATCH | /families/:id | 修改共享账本名称 |
 | DELETE | /families/:id/members/:memberUserId | 移除成员 |
+| GET | /families/:id/invitations | 该共享账本的待处理邀请列表 |
+| DELETE | /families/:id/invitations/:inviteId | 撤回一条待处理邀请 |
+| POST | /families/:id/exit | 成员主动退出共享账本 |
+| POST | /families/:id/transfer | Owner 转让所有权 |
+| DELETE | /families/:id | 解散共享账本（数据保留、账本对所有人不可访问） |
+| POST | /families/:id/members | **已下线 → 410 `FAMILY_FLOW_REMOVED`**（改为按昵称邀请） |
+| PATCH | /families/:id/members/:memberUserId | **已下线 → 410 `FAMILY_FLOW_REMOVED`** |
 | GET | /ledgers | 我可见的账本（个人 + 共享） |
 | POST | /ledgers/switch | 切换当前账本 `{ledgerId}` |
 
@@ -210,15 +229,22 @@
 | GET | /loans/:id | 贷款详情 + 还款计划 |
 | PATCH | /loans/:id | 更新贷款（名称/利率/扣款账户） |
 | — | — | 创建/还款时贷款币种必须与还款来源账户币种一致（创建期即校验，避免建出一笔无法偿还的贷款） |
-| DELETE | /loans/:id | 删除贷款 |
-| POST | /loans/:id/pay | 标记一期已还，自动更新剩余本金 |
+| DELETE | /loans/:id | 删除贷款：同一事务内清理还款计划与幂等记录、**归档**该贷款的负债账户、写审计；已产生的还款流水保留（真实资金流水不随贷款删除消失） |
+| POST | /loans/:id/pay | 标记一期已还，自动更新剩余本金。响应中的 `principalTransactionId`/`interestTransactionId` 可能为 `null`：0 利率贷款的利息为 0、或本金已还完时不生成对应流水（0 元流水无意义且被数据库拒绝） |
 | GET | /liabilities | 负债总览（返回 `baseCurrency` + `totalDebt` + `creditCards[]` + `loans[]` + `creditCardBills[]`；金额均为基准币） |
 | POST | /credit-cards/:accountId/bills | 创建信用卡账单（还款账户币种必须与信用卡一致，否则 400 `CURRENCY_MISMATCH`） |
-| GET | /credit-card-bills | 当前账本信用卡账单列表 |
-| PATCH | /credit-card-bills/:id | 标记账单已还 `{paid}` |
+| POST | /credit-card-bills/:id/pay | 还该期账单：生成「还款账户 → 信用卡」转账并把账单标记已还（重复还款 409 `BILL_ALREADY_PAID`；还款账户不能是信用卡或贷款账户） |
+| GET | /credit-card-bills | 当前账本信用卡账单列表（金额为基准币，另附 `*Native` 原币值） |
+| PATCH | /credit-card-bills/:id | `paid` 是还款派生的只读状态，**不可修改**：改 `true` 返回 400 `PAY_REQUIRED`（必须走 `/pay` 生成转账），改 `false` 返回 400 `BILL_PAID_IMMUTABLE`（否则可「取消已还 → 再还一次」重复扣款）；同值提交为幂等空操作 200，空 body 返回 400 `NOTHING_TO_UPDATE` |
 
 - 净资产 = 资产 −（信用卡欠款 + 贷款剩余本金）
 - 账户接口的信用卡支持 `creditLimit/billingDay/repaymentDay`
+
+## 审计日志
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | /audit-logs?entityType&entityId | 当前账本的审计记录（贷款/家庭/导入/信用卡账单等关键写操作；`before/after` 为 JSON） |
 
 ## 账单导入去重
 

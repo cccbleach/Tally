@@ -152,8 +152,10 @@ App 端 ATS 已收紧（不再使用全局 `NSAllowsArbitraryLoads`，仅保留 
 - Release 构建带一个 pre-build Run Script，调用 `ios/scripts/validate-api-url.sh`：
   地址为空/未展开、非 HTTPS、`localhost`/`127.x`/私网 IP/裸 IP、单标签主机名、
   `example.com`/`.test`/`.invalid`、`your-*`/`placeholder` 等占位词 → **构建立即失败**。
-- CI 会显式注入正式生产域名：`xcodebuild ... TALLY_API_BASE_URL=https://your-domain.cn`
-  （由 workflow 的 `PROD_API_BASE_URL` 控制，默认即 `https://your-domain.cn`，手动触发时可覆盖），并用
+- CI 会显式注入正式生产域名：`xcodebuild ... TALLY_API_BASE_URL=<PROD_API_BASE_URL>`，
+  该值只存在于**仓库变量** `PROD_API_BASE_URL`（Settings → Secrets and variables → Actions → Variables），
+  代码与文档里都不落真实域名；**未设置该变量时 Release 构建会直接失败**（刻意如此，见
+  `docs/secret-hygiene.md`），`workflow_dispatch` 可用输入 `api_base_url` 覆盖。构建后用
   `validate-api-url.sh --plist Tally.app` 复核**产物 Info.plist**。
 - `Info.plist` 的 `TallyAPIBaseURL` 引用 `$(TALLY_API_BASE_URL)`，由 Xcode 构建时替换；`APIClient` 读取该键，
   Release 下再兜一层（非 HTTPS 或本机/示例/占位域名直接 `fatalError`）。
@@ -184,7 +186,7 @@ server {
 
 ## 账单导入（Excel/xlsx）资源限制
 
-- xlsx（Excel）解析运行在 **worker 线程** 中（`backend/src/lib/xlsxWorker.ts`），并施加资源限制：
+- xlsx（Excel）解析运行在 **worker 线程** 中（`backend/src/lib/xlsxWorker.cjs`，TS 声明见同目录 `.cts`），并施加资源限制：
   - 内存：worker 堆上限（旧代 64MB / 新生代 16MB）。
   - 超时：单次解析 20s 超时，超时强制 `terminate()` 并返回明确错误；若 worker 在任何结果返回前就退出，Promise 也会被 reject（不会留下永不完成的调用）。
   - 输入：文件大小 ≤5MB（上传层另有 20MB 总量限制）。
