@@ -30,3 +30,26 @@ test("单号内嵌日期（微信交易单号含 YYYYMMDD）可作精确证据�
   // 非法月日不会被当成日期
   assert.deepEqual(embeddedDate("4500000340202613400000000000"), []);
 });
+
+test("时区回卷：文本日期比真实日期晚一天时必须接受（+08 渲染跨午夜），真矛盾才拒绝", async () => {
+  const { pickAuthoritativeDate } = await import("../../scripts/repair-bill-dates.mjs");
+  const TUE = 2;
+  // 线上实测：文本 "Tue Aug 18" 对应真实 2026-08-17（周一）—— 必须接受
+  assert.deepEqual(pickAuthoritativeDate(["2026-08-17"], TUE), { iso: "2026-08-17" });
+  // 同一天（16:00 前的交易不会跨午夜）也必须接受
+  assert.deepEqual(pickAuthoritativeDate(["2026-08-18"], TUE), { iso: "2026-08-18" });
+  // 真的矛盾（相差 2 天）→ 拒绝，绝不猜
+  assert.ok(pickAuthoritativeDate(["2026-01-01"], TUE).error);
+  // 多个候选 → 拒绝
+  assert.ok(pickAuthoritativeDate(["2026-08-17", "2026-08-18"], TUE).error);
+  // 商户单号里的伪日期（2000-03-21）必须被年份窗口过滤掉，只留真实候选
+  assert.deepEqual(
+    pickAuthoritativeDate(["2000-03-21", "2026-08-04"], TUE, { minYear: 2025, maxYear: 2026 }),
+    { iso: "2026-08-04" },
+    "商户单号随机数字凑出的假日期必须被年份窗口排除",
+  );
+  assert.ok(
+    pickAuthoritativeDate(["2000-03-21"], TUE, { minYear: 2025, maxYear: 2026 }).error,
+    "窗口外的候选全部排除后应拒绝",
+  );
+});

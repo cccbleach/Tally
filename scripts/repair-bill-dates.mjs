@@ -72,6 +72,28 @@ export function embeddedDate(externalId) {
   return [...found];
 }
 
+/**
+ * 判定单号内嵌日期与文本星期是否自洽。
+ * 文本来自 `String(date)` 按服务器本地时区（+08）渲染：16:00 之后的交易会跨过午夜，
+ * 文本日期比真实日期**晚一天**（线上实测 103/103 都是 +1）。
+ * 因此允许「同一天」与「文本晚一天」两种；其余视为矛盾。
+ */
+export function pickAuthoritativeDate(embeddedDates, textWeekday, { minYear = 0, maxYear = 9999 } = {}) {
+  const wdOf = (iso) =>
+    new Date(Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)))).getUTCDay();
+  const consistent = embeddedDates.filter((iso) => {
+    // 年份窗口必须一并收窄：商户单号格式不同，随机数字里会凑出 "2000-03-21" 这类假日期
+    // （线上 50 条就是这样被误判成「多个候选」的）
+    const year = Number(iso.slice(0, 4));
+    if (year < minYear || year > maxYear) return false;
+    const wd = wdOf(iso);
+    return wd === textWeekday || wd === (textWeekday + 6) % 7;
+  });
+  if (consistent.length === 1) return { iso: consistent[0] };
+  if (consistent.length === 0) return { error: "与文本星期不符，数据自相矛盾" };
+  return { error: `单号内有多个候选日期：${consistent.join("/")}` };
+}
+
 export async function runRepair(dbPath, { apply = false, jsonPath = null, Database } = {}) {
 if (!Database) {
   const require = createRequire(`${process.cwd()}/package.json`);
@@ -96,38 +118,35 @@ for (const r of rows) {
   const createdDate = String(r.created_at ?? "").slice(0, 10);
   const embedded = embeddedDate(r.external_id);
 
-  // 单号内嵌日期是精确证据：星期吻合则直接采用，不再依赖年份窗口推断
+  // 单号内嵌日期（微信交易单号含 YYYYMMDD）是**权威**日期，直接采用。
+  // 文本日期是 `String(date)` 按服务器本地时区(+08)渲染的结果：16:00 之后的交易会跨过午夜，
+  // 于是文本日期比真实日期**系统性晚一天**（线上实测 103/103 都是 +1）。
+  // 因此一致性校验允许「同一天」或「文本晚一天」两种，其余一律视为矛盾并跳过。
   if (embedded.length) {
-    const exact = embedded.filter((iso) => {
-      const d = new Date(Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))));
-      return d.getUTCDay() === parsed.weekday;
-    });
-    if (exact.length === 1) {
-      fixes.push({ id: r.id, from: r.date, to: exact[0], crossChecked: true });
+    const picked = pickAuthoritativeDate(embedded, parsed.weekday, { minYear: createdYear - 1, maxYear: createdYear });
+    if (picked.iso) {
+      fixes.push({ id: r.id, from: r.date, to: picked.iso, crossChecked: true });
       continue;
     }
-    if (exact.length === 0) {
-      skipped.push({ id: r.id, date: r.date, reason: `单号内嵌日期(${embedded.join("/")})与文本星期不符，数据自相矛盾` });
-      continue;
-    }
+    skipped.push({ id: r.id, date: r.date, reason: `单号内嵌日期(${embedded.join("/")})${picked.error}` });
+    continue;
   }
 
+  // 没有单号内嵌日期时，文本日期存在 ±1 天的时区歧义（无法从数据本身判别），
+  // 因此只做年份窗口推断；窗口内不唯一就跳过并报告，绝不猜。
   const inferred = inferDate(parsed, createdYear, createdDate);
   if (inferred.error) {
     skipped.push({ id: r.id, date: r.date, reason: inferred.error });
     continue;
   }
-  if (embedded.length && !embedded.includes(inferred.iso)) {
-    skipped.push({ id: r.id, date: r.date, reason: `与单号内嵌日期不符（单号：${embedded.join("/")}，推断：${inferred.iso}）` });
-    continue;
-  }
-  fixes.push({ id: r.id, from: r.date, to: inferred.iso, crossChecked: embedded.includes(inferred.iso) });
+  fixes.push({ id: r.id, from: r.date, to: inferred.iso, crossChecked: false, note: "无单号交叉验证，文本日期可能有 ±1 天时区偏差" });
 }
 
 const byMonth = {};
 for (const f of fixes) byMonth[f.to.slice(0, 7)] = (byMonth[f.to.slice(0, 7)] ?? 0) + 1;
 console.log(`坏日期行合计: ${rows.length}`);
-console.log(`可精确修复  : ${fixes.length}（其中 ${fixes.filter((f) => f.crossChecked).length} 条另有单号内嵌日期交叉验证）`);
+console.log(`可精确修复  : ${fixes.length}（其中 ${fixes.filter((f) => f.crossChecked).length} 条由单号内嵌日期直接确定）`);
+if (fixes.some((f) => !f.crossChecked)) console.log("  仅靠星期推断（无单号，可能有 ±1 天时区偏差）:", fixes.filter((f) => !f.crossChecked).length);
 console.log(`跳过（需人工）: ${skipped.length}`);
 if (skipped.length) console.log("  跳过明细:", JSON.stringify(skipped.slice(0, 10)));
 console.log("修复后月份分布:", JSON.stringify(byMonth));
