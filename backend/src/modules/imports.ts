@@ -6,6 +6,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
 import { importItems, importJobs, transactions } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
+import { dateStr } from "../lib/schemas.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
@@ -48,7 +49,7 @@ const createJobSchema = z.object({
   items: z
     .array(
       z.object({
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        date: dateStr(),
         amount: z.number().int().positive(),
         type: z.enum(["income", "expense"]),
         note: z.string().nullable().optional(),

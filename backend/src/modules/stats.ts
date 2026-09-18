@@ -11,6 +11,7 @@ import {
   trend,
 } from "../lib/aggregates.js";
 import { currentYearMonth } from "../lib/date.js";
+import { parseYearMonthQuery } from "../lib/schemas.js";
 import type { Jwt } from "../auth/jwt.js";
 
 export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"]; jwt: Jwt }) {
@@ -22,8 +23,7 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const cur = currentYearMonth();
-    const year = Number(q.year ?? cur.year) || cur.year;
-    const month = Number(q.month ?? cur.month) || cur.month;
+    const { year, month } = parseYearMonthQuery(q, cur);
 
     const totals = monthlyTotals(db, userId, ledgerId, year, month);
     const ad = assetDebtSummary(db, userId, ledgerId);

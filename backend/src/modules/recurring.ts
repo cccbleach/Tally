@@ -10,9 +10,9 @@ import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { accountNameMap } from "../repositories/accountRepository.js";
 import { categoryNameMap } from "../repositories/categoryRepository.js";
+import { dateStr } from "../lib/schemas.js";
 import type { Jwt } from "../auth/jwt.js";
 
-const dateRe = /^\d{4}-\d{2}-\d{2}$/;
 const FREQUENCIES = ["daily", "weekly", "monthly", "yearly"] as const;
 
 const createSchema = z.object({
@@ -23,9 +23,9 @@ const createSchema = z.object({
   note: z.string().max(500, "备注过长").optional(),
   frequency: z.enum(FREQUENCIES),
   interval: z.number().int().min(1, "间隔至少为 1").max(365).default(1),
-  startDate: z.string().regex(dateRe, "开始日期格式应为 YYYY-MM-DD"),
+  startDate: dateStr(),
   ledgerId: z.string().optional(),
-  endDate: z.string().regex(dateRe, "结束日期格式应为 YYYY-MM-DD").nullable().optional(),
+  endDate: dateStr("结束日期不存在：请检查月份天数").nullable().optional(),
 });
 
 const updateSchema = z.object({
@@ -35,8 +35,8 @@ const updateSchema = z.object({
   note: z.string().max(500).nullable().optional(),
   frequency: z.enum(FREQUENCIES).optional(),
   interval: z.number().int().min(1).max(365).optional(),
-  startDate: z.string().regex(dateRe).optional(),
-  endDate: z.string().regex(dateRe).nullable().optional(),
+  startDate: dateStr().optional(),
+  endDate: dateStr().nullable().optional(),
   isActive: z.boolean().optional(),
   ledgerId: z.string().optional(),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),

@@ -10,6 +10,7 @@ import { expenseByCategory, monthlyTotals } from "../lib/aggregates.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { currentYearMonth } from "../lib/date.js";
+import { parseYearMonthQuery } from "../lib/schemas.js";
 import type { Jwt } from "../auth/jwt.js";
 
 const createSchema = z.object({
@@ -60,8 +61,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const cur = currentYearMonth();
-    const year = Number(q.year ?? cur.year) || cur.year;
-    const month = Number(q.month ?? cur.month) || cur.month;
+    const { year, month } = parseYearMonthQuery(q, cur);
     const rows = db
       .select()
       .from(budgets)
@@ -180,8 +180,7 @@ export function registerBudgetRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const cur = currentYearMonth();
-    const year = Number(q.year ?? cur.year) || cur.year;
-    const month = Number(q.month ?? cur.month) || cur.month;
+    const { year, month } = parseYearMonthQuery(q, cur);
     const totals = monthlyTotals(db, userId, ledgerId, year, month);
     const totalBudget = db
       .select()
