@@ -119,3 +119,90 @@ test("银行 PDF 解析失败/空文件给出可操作错误，且必定结束�
   // 非 PDF 内容：同样必须失败并返回
   await assert.rejects(() => parseBankPdf(new TextEncoder().encode("not a pdf at all")), /PDF_PARSE_FAILED|无法解析/);
 });
+
+// 回归：微信/银行导出的 xlsx 里「交易时间」是**真实的 Excel 日期单元格**（不是字符串），
+// exceljs 会把它还原成 Date，而 Date → String 是 "Tue Aug 18 2026 12:30:00 GMT+0800 (…)"，
+// 解析层再 slice(0,10) 就写成了 "Tue Aug 18" —— 线上真实故障：
+// 391 条微信流水的日期变成不可解析的文本，字符串比较下它们排在所有 "2026-…" 之后，
+// 于是被排除在**每一个**按月区间之外（在 App 里完全看不见）。
+test("xlsx 的 Excel 日期单元格被归一为 YYYY-MM-DD（线上 391 条坏日期的根因）", async () => {
+  const ExcelJS = require("exceljs");
+  const wbook = new ExcelJS.Workbook();
+  const wsheet = wbook.addWorksheet("明细");
+  wsheet.addRow(["交易时间", "交易类型", "交易对方", "商品", "收/支", "金额(元)", "支付方式", "当前状态", "交易单号", "商户单号", "备注"]);
+  const rowsData: Array<[Date, string]> = [
+    [new Date(Date.UTC(2026, 7, 18, 12, 30, 0)), "4200201"], // 2026-08-18（周二）
+    [new Date(Date.UTC(2026, 4, 20, 9, 5, 0)), "4200202"],  // 2026-05-20（周三）
+  ];
+  for (const [date, orderNo] of rowsData) {
+    const row = wsheet.addRow([date, "商户消费", "某商家", "午餐", "支出", "¥25.00", "零钱", "支付成功", orderNo, "", "午餐"]);
+    // 明确写成「日期类型 + 日期格式」的单元格，模拟微信导出的真实单元格类型
+    row.getCell(1).value = date;
+    row.getCell(1).numFmt = "yyyy-mm-dd hh:mm:ss";
+  }
+  const buf = (await wbook.xlsx.writeBuffer()) as Uint8Array;
+
+  const items = await parseWechatXlsx(buf);
+  assert.equal(items.length, 2, "两笔都应解析出来");
+  for (const it of items) {
+    assert.match(it.date, /^\d{4}-\d{2}-\d{2}$/, `日期必须是 YYYY-MM-DD，实际 ${JSON.stringify(it.date)}`);
+  }
+  assert.deepEqual(
+    items.map((i) => i.date).sort(),
+    ["2026-05-20", "2026-08-18"],
+    "Excel 日期单元格必须按墙钟值还原（不随进程时区漂移）",
+  );
+});
+
+test("日期归一：常见写法统一成 ISO，无法解析时返回 null", async () => {
+  const { normalizeBillDate } = await import("../src/lib/billParser.js");
+  assert.equal(normalizeBillDate("2026-08-18 12:30:00"), "2026-08-18");
+  assert.equal(normalizeBillDate("2026/8/5"), "2026-08-05");
+  assert.equal(normalizeBillDate("2026.8.5 09:00"), "2026-08-05");
+  assert.equal(normalizeBillDate("  2026-08-18T12:30:00Z  "), "2026-08-18");
+  assert.equal(normalizeBillDate(""), null);
+  assert.equal(normalizeBillDate("Tue Aug 18"), null, "Weekday 文本是不可解析的（正是线上坏数据）");
+  assert.equal(normalizeBillDate("2026-02-31"), null, "不存在的日历日必须拒绝（regex 挡不住）");
+});
+
+test("数据行日期无法解析时整份文件报错，而不是静默丢行或写脏数据", async () => {
+  // 微信：收/支 + 金额都合法 → 这就是一笔真实流水，日期不可解析必须可见地失败
+  const wechat = `微信支付账单明细
+交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+Tue Aug 18,商户消费,某商家,午餐,支出,¥25.00,零钱,支付成功,4200301,,午餐
+`;
+  assert.throws(
+    () => parseWechat(wechat),
+    /BILL_DATE_UNPARSABLE|日期无法解析/,
+    "不可解析的日期必须报错（历史行为是 slice(0,10) 原样落库）",
+  );
+
+  // 支付宝同理
+  const alipay = `交易号,商家订单号,交易创建时间,付款时间,最近修改时间,交易来源地,类型,交易对方,商品名称,金额,收/支,交易状态
+20260101001,,Tue Aug 18 12:30:00,2026-08-18 12:30:05,2026-08-18 12:30:05,其他,即时到账,某商家,午餐,25.00,支出,交易成功
+`;
+  assert.throws(() => parseAlipay(alipay), /日期无法解析/);
+});
+
+test("银行 CSV：表头/合计等非数据行照旧跳过，只有真实流水行才因日期报错", async () => {
+  const { parseBillFile } = await import("../src/lib/billFile.js");
+  const csv = [
+    "记账日期,交易金额,余额,摘要,对方户名,币种",
+    "2026-08-18,25.00,1000.00,消费,某商家,人民币",
+    "本页合计,,,",
+    "2026-08-19,30.00,970.00,消费,另一商家,人民币",
+  ].join("\n");
+  const parsed = await parseBillFile(Buffer.from(csv, "utf8"), "bank.csv", "auto");
+  assert.equal(parsed.items.length, 2, "合计行没有金额，应被当作非数据行跳过");
+  assert.deepEqual(parsed.items.map((i) => i.date), ["2026-08-18", "2026-08-19"]);
+
+  const bad = [
+    "记账日期,交易金额,余额,摘要,对方户名,币种",
+    "Wed May 20,25.00,1000.00,消费,某商家,人民币",
+  ].join("\n");
+  await assert.rejects(
+    () => parseBillFile(Buffer.from(bad, "utf8"), "bank.csv", "auto"),
+    /日期无法解析/,
+    "银行流水的日期不可解析时也必须报错",
+  );
+});

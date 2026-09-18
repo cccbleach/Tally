@@ -1,3 +1,6 @@
+import { isValidDateStr } from "./date.js";
+import { badRequest } from "./errors.js";
+
 // 账单导入解析：支持微信支付明细（txt/xlsx）与支付宝交易明细（csv）。
 // 按常见导出格式解析；行结构与网银/银行 App 导出的 CSV 大同小异，后续可扩展 source。
 
@@ -54,6 +57,19 @@ function yuanToCents(val: string | undefined): number | null {
   return Math.round(n * 100);
 }
 
+// 账单日期归一：把「YYYY-MM-DD HH:mm:ss」「YYYY/M/D」「YYYY.M.D」等常见写法统一成
+// YYYY-MM-DD，并用 isValidDateStr 做「真实存在的日历日」校验（正则挡不住 2026-02-31）。
+// 返回 null 表示无法解析 —— 调用方必须显式处理，绝不能静默丢弃或原样落库。
+export function normalizeBillDate(raw: string | undefined): string | null {
+  const text = (raw ?? "").trim();
+  if (!text) return null;
+  const head = text.split(/[ T]/)[0]!.replace(/[/.]/g, "-");
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(head);
+  if (!m) return null;
+  const iso = `${m[1]}-${m[2]!.padStart(2, "0")}-${m[3]!.padStart(2, "0")}`;
+  return isValidDateStr(iso) ? iso : null;
+}
+
 // 微信支付明细通用行解析（txt 和 xlsx 共用）
 export function parseWechatRows(rows: string[][]): ParsedBill[] {
   const headerIdx = rows.findIndex(
@@ -83,9 +99,19 @@ export function parseWechatRows(rows: string[][]): ParsedBill[] {
 
     const dateRaw = cols[di] ?? "";
     const cents = yuanToCents(cols[ai]);
-    if (!cents || cents <= 0 || !dateRaw) continue;
+    // 到这里说明「收/支 + 金额」都合法，就是一笔真实流水：日期必须能解析。
+    // 历史缺陷：slice(0,10) 原样落库，Excel 日期单元格被 String() 成 "Tue Aug 18…" 时
+    // 会写入不可解析的日期（线上 391 条），这些流水在按月筛选里彻底不可见。
+    if (!cents || cents <= 0) continue;
+    const date = normalizeBillDate(dateRaw);
+    if (!date) {
+      throw badRequest(
+        "BILL_DATE_UNPARSABLE",
+        `第 ${i + 1} 行日期无法解析（"${dateRaw.slice(0, 24)}"）：请确认是微信/支付宝/银行导出的原始明细文件`,
+      );
+    }
     items.push({
-      date: dateRaw.slice(0, 10),
+      date,
       amount: cents,
       type,
       note: ni >= 0 && cols[ni] ? cols[ni] : null,
@@ -344,9 +370,16 @@ export function parseAlipayRows(rows: string[][]): ParsedBill[] {
 
     const dateRaw = cols[diRaw] ?? "";
     const cents = yuanToCents(cols[ai]);
-    if (!cents || cents <= 0 || !dateRaw) continue;
+    if (!cents || cents <= 0) continue;
+    const date = normalizeBillDate(dateRaw);
+    if (!date) {
+      throw badRequest(
+        "BILL_DATE_UNPARSABLE",
+        `第 ${i + 1} 行日期无法解析（"${dateRaw.slice(0, 24)}"）：请确认是微信/支付宝/银行导出的原始明细文件`,
+      );
+    }
     items.push({
-      date: dateRaw.slice(0, 10),
+      date,
       amount: cents,
       type,
       note: ni >= 0 && cols[ni] ? cols[ni] : null,

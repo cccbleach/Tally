@@ -1,6 +1,6 @@
 import { badRequest } from "./errors.js";
 import {
-  decodeBillBuffer, parseAlipayRows, parseBankPdf, parseTextRows,
+  decodeBillBuffer, normalizeBillDate, parseAlipayRows, parseBankPdf, parseTextRows,
   parseWechatRows, readXlsxRows, type ParsedBill,
 } from "./billParser.js";
 
@@ -38,11 +38,18 @@ function parseBankRows(rows: string[][]): ParsedBill[] {
   const ni = col(["交易摘要", "摘要", "备注"]), pi = col(["对手信息", "对方户名", "交易对手"]);
   const ei = col(["流水号", "交易流水号"]);
   const items: ParsedBill[] = [];
-  for (const row of rows.slice(headerIndex + 1)) {
-    const date = (row[di] ?? "").slice(0, 10).replaceAll("/", "-");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date))) continue;
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i]!;
     const amount = Number((row[ai] ?? "").replace(/[¥￥,\s]/g, ""));
+    // 先判断「是不是一笔真实流水」：金额合法才算数据行，表头/合计/空行在这里被跳过
     if (!Number.isFinite(amount) || amount === 0) continue;
+    const date = normalizeBillDate(row[di]);
+    if (!date) {
+      throw badRequest(
+        "BILL_DATE_UNPARSABLE",
+        `第 ${i + 1} 行日期无法解析（"${(row[di] ?? "").slice(0, 24)}"）：请确认是银行导出的原始交易明细`,
+      );
+    }
     const currencyRaw = (row[ci] ?? "CNY").trim();
     const currency = ["", "人民币", "RMB", "CNY"].includes(currencyRaw) ? "CNY" : currencyRaw.toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) continue;

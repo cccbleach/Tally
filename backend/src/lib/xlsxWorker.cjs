@@ -24,6 +24,17 @@ const XLSX_MAX_ROWS = 100_000;
 const XLSX_MAX_COLS = 256;
 const XLSX_MAX_CELLS = 500_000; // 返回单元格总数上限（含被截断列），防止返回天文数字单元格
 
+// Excel 日期单元格会被 exceljs 还原成 Date（墙钟值存在 UTC 字段里，与进程时区无关）。
+// 必须显式归一成 "YYYY-MM-DD HH:mm:ss"：直接 String(date) 得到的是
+// "Tue Aug 18 2026 12:30:00 GMT+0800 (China Standard Time)"，解析层 slice(0,10) 就存成
+// "Tue Aug 18" —— 线上真实故障（391 条微信流水的日期变成文本，在按月筛选里完全不可见）。
+function formatExcelDate(d) {
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
 async function run() {
   try {
     const { buf } = workerData;
@@ -45,7 +56,7 @@ async function run() {
       if (cellCount > XLSX_MAX_CELLS) {
         throw new Error("XLSX_TOO_MANY_CELLS");
       }
-      rows.push(capped.map((c) => String(c ?? "")));
+      rows.push(capped.map((c) => (c instanceof Date ? formatExcelDate(c) : String(c ?? ""))));
     });
     // 最终再校验一次返回单元格总数（覆盖稀疏/空行累计误差）
     const totalCells = rows.reduce((sum, r) => sum + r.length, 0);
