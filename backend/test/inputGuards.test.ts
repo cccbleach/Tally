@@ -22,7 +22,6 @@ let db: ReturnType<typeof createDb>["db"];
 let sqlite: ReturnType<typeof createDb>["sqlite"];
 let dir: string;
 let H: Record<string, string>;
-let accountId = "";
 let categoryId = "";
 
 function req(method: string, url: string, body?: unknown) {
@@ -40,9 +39,8 @@ before(async () => {
   app = await buildApp({ db, jwtSecret: "input-guards-secret-0123456789" });
   const reg = await smsRegister(app, "13844440001", "输入护栏用户");
   H = { authorization: "Bearer " + reg.token };
-  const acct = await req("POST", "/api/v1/accounts", { name: "主账户", type: "bank", initialBalance: 100000000 });
+  const acct = { statusCode: 200 }; // 账户域已下线：不再需要先建账户
   assert.equal(acct.statusCode, 200, acct.body);
-  accountId = acct.json().item.id as string;
   const cats = await req("GET", "/api/v1/categories");
   assert.equal(cats.statusCode, 200, cats.body);
   categoryId = (cats.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense")!.id;
@@ -57,7 +55,7 @@ test("日期校验：不存在的日期被拒绝（不再被静默滚到下个�
   // 2026-02-31 / 2025-02-29（非闰年）/ 2026-04-31 / 2026-13-01 都必须 400
   for (const bad of ["2026-02-31", "2025-02-29", "2026-04-31", "2026-13-01", "2026-00-10"]) {
     const res = await req("POST", "/api/v1/transactions", {
-      accountId, categoryId, type: "expense", amount: 100, date: bad,
+      categoryId, type: "expense", amount: 100, date: bad,
     });
     assert.equal(res.statusCode, 400, `${bad} 应被拒绝: ` + res.body);
     assert.equal(res.json().error.code, "VALIDATION", bad + " 应返回 VALIDATION");
@@ -66,13 +64,13 @@ test("日期校验：不存在的日期被拒绝（不再被静默滚到下个�
   // 合法日期（含闰年 2 月 29）必须照常通过
   for (const good of ["2024-02-29", "2026-02-28", "2026-12-31"]) {
     const res = await req("POST", "/api/v1/transactions", {
-      accountId, categoryId, type: "expense", amount: 100, date: good,
+      categoryId, type: "expense", amount: 100, date: good,
     });
     assert.equal(res.statusCode, 200, `${good} 应被接受: ` + res.body);
   }
   // 周期性账单的 startDate/endDate 同样受保护
   const recurring = await req("POST", "/api/v1/recurring", {
-    accountId, type: "expense", amount: 100, frequency: "monthly",
+    type: "expense", amount: 100, frequency: "monthly",
     startDate: "2026-02-31",
   });
   assert.equal(recurring.statusCode, 400, "周期账单起始日不合法应 400: " + recurring.body);

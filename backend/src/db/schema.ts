@@ -159,24 +159,6 @@ export const familyInvitations = sqliteTable(
   ],
 );
 
-export const accounts = sqliteTable(
-  "accounts",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    ledgerId: text("ledger_id"),
-    name: text("name").notNull(),
-    type: text("type").notNull().default("other"),
-    initialBalance: integer("initial_balance").notNull().default(0),
-    icon: text("icon"),
-    color: text("color"),
-    isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
-    createdAt: text("created_at").notNull(),
-    updatedAt: text("updated_at").notNull(), // 乐观锁：PATCH 可带 expectedUpdatedAt 比对
-  },
-  (t) => [index("idx_accounts_user").on(t.userId), index("idx_accounts_ledger").on(t.ledgerId)],
-);
-
 
 
 
@@ -204,13 +186,11 @@ export const transactions = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     ledgerId: text("ledger_id"),
-    accountId: text("account_id").notNull(),
     categoryId: text("category_id"),
-    type: text("type").notNull(), // income | expense | transfer
+    type: text("type").notNull(), // income | expense
     amount: integer("amount").notNull(), // 分，恒为正
     note: text("note"),
     date: text("date").notNull(), // YYYY-MM-DD
-    transferToAccountId: text("transfer_to_account_id"),
     recurringId: text("recurring_id"), // 周期账单生成关联，用于幂等
     externalId: text("external_id"), // 账单导入来源唯一号，用于去重
     sourceType: text("source_type"), // manual | wechat | alipay | bank | import
@@ -222,7 +202,6 @@ export const transactions = sqliteTable(
   },
   (t) => [
     index("idx_tx_user_date").on(t.userId, t.date),
-    index("idx_tx_user_account").on(t.userId, t.accountId),
     index("idx_tx_ledger").on(t.ledgerId),
     uniqueIndex("uniq_recurring_tx").on(t.recurringId, t.date), // 幂等唯一（NULL 互不冲突）
     uniqueIndex("uniq_tx_external_source").on(t.ledgerId, t.sourceType, t.externalId), // 硬去重：同账本同来源同外部 ID（NULL 互不冲突）
@@ -237,7 +216,6 @@ export const recurring = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     ledgerId: text("ledger_id"),
-    accountId: text("account_id").notNull(),
     categoryId: text("category_id"),
     type: text("type").notNull(), // income | expense
     amount: integer("amount").notNull(), // 分
@@ -300,7 +278,6 @@ export const importItems = sqliteTable(
   {
     id: text("id").primaryKey(),
     jobId: text("job_id").notNull(),
-    accountId: text("account_id"),
     categoryId: text("category_id"),
     externalId: text("external_id"),
     occurredAt: text("occurred_at").notNull(),
@@ -324,7 +301,6 @@ export type UserRow = typeof users.$inferSelect;
 export type LedgerRow = typeof ledgers.$inferSelect;
 export type FamilyRow = typeof families.$inferSelect;
 export type FamilyMemberRow = typeof familyMembers.$inferSelect;
-export type AccountRow = typeof accounts.$inferSelect;
 export type CategoryRow = typeof categories.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
 export type RecurringRow = typeof recurring.$inferSelect;

@@ -3,12 +3,11 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts, categories, recurring } from "../db/schema.js";
+import { categories, recurring } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
-import { accountNameMap } from "../repositories/accountRepository.js";
 import { categoryNameMap } from "../repositories/categoryRepository.js";
 import { dateStr } from "../lib/schemas.js";
 import type { Jwt } from "../auth/jwt.js";
@@ -16,7 +15,6 @@ import type { Jwt } from "../auth/jwt.js";
 const FREQUENCIES = ["daily", "weekly", "monthly", "yearly"] as const;
 
 const createSchema = z.object({
-  accountId: z.string().min(1, "账户不能为空"),
   categoryId: z.string().min(1, "分类不能为空"),
   type: z.enum(["income", "expense"]),
   amount: z.number().int("金额必须为整数（分）").positive("金额必须大于 0"),
@@ -29,7 +27,6 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
-  accountId: z.string().min(1).optional(),
   categoryId: z.string().min(1).optional(),
   amount: z.number().int().positive().optional(),
   note: z.string().max(500).nullable().optional(),
@@ -44,10 +41,9 @@ const updateSchema = z.object({
 
 type RecurringRow = typeof recurring.$inferSelect;
 
-function toDto(r: RecurringRow, accountName: string | null, categoryName: string | null) {
+function toDto(r: RecurringRow, categoryName: string | null) {
   return {
     id: r.id,
-    accountId: r.accountId,
     categoryId: r.categoryId,
     type: r.type,
     amount: r.amount,
@@ -60,7 +56,6 @@ function toDto(r: RecurringRow, accountName: string | null, categoryName: string
     lastGeneratedDate: r.lastGeneratedDate,
     isActive: r.isActive,
     updatedAt: r.updatedAt,
-    accountName,
     categoryName,
   };
 }
@@ -79,9 +74,8 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       .where(eq(recurring.ledgerId, ledgerId))
       .orderBy(asc(recurring.nextRunDate))
       .all();
-    const am = accountNameMap(db, userId, ledgerId);
     const cm = categoryNameMap(db, userId, ledgerId);
-    return { items: rows.map((r) => toDto(r, am.get(r.accountId) ?? null, r.categoryId ? (cm.get(r.categoryId) ?? null) : null)) };
+    return { items: rows.map((r) => toDto(r, r.categoryId ? (cm.get(r.categoryId) ?? null) : null)) };
   });
 
   app.post("/api/v1/recurring", { preHandler: auth }, async (req) => {
@@ -89,12 +83,6 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     const body = createSchema.parse(req.body);
     const ledgerId = getAccessibleLedger(db, userId, body.ledgerId).id;
     requireLedgerPermission(db, userId, ledgerId, "transaction:create");
-    const account = db
-      .select()
-      .from(accounts)
-      .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
-      .get();
-    if (!account) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
     const cat = db
       .select()
       .from(categories)
@@ -109,7 +97,6 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       id: randomUUID(),
       userId,
       ledgerId,
-      accountId: body.accountId,
       categoryId: body.categoryId,
       type: body.type,
       amount: body.amount,
@@ -125,9 +112,8 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       updatedAt: now,
     };
     db.insert(recurring).values(row).run();
-    const am = accountNameMap(db, userId, ledgerId);
     const cm = categoryNameMap(db, userId, ledgerId);
-    return { item: toDto(row as RecurringRow, am.get(row.accountId) ?? null, cm.get(row.categoryId) ?? null) };
+    return { item: toDto(row as RecurringRow, cm.get(row.categoryId) ?? null) };
   });
 
   app.patch("/api/v1/recurring/:id", { preHandler: auth }, async (req) => {
@@ -147,15 +133,6 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
     }
 
     const patch: Partial<typeof recurring.$inferInsert> = {};
-    if (body.accountId !== undefined) {
-      const acct = db
-        .select()
-        .from(accounts)
-        .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
-        .get();
-      if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
-      patch.accountId = body.accountId;
-    }
     if (body.categoryId !== undefined) {
       const cat = db
         .select()
@@ -189,9 +166,8 @@ export function registerRecurringRoutes(app: FastifyInstance, deps: { db: AppDb[
       .from(recurring)
       .where(and(eq(recurring.id, id), eq(recurring.ledgerId, ledgerId)))
       .get();
-    const am = accountNameMap(db, userId, ledgerId);
     const cm = categoryNameMap(db, userId, ledgerId);
-    return { item: toDto(updated as RecurringRow, am.get((updated as RecurringRow).accountId) ?? null, (updated as RecurringRow).categoryId ? (cm.get((updated as RecurringRow).categoryId!) ?? null) : null) };
+    return { item: toDto(updated as RecurringRow, (updated as RecurringRow).categoryId ? (cm.get((updated as RecurringRow).categoryId!) ?? null) : null) };
   });
 
   app.delete("/api/v1/recurring/:id", { preHandler: auth }, async (req) => {

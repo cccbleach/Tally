@@ -84,7 +84,6 @@ test("统一入口仍执行空文件、大小与成功流水限制", async () =>
 let app: FastifyInstance;
 let sqlite: ReturnType<typeof createDb>["sqlite"];
 let headers: Record<string, string>;
-let noAccountHeaders: Record<string, string>;
 let dir: string;
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "tally-unified-import-"));
@@ -93,9 +92,6 @@ before(async () => {
   runMigrations(sqlite, resolve("./migrations"));
   app = await buildApp({ db: created.db, jwtSecret: "test-import-secret" });
   headers = authHeaders(await smsRegister(app, "13841000001", "统一导入测试"));
-  noAccountHeaders = authHeaders(await smsRegister(app, "13841000002", "无账户测试"));
-  const account = await app.inject({ method: "POST", url: "/api/v1/accounts", headers, payload: { name: "储蓄卡", type: "bank" } });
-  assert.equal(account.statusCode, 200, account.body);
 });
 after(async () => { await app.close(); sqlite.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -124,14 +120,6 @@ test("原客户端显式 source 仍可用，未知 source 不静默降级", asyn
   const invalid = await upload(Buffer.from(wechat), "wx.txt", "unknown");
   assert.equal(invalid.statusCode, 400);
   assert.equal(invalid.json().error.code, "VALIDATION");
-});
-
-test("无账户时明确提示，不创建半成品导入任务", async () => {
-  const before = sqlite.prepare("SELECT count(*) n FROM import_jobs").get()!.n;
-  const response = await upload(Buffer.from(wechat), "wx.csv", undefined, noAccountHeaders);
-  assert.equal(response.statusCode, 400);
-  assert.equal(response.json().error.code, "ACCOUNT_REQUIRED");
-  assert.equal(sqlite.prepare("SELECT count(*) n FROM import_jobs").get()!.n, before);
 });
 
 test("multipart 超过插件大小上限返回 413 FILE_TOO_LARGE，不伪装成服务器内部错误", async () => {

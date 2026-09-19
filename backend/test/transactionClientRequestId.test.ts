@@ -45,21 +45,18 @@ after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function setupAccountAndCategory() {
-  const account = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", initialBalance: 0 });
-  assert.equal(account.statusCode, 200, account.body);
+async function setupCategory() {
   const category = await req("POST", "/api/v1/categories", { name: "餐饮", type: "expense" });
   assert.equal(category.statusCode, 200, category.body);
-  return { accountId: account.json().item.id as string, categoryId: category.json().item.id as string };
+  return { categoryId: category.json().item.id as string };
 }
 
 test("同一 clientRequestId 重复提交返回首次流水，不重复入账", async () => {
-  const { accountId, categoryId } = await setupAccountAndCategory();
+  const { categoryId } = await setupCategory();
   const payload = {
     type: "expense",
     amount: 2500,
     date: "2026-09-12",
-    accountId,
     categoryId,
     note: "咖啡",
     clientRequestId: "queued-0001",
@@ -79,12 +76,11 @@ test("同一 clientRequestId 重复提交返回首次流水，不重复入账", 
 });
 
 test("并发两个相同键请求：唯一索引兜底，只有一个入账且双方同结果", async () => {
-  const { accountId, categoryId } = await setupAccountAndCategory();
+  const { categoryId } = await setupCategory();
   const payload = {
     type: "expense",
     amount: 1000,
     date: "2026-09-12",
-    accountId,
     categoryId,
     clientRequestId: "queued-concurrent-0002",
   };
@@ -104,12 +100,11 @@ test("并发两个相同键请求：唯一索引兜底，只有一个入账且�
 });
 
 test("不带 clientRequestId 维持原行为：每条独立入账", async () => {
-  const { accountId, categoryId } = await setupAccountAndCategory();
+  const { categoryId } = await setupCategory();
   const payload = {
     type: "expense",
     amount: 100,
     date: "2026-09-12",
-    accountId,
     categoryId,
   };
   const a = await req("POST", "/api/v1/transactions", payload);
@@ -120,8 +115,8 @@ test("不带 clientRequestId 维持原行为：每条独立入账", async () => 
 });
 
 test("幂等键格式非法被 zod 拒绝（空格/特殊字符/过短）", async () => {
-  const { accountId, categoryId } = await setupAccountAndCategory();
-  const base = { type: "expense", amount: 100, date: "2026-09-12", accountId, categoryId };
+  const { categoryId } = await setupCategory();
+  const base = { type: "expense", amount: 100, date: "2026-09-12", categoryId };
   for (const bad of ["", "abc", "has space", "中文键值", "a".repeat(65)]) {
     const res = await req("POST", "/api/v1/transactions", { ...base, clientRequestId: bad });
     assert.equal(res.statusCode, 400, `非法幂等键 ${JSON.stringify(bad)} 应被拒绝`);

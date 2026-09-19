@@ -4,7 +4,6 @@ import Observation
 @MainActor
 @Observable
 final class DataStore {
-    var accounts: [Account] = []
     var categories: [Category] = []
     var transactions: [Transaction] = []
     var summary: StatsSummary?
@@ -49,7 +48,6 @@ final class DataStore {
     }
 
     private func clearState() {
-        accounts = []
         categories = []
         transactions = []
         summary = nil
@@ -95,7 +93,6 @@ final class DataStore {
     func loadAll() async {
         isLoading = true
         defer { isLoading = false }
-        if let a: [Account] = LocalCache.load([Account].self, forKey: "accounts") { accounts = a }
         if let c: [Category] = LocalCache.load([Category].self, forKey: "categories") { categories = c }
         if let t: [Transaction] = LocalCache.load([Transaction].self, forKey: "transactions") { transactions = t }
         if let s: StatsSummary = LocalCache.load(StatsSummary.self, forKey: "summary") { summary = s }
@@ -104,20 +101,17 @@ final class DataStore {
 
         let range = TallyDate.monthRange(year: selectedYear, month: selectedMonth)
         do {
-            async let a = APIService.shared.accounts()
             async let c = APIService.shared.categories()
-            async let t = APIService.shared.transactions(from: range.from, to: range.to, accountId: nil, categoryId: nil, type: nil)
+            async let t = APIService.shared.transactions(from: range.from, to: range.to, categoryId: nil, type: nil)
             async let s = APIService.shared.summary(year: selectedYear, month: selectedMonth)
             async let r = APIService.shared.recurring()
             async let tr = APIService.shared.trend(months: 6)
-            let (accounts, categories, tx, summary, recurring, trend) = try await (a, c, t, s, r, tr)
-            self.accounts = accounts
+            let (categories, tx, summary, recurring, trend) = try await (c, t, s, r, tr)
             self.categories = categories
             self.transactions = tx.items
             self.summary = summary
             self.recurring = recurring
             self.trend = trend
-            LocalCache.save(accounts, forKey: "accounts")
             LocalCache.save(categories, forKey: "categories")
             LocalCache.save(tx.items, forKey: "transactions")
             LocalCache.save(summary, forKey: "summary")
@@ -130,7 +124,7 @@ final class DataStore {
             let syncOutcome = await OfflineTransactionSyncer.sync()
             pendingSyncCount = syncOutcome.remaining
             if syncOutcome.synced > 0 || syncOutcome.dropped > 0 {
-                async let t = APIService.shared.transactions(from: range.from, to: range.to, accountId: nil, categoryId: nil, type: nil)
+                async let t = APIService.shared.transactions(from: range.from, to: range.to, categoryId: nil, type: nil)
                 async let s = APIService.shared.summary(year: selectedYear, month: selectedMonth)
                 if let refreshed = try? await (t, s) {
                     transactions = refreshed.0.items
@@ -147,20 +141,6 @@ final class DataStore {
             isOffline = r.offline
             errorMessage = r.message
             pendingSyncCount = PendingTransactionQueue.count()
-        }
-    }
-
-    func refreshAccounts() async {
-        do {
-            let value = try await APIService.shared.accounts()
-            accounts = value
-            LocalCache.save(value, forKey: "accounts")
-            isOffline = false
-        } catch {
-            if let value: [Account] = LocalCache.load([Account].self, forKey: "accounts") { accounts = value }
-            let r = classify(error)
-            isOffline = r.offline
-            errorMessage = r.message
         }
     }
 
@@ -181,7 +161,7 @@ final class DataStore {
     func refreshTransactions() async {
         let range = TallyDate.monthRange(year: selectedYear, month: selectedMonth)
         do {
-            let tx = try await APIService.shared.transactions(from: range.from, to: range.to, accountId: nil, categoryId: nil, type: nil)
+            let tx = try await APIService.shared.transactions(from: range.from, to: range.to, categoryId: nil, type: nil)
             transactions = tx.items
             LocalCache.save(tx.items, forKey: "transactions")
             isOffline = false

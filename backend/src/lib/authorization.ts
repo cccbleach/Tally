@@ -6,8 +6,8 @@ import { forbidden } from "./errors.js";
 // 统一权限服务（单家庭模型）：
 // 财务资源属于账本，用户是操作者。ledgerId 用于权限，userId 用于审计。
 // 角色矩阵（家庭仅保留 owner/member 两种角色）：
-//   Owner : 查看/创建/修改任意流水/管理账户与分类/管理成员/转移所有权/删除家庭
-//   Member: 查看/创建/修改本人流水/管理账户与分类（共同读写）
+//   Owner : 查看/创建/修改任意流水/管理分类/管理成员/转移所有权/删除家庭
+//   Member: 查看/创建/修改本人流水/管理分类（共同读写）
 // admin/viewer 为旧多角色兼容映射（线上不会再产生）。
 export type FamilyRole = "owner" | "admin" | "member" | "viewer";
 
@@ -16,7 +16,6 @@ export type LedgerPermission =
   | "transaction:create"
   | "transaction:update"
   | "transaction:update_any"
-  | "account:manage"
   | "category:manage"
   | "member:manage"
   | "ownership:transfer";
@@ -27,7 +26,6 @@ const LEDGER_PERMISSIONS: Record<FamilyRole, ReadonlySet<LedgerPermission>> = {
     "transaction:create",
     "transaction:update",
     "transaction:update_any",
-    "account:manage",
     "category:manage",
     "member:manage",
     "ownership:transfer",
@@ -37,7 +35,6 @@ const LEDGER_PERMISSIONS: Record<FamilyRole, ReadonlySet<LedgerPermission>> = {
     "transaction:create",
     "transaction:update",
     "transaction:update_any",
-    "account:manage",
     "category:manage",
     "member:manage",
   ]),
@@ -45,7 +42,6 @@ const LEDGER_PERMISSIONS: Record<FamilyRole, ReadonlySet<LedgerPermission>> = {
     "ledger:view",
     "transaction:create",
     "transaction:update",
-    "account:manage",
     "category:manage",
   ]),
   viewer: new Set(["ledger:view"]),

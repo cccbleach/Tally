@@ -10,30 +10,20 @@ private typealias Category = Tally.Category
 //   3) Double 金额参数立即转整数分，之后不再经过浮点。
 final class QuickAddIntentTests: XCTestCase {
 
-    private func makeAccount(id: String = "acc-1", name: String = "微信钱包", archived: Bool = false) -> Account {
-        Account(id: id, name: name, type: "e-wallet", initialBalance: 0,
-                icon: nil, color: nil, isArchived: archived, balance: 0,
-                createdAt: "2026-01-01T00:00:00Z")
-    }
-
     private func makeCategory(id: String = "cat-1", name: String = "餐饮", type: String = "expense") -> Category {
         Category(id: id, name: name, type: type, icon: nil, color: nil, sortOrder: 0)
     }
 
     private func makeTransaction(amount: Int = 2500) -> Transaction {
-        Transaction(id: "tx-new", accountId: "acc-1", categoryId: "cat-1", type: "expense",
+        Transaction(id: "tx-new", categoryId: "cat-1", type: "expense",
                     amount: amount, note: nil, date: "2026-09-12",
-                    transferToAccountId: nil, createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
-                    accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-                    transferToAccountName: nil, sourceType: "shortcut")
+                    createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
+                    categoryName: nil, categoryIcon: nil, categoryColor: nil,
+                    sourceType: "shortcut")
     }
 
-    func testExpensePicksFirstActiveAccount() async {
+    func testExpensePicksExpenseCategory() async {
         let mock = MockQuickAddService()
-        mock.accounts = [
-            makeAccount(id: "archived", name: "旧账户", archived: true),
-            makeAccount(id: "acc-1", name: "微信钱包"),
-        ]
         mock.categories = [makeCategory(id: "income-cat", type: "income"), makeCategory(id: "cat-1", type: "expense")]
 
         let outcome = await QuickAddService.add(
@@ -47,9 +37,7 @@ final class QuickAddIntentTests: XCTestCase {
         }
         XCTAssertTrue(message.contains("支出"), message)
         XCTAssertTrue(message.contains("¥25.00"), "确认弹窗应按人民币格式化：\(message)")
-        XCTAssertTrue(message.contains("微信钱包"), message)
 
-        XCTAssertEqual(mock.capturedAccountId, "acc-1", "应跳过归档账户选第一个活跃账户")
         XCTAssertEqual(mock.capturedCategoryId, "cat-1", "应选支出类型的第一个分类")
         XCTAssertEqual(mock.capturedAmount, 2500)
         XCTAssertEqual(mock.capturedNote, "咖啡")
@@ -58,7 +46,6 @@ final class QuickAddIntentTests: XCTestCase {
 
     func testAmountDoubleIsRoundedToMinorUnitsImmediately() async {
         let mock = MockQuickAddService()
-        mock.accounts = [makeAccount()]
         let outcome = await QuickAddService.add(amountDouble: 25.1, kind: .expense, note: nil, service: mock, hasSession: { true })
         guard case .success = outcome else { return XCTFail(outcome.message) }
         XCTAssertEqual(mock.capturedAmount, 2510, "25.1 元应立即转为 2510 分（浮点只出现一次）")
@@ -66,7 +53,6 @@ final class QuickAddIntentTests: XCTestCase {
 
     func testEmptyNoteIsTreatedAsNil() async {
         let mock = MockQuickAddService()
-        mock.accounts = [makeAccount()]
         _ = await QuickAddService.add(amountDouble: 10, kind: .income, note: "", service: mock, hasSession: { true })
         XCTAssertNil(mock.capturedNote, "空字符串备注应归一为 nil")
         XCTAssertEqual(mock.capturedType, "income")
@@ -84,70 +70,41 @@ final class QuickAddIntentTests: XCTestCase {
     func testInvalidAmountIsRejectedBeforeAnyRequest() async {
         for bad in [0.0, -5.0, .nan, .infinity] {
             let mock = MockQuickAddService()
-            mock.accounts = [makeAccount()]
             let outcome = await QuickAddService.add(amountDouble: bad, kind: .expense, note: nil, service: mock, hasSession: { true })
             guard case .failure = outcome else { XCTFail("非法金额 \(bad) 应被拒绝") ; continue }
             XCTAssertEqual(mock.createCallCount, 0)
         }
     }
 
-    func testNoAccountReturnsReadableMessage() async {
-        let mock = MockQuickAddService()
-        mock.accounts = []
-        let outcome = await QuickAddService.add(amountDouble: 10, kind: .expense, note: nil, service: mock, hasSession: { true })
-        guard case .failure(let message) = outcome else { return XCTFail("无账户应失败") }
-        XCTAssertTrue(message.contains("账户"), message)
-    }
-
     func testUnauthorizedMapsToReloginMessage() async {
         let mock = MockQuickAddService()
-        mock.accounts = [makeAccount()]
         mock.errorToThrow = APIError.unauthorized
         let outcome = await QuickAddService.add(amountDouble: 10, kind: .expense, note: nil, service: mock, hasSession: { true })
         guard case .failure(let message) = outcome else { return XCTFail("401 应失败") }
         XCTAssertTrue(message.contains("重新登录"), message)
     }
 
-    // MARK: - 断网降级：缓存账户兜底入离线队列
+    // MARK: - 断网降级：直接入离线队列（账户域已下线，不再需要缓存账户兜底）
 
     @MainActor
-    func testNetworkErrorEnqueuesOfflineWithCachedAccount() async {
+    func testNetworkErrorEnqueuesOfflineWithoutAnyAccount() async {
         LocalCache.setNamespace("u-quickadd-offline-l-personal")
         LocalCache.clearAll()
         defer { LocalCache.clearAll() }
-        LocalCache.save([
-            makeAccount(id: "cached-acc", name: "现金"),
-        ], forKey: "accounts")
 
         let mock = MockQuickAddService()
         mock.errorToThrow = URLError(.notConnectedToInternet)
 
         let outcome = await QuickAddService.add(amountDouble: 12.5, kind: .expense, note: nil, service: mock, hasSession: { true })
 
-        guard case .success(let message) = outcome else { return XCTFail("断网有缓存账户应入队成功：\(outcome.message)") }
+        guard case .success(let message) = outcome else { return XCTFail("断网应直接入队成功：\(outcome.message)") }
         XCTAssertTrue(message.contains("离线"), message)
 
         let queued = PendingTransactionQueue.load()
         XCTAssertEqual(queued.count, 1)
         XCTAssertEqual(queued.first?.amount, 1250)
-        XCTAssertEqual(queued.first?.accountId, "cached-acc", "断网兜底用缓存里的第一个活跃账户")
+        XCTAssertNil(queued.first?.categoryId, "离线入队不带分类，重放时由服务端默认规则补齐")
         XCTAssertNotNil(queued.first?.id.range(of: #"^[0-9A-F-]{36}$"#, options: .regularExpression), "幂等键为 UUID")
-    }
-
-    @MainActor
-    func testNetworkErrorWithoutCachedAccountFailsWithReadableMessage() async {
-        LocalCache.setNamespace("u-quickadd-offline-empty-l-personal")
-        LocalCache.clearAll()
-        defer { LocalCache.clearAll() }
-
-        let mock = MockQuickAddService()
-        mock.errorToThrow = URLError(.notConnectedToInternet)
-
-        let outcome = await QuickAddService.add(amountDouble: 10, kind: .expense, note: nil, service: mock, hasSession: { true })
-
-        guard case .failure(let message) = outcome else { return XCTFail("无缓存账户应失败") }
-        XCTAssertTrue(message.contains("网络"), message)
-        XCTAssertEqual(PendingTransactionQueue.count(), 0)
     }
 }
 
@@ -156,21 +113,14 @@ final class QuickAddIntentTests: XCTestCase {
 private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable {
     private let lock = NSLock()
 
-    private var _accounts: [Account] = []
     private var _categories: [Tally.Category] = []
     private var _errorToThrow: Error?
 
     private var _createCallCount = 0
-    private var _capturedAccountId: String?
     private var _capturedCategoryId: String?
     private var _capturedAmount: Int?
     private var _capturedNote: String?
     private var _capturedType: String?
-
-    var accounts: [Account] {
-        get { lock.lock(); defer { lock.unlock() }; return _accounts }
-        set { lock.lock(); defer { lock.unlock() }; _accounts = newValue }
-    }
 
     var categories: [Tally.Category] {
         get { lock.lock(); defer { lock.unlock() }; return _categories }
@@ -183,19 +133,10 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
     }
 
     var createCallCount: Int { lock.lock(); defer { lock.unlock() }; return _createCallCount }
-    var capturedAccountId: String? { lock.lock(); defer { lock.unlock() }; return _capturedAccountId }
     var capturedCategoryId: String? { lock.lock(); defer { lock.unlock() }; return _capturedCategoryId }
     var capturedAmount: Int? { lock.lock(); defer { lock.unlock() }; return _capturedAmount }
     var capturedNote: String? { lock.lock(); defer { lock.unlock() }; return _capturedNote }
     var capturedType: String? { lock.lock(); defer { lock.unlock() }; return _capturedType }
-
-    func accounts() async throws -> [Account] {
-        lock.lock()
-        let (value, error) = (_accounts, _errorToThrow)
-        lock.unlock()
-        if let error { throw error }
-        return value
-    }
 
     func categories() async throws -> [Tally.Category] {
         lock.lock()
@@ -205,24 +146,22 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
         return value
     }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
+    func createTransaction(type: String, amount: Int, date: String, note: String?, categoryId: String?, clientRequestId: String?) async throws -> Transaction {
         lock.lock()
         _createCallCount += 1
         _capturedType = type
         _capturedAmount = amount
         _capturedNote = note
-        _capturedAccountId = accountId
         _capturedCategoryId = categoryId
         let error = _errorToThrow
         lock.unlock()
         if let error { throw error }
         return Transaction(
-            id: "tx-new", accountId: accountId, categoryId: categoryId, type: type,
+            id: "tx-new", categoryId: categoryId, type: type,
             amount: amount, note: note, date: date,
-            transferToAccountId: transferToAccountId,
             createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
-            accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-            transferToAccountName: nil, sourceType: "shortcut"
+            categoryName: nil, categoryIcon: nil, categoryColor: nil,
+            sourceType: "shortcut"
         )
     }
 }

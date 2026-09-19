@@ -1,42 +1,18 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { DB } from "../db/client.js";
-import { accounts, categories, transactions } from "../db/schema.js";
+import { categories, transactions } from "../db/schema.js";
 import { currentYearMonth, daysInMonth, todayStr } from "./date.js";
 
-export interface BalanceRow { accountId: string; balance: number; }
-
-// 账户余额 = 初始余额 + 收入 - 支出 + 转入 - 转出（转账不计入收支）。
-// 全站单一币种（人民币），金额直接相加，不做任何折算。
-export function computeAccountBalances(db: DB, ledgerId: string): Map<string, number> {
+// 累计结余：该账本历史所有收入 − 所有支出（不依赖账户；全站人民币，直接相加）。
+// 账户域下线后这是「我现在有多少钱」的唯一口径（前提是期初余额为 0，生产即如此）。
+export function ledgerCumulativeNet(db: DB, ledgerId: string): number {
   const rows = db.all(sql`
-    SELECT a.id AS accountId,
-      a.initial_balance
-        + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.account_id = a.id AND t.type = 'income'), 0)
-        - COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.account_id = a.id AND t.type = 'expense'), 0)
-        + COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.transfer_to_account_id = a.id AND t.type = 'transfer'), 0)
-        - COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.account_id = a.id AND t.type = 'transfer'), 0) AS balance
-    FROM accounts a
-    WHERE a.ledger_id = ${ledgerId}
-  `) as BalanceRow[];
-  const map = new Map<string, number>();
-  for (const r of rows) map.set(r.accountId, r.balance);
-  return map;
-}
-
-export interface NetAssetsSummary { assets: number; net: number; }
-
-// 账户净值：非归档账户余额之和。
-// 历史版本还返回 debts（信用卡欠款 + 贷款剩余本金）并按汇率折算，两者都已随功能下线移除。
-export function netAssetsSummary(db: DB, ledgerId: string): NetAssetsSummary {
-  const balances = computeAccountBalances(db, ledgerId);
-  const accts = db
-    .select()
-    .from(accounts)
-    .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.isArchived, false)))
-    .all();
-  let assets = 0;
-  for (const a of accts) assets += balances.get(a.id) ?? a.initialBalance;
-  return { assets, net: assets };
+    SELECT COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0)
+         - COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) AS net
+    FROM transactions
+    WHERE ledger_id = ${ledgerId}
+  `) as { net: number }[];
+  return rows[0]?.net ?? 0;
 }
 
 export function monthRange(year: number, month: number): { from: string; to: string } {
@@ -84,26 +60,6 @@ export function expenseByCategory(db: DB, ledgerId: string, year: number, month:
     acc.set(key, cur);
   }
   return [...acc.values()].sort((a, b) => b.amount - a.amount).map((x) => x);
-}
-
-export interface AccountAgg { accountId: string; name: string; amount: number; }
-
-export function expenseByAccount(db: DB, ledgerId: string, year: number, month: number): AccountAgg[] {
-  const { from, to } = monthRange(year, month);
-  const rows = txRowsInRange(db, ledgerId, from, to).filter((t) => t.type === "expense");
-  const accts = db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.ledgerId, ledgerId))
-    .all();
-  const nameMap = new Map(accts.map((a) => [a.id, a.name]));
-  const acc = new Map<string, AccountAgg>();
-  for (const t of rows) {
-    const cur = acc.get(t.accountId) ?? { accountId: t.accountId, name: nameMap.get(t.accountId) ?? "未知", amount: 0 };
-    cur.amount += t.amount;
-    acc.set(t.accountId, cur);
-  }
-  return [...acc.values()].sort((a, b) => b.amount - a.amount);
 }
 
 export interface DailyAgg { date: string; income: number; expense: number; }

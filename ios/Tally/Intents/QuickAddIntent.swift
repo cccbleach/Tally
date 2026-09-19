@@ -56,9 +56,8 @@ struct TallyShortcuts: AppShortcutsProvider {
 // MARK: - 记账执行（与 AuthServicing 同套路：抽依赖协议，单元测试注入替身）
 
 protocol QuickAddServicing: Sendable {
-    func accounts() async throws -> [Account]
     func categories() async throws -> [Category]
-    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
+    func createTransaction(type: String, amount: Int, date: String, note: String?, categoryId: String?, clientRequestId: String?) async throws -> Transaction
 }
 
 extension APIService: QuickAddServicing {}
@@ -76,7 +75,7 @@ enum QuickAddService {
     }
 
     /// 快捷指令记账主流程。任何失败都转成用户可读的中文提示（快捷指令环境没有 UI 可以弹错误）。
-    /// 断网时降级：用本地缓存的账户兜底入离线队列，联网后自动重放（与 App 内记账同一条队列）。
+    /// 断网时降级入离线队列，联网后自动重放（与 App 内记账同一条队列）。
     static func add(
         amountDouble: Double,
         kind: QuickAddKind,
@@ -99,10 +98,6 @@ enum QuickAddService {
         let clientRequestId = UUID().uuidString
         let dateText = TallyDate.dayFormatter.string(from: now)
         do {
-            let accounts = try await service.accounts().filter { !$0.isArchived }
-            guard let account = accounts.first else {
-                return .failure(message: "当前账本还没有可用账户，请先打开 App 创建")
-            }
             let scaled = amountDouble * Double(Money.currency.scale)
             // Double(Int.max) 会精度溢出，用 /2 留出取整与符号的安全余量；
             // 超大金额在快捷指令里可以直接传入，Int(Double) 越界会直接崩溃。
@@ -121,19 +116,17 @@ enum QuickAddService {
                 amount: minorUnits,
                 date: dateText,
                 note: normalizedNote,
-                accountId: account.id,
                 categoryId: category?.id,
-                transferToAccountId: nil,
                 clientRequestId: nil
             )
             let describe = Money.formatMagnitude(transaction.amount)
-            return .success(message: "已记录\(kind == .expense ? "支出" : "收入") \(describe)（\(account.name)）")
+            return .success(message: "已记录\(kind == .expense ? "支出" : "收入") \(describe)")
         } catch APIError.unauthorized {
             return .failure(message: "登录已过期，请打开 Tally 重新登录")
         } catch let error as APIError {
             return .failure(message: "记账失败：\(error.localizedDescription)")
         } catch {
-            // 网络类错误：尝试离线入队（读本地缓存账户；没有缓存账户才提示失败）。
+            // 网络类错误：离线入队，联网后自动重放。
             return await enqueueOfflineOrFail(
                 amountDouble: amountDouble,
                 kind: kind,
@@ -145,7 +138,7 @@ enum QuickAddService {
         }
     }
 
-    /// 断网降级：以缓存里的第一个活跃账户入队。
+    /// 断网降级：直接入队（分类由重放时的服务端默认规则补齐）。
     /// 队列按当前命名空间隔离——快捷指令运行在 App 进程内，命名空间与 App 一致。
     private static func enqueueOfflineOrFail(
         amountDouble: Double,
@@ -155,13 +148,6 @@ enum QuickAddService {
         dateText: String,
         underlying: Error
     ) async -> Outcome {
-        let fallback: Account? = await MainActor.run {
-            (LocalCache.load([Account].self, forKey: "accounts") ?? [])
-                .first { !$0.isArchived }
-        }
-        guard let account = fallback else {
-            return .failure(message: "网络不可用，且本地没有可用的账户缓存，请联网后重试（\(underlying.localizedDescription)）")
-        }
         let scaled = amountDouble * Double(Money.currency.scale)
         guard scaled.isFinite, scaled <= Double(Int.max / 2) else {
             return .failure(message: "金额过大，请检查输入")
@@ -177,13 +163,11 @@ enum QuickAddService {
                 amount: minorUnits,
                 date: dateText,
                 note: note,
-                accountId: account.id,
                 categoryId: nil,
-                transferToAccountId: nil,
                 queuedAt: Date()
             ))
         }
         let describe = Money.formatMagnitude(minorUnits)
-        return .success(message: "当前离线：已保存\(kind == .expense ? "支出" : "收入") \(describe)（\(account.name)），联网后自动同步")
+        return .success(message: "当前离线：已保存\(kind == .expense ? "支出" : "收入") \(describe)，联网后自动同步")
     }
 }

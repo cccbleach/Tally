@@ -20,7 +20,7 @@
 
 - **当前策略：Last-Write-Wins + 乐观锁**。服务端以 `updatedAt` 为版本号，写接口返回最新的 `updatedAt`。
 - PATCH 写接口可携带可选参数 `expectedUpdatedAt`（ISO 8601）；若其与服务端当前 `updatedAt` 不一致，返回 `409 { error: { code: "CONFLICT" } }`，客户端应刷新后再提交。
-- `expectedUpdatedAt` 支持：流水、周期账单、**账户、分类**（账户/分类自 0023 迁移起携带 `updatedAt`，每次成功 PATCH 前移；归档账户同样前移）。
+- `expectedUpdatedAt` 支持：流水、周期账单、**分类**（分类自 0023 迁移起携带 `updatedAt`，每次成功 PATCH 前移）。
 - `POST /transactions` 支持可选 `clientRequestId`（8–64 位字母数字/连字符）：离线写队列重放与网络重发的幂等键，同键重复提交返回首次创建的流水（并发窗口由 `(ledger_id, client_request_id)` 唯一索引兜底）。
 - 客户端多端同步建议：拉取 → 记录 `updatedAt` → 修改时带上 → 遇 409 提示冲突并拉取最新。
 - 服务端不提供合并/三方合并；冲突由客户端引导用户处理（或按策略直接覆盖）。
@@ -71,22 +71,6 @@
 |---|---|
 | `INVALID_YEAR` / `INVALID_MONTH` | `year`/`month` 查询参数越界（如 `month=13`），不再静默返回空统计 |
 
-## 账户 Accounts
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /accounts | 列表，返回 `{items:[...]}`，每项含实时 `balance` |
-| POST | /accounts | 新建，入参 `{name, type, initialBalance?, icon?, color?}` |
-| GET | /accounts/:id | 详情 |
-| PATCH | /accounts/:id | 更新（name/type/initialBalance/icon/color/isArchived） |
-| DELETE | /accounts/:id | **软删除（归档）**，保留流水关联 |
-
-- `type` 取值：`cash | bank | e-wallet | credit | loan | other`（与后端 `ACCOUNT_TYPES` 一致）
-- 账户余额 = 初始余额 + 收入 − 支出 + 转入 − 转出（**账户本位币**口径）
-
-  `debt` 为当前未结清欠款且**已换算为基准币**（供客户端跨账户求和算净资产）
-  该护栏覆盖创建、修改（含改挂账户）、导入、导入暂存与提交。
-
 ## 分类 Categories
 
 | 方法 | 路径 | 说明 |
@@ -118,7 +102,7 @@
 - 银行 CSV/XLSX 当前支持标准表头：记账日期/交易日期、交易金额/发生额、余额/联机余额/账户余额，可附币种、收支、摘要和流水号；不是所有银行的任意导出格式都能解析。
 - 返回 `{item,counts}` 暂存结果，`item.source` 是识别结果；经 `GET /imports/jobs/{id}` 预览、`PATCH /imports/items/{id}` 确认后，再 `POST /imports/jobs/{id}/commit` 正式入账。
 - `GET /imports/jobs` 列出当前账本的历史导入任务（含状态与计数），用于「导入记录」回看。
-- 需要当前账本至少一个非归档账户；iOS 在选文件前提供“添加账户”入口，不会自动创建或猜测账户。
+- 账户域已下线：导入只属于当前账本，无需先建账户。
 - iOS 从“设置 → 导入账单”进入，不再手动选择微信/支付宝/银行；文件选择器授权在协调读取结束后释放，multipart 上传与普通请求共用登录续期。
 
 **旧 JSON 账单导入（兼容保留）**
@@ -131,17 +115,16 @@
   `{mode:"items", items:[{date, amount, type, note?, externalId?}]}`
 - 返回 `{imported, skipped, total}`；硬去重唯一索引为 `(ledger_id, source_type, external_id)`
   （同账本 + 同来源 + 同外部 ID），另有非唯一的 `dedup_key` 软指纹用于"疑似重复"判定。
-- 导入流水的账户/分类取当前账本默认（首个非归档账户 + 匹配收支类型的分类），后续可扩展为逐条指定。
+- 导入流水的分类取当前账本匹配收支类型的第一个分类，可在暂存明细上逐条改。
 - **币种语义**：全站人民币。账单文件里的 `币种` 列只接受人民币/`CNY`/`RMB`/空；
   其他取值整份账单拒绝（400 `BILL_CURRENCY_UNSUPPORTED`），不会静默跳过该行。
 
 新建入参按 `type` 区分：
 
-- 支出/收入：`{type:"income"|"expense", amount, date, accountId, categoryId, note?}`
-- 转账：`{type:"transfer", amount, date, accountId, transferToAccountId, note?}`
+- 支出/收入：`{type:"income"|"expense", amount, date, categoryId, note?}`
+- 转账已随账户域下线移除（历史上同一账本内转账无意义；跨账户请分别记支出与收入）。
 
-校验：分类类型必须与收支类型匹配；转账源/目标账户不能相同；转账不计入收入/支出汇总。
-`GET /transactions?accountId=` 会同时匹配转出与转入账户，保证任一账户都能检索到相关转账流水。
+校验：分类类型必须与收支类型匹配。`GET /transactions?categoryId=&type=` 按分类/类型过滤。
 
 ## 周期账单 Recurring
 
@@ -160,12 +143,12 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | /stats/summary?year&month | `{income, expense, net, balance, totalAssets, byCategory, byAccount, daily}` |
+| GET | /stats/summary?year&month | `{income, expense, net, cumulativeNet, byCategory, daily}` |
 | GET | /stats/trend?months=6 | `{months:[{year,month,income,expense}]}` |
 
-- `net = income - expense`；`balance` 与 `totalAssets` 都是非归档账户余额合计（全站人民币，直接相加）。
+- `net = income - expense`；`cumulativeNet` 为该账本历史收入 − 支出（不依赖账户；账户域已下线）。
 - 负债域与多币种都已下线：没有 `totalDebt`，也没有任何汇率折算（历史外币金额已在迁移里折算成人民币）。
-- `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
+- `byCategory` 为支出按分类汇总（含占比 `percent`）；`daily` 为当月每日收入/支出。
 
 ## 共享账本（内部兼容 `/families` 路径）
 
@@ -191,7 +174,7 @@
 | POST | /ledgers/switch | 切换当前账本 `{ledgerId}` |
 
 - 产品界面只暴露“个人账本 / 共享账本”；`family` 仅作为后端兼容的成员关系命名。
-- 账户/分类/流水/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
+- 分类/流水/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
 - 访问控制：个人账本仅创建者；共享账本仅活跃成员；越权返回 403。
 
 ## 账单导入去重

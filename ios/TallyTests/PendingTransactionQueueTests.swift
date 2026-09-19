@@ -29,8 +29,8 @@ final class PendingTransactionQueueTests: XCTestCase {
     private func makeQueued(id: String, amount: Int = 1000) -> QueuedTransaction {
         QueuedTransaction(
             id: id, type: "expense", amount: amount, date: "2026-09-12",
-            note: nil, accountId: "acc-1", categoryId: "cat-1",
-            transferToAccountId: nil, queuedAt: Date()
+            note: nil, categoryId: "cat-1",
+            queuedAt: Date()
         )
     }
 
@@ -107,7 +107,7 @@ final class PendingTransactionQueueTests: XCTestCase {
 
         XCTAssertEqual(outcome.synced, 0)
         XCTAssertEqual(outcome.dropped, 1)
-        XCTAssertEqual(outcome.firstDropReason, APIError.server(code: "ACCOUNT_NOT_FOUND", message: "账户不存在").localizedDescription)
+        XCTAssertEqual(outcome.firstDropReason, APIError.server(code: "CATEGORY_TYPE_MISMATCH", message: "分类类型与收支类型不匹配").localizedDescription)
         XCTAssertEqual(outcome.remaining, 0, "业务拒绝的条目必须出队，否则无限堆积")
         XCTAssertTrue(PendingTransactionQueue.load().isEmpty)
     }
@@ -153,7 +153,7 @@ private final class MockQueueService: QueuedTransactionCreating, @unchecked Send
     var capturedIds: [String] { lock.lock(); defer { lock.unlock() }; return capturedIdsStorage }
     var capturedAmounts: [Int] { lock.lock(); defer { lock.unlock() }; return capturedAmountsStorage }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
+    func createTransaction(type: String, amount: Int, date: String, note: String?, categoryId: String?, clientRequestId: String?) async throws -> Transaction {
         lock.lock()
         let index = calls
         calls += 1
@@ -165,17 +165,16 @@ private final class MockQueueService: QueuedTransactionCreating, @unchecked Send
         switch outcome {
         case .success:
             return Transaction(
-                id: "server-\(clientRequestId ?? UUID().uuidString)", accountId: accountId, categoryId: categoryId,
+                id: "server-\(clientRequestId ?? UUID().uuidString)", categoryId: categoryId,
                 type: type, amount: amount, note: note, date: date,
-                transferToAccountId: transferToAccountId,
                 createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
-                accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-                transferToAccountName: nil, sourceType: "manual"
+                categoryName: nil, categoryIcon: nil, categoryColor: nil,
+                sourceType: "manual"
             )
         case .networkFailure:
             throw URLError(.notConnectedToInternet)
         case .serverReject:
-            throw APIError.server(code: "ACCOUNT_NOT_FOUND", message: "账户不存在")
+            throw APIError.server(code: "CATEGORY_TYPE_MISMATCH", message: "分类类型与收支类型不匹配")
         }
     }
 }

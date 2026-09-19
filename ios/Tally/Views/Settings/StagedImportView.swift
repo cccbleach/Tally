@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 struct StagedImportView: View {
     @Environment(DataStore.self) private var store
     @State private var showPicker = false
-    @State private var showAddAccount = false
     @State private var screenshotItem: PhotosPickerItem?
     @State private var job: ImportJob?
     @State private var items: [ImportItem] = []
@@ -21,11 +20,6 @@ struct StagedImportView: View {
                 Section("导入账单") {
                     Text("微信、支付宝、银行账单都从这里导入，自动识别来源。预览确认后才会记入账本。")
                         .font(.subheadline)
-                    if !hasActiveAccount {
-                        Text("当前账本还没有入账账户，请先添加一个账户。")
-                            .foregroundStyle(.secondary)
-                        Button("添加账户") { showAddAccount = true }
-                    }
                     Button {
                         showPicker = true
                     } label: {
@@ -35,7 +29,7 @@ struct StagedImportView: View {
                             Label("选择账单文件", systemImage: "doc.badge.plus")
                         }
                     }
-                    .disabled(isLoading || isRecognizing || !hasActiveAccount)
+                    .disabled(isLoading || isRecognizing)
                     Text("支持 TXT、CSV、XLSX、文字版 PDF。Excel 最大 5MB，其余文件最大 20MB；ZIP 请先解压，扫描件暂不支持。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -48,7 +42,7 @@ struct StagedImportView: View {
                             Label("从截图识别（微信/支付宝支付页）", systemImage: "text.viewfinder")
                         }
                     }
-                    .disabled(isRecognizing || isLoading || !hasActiveAccount)
+                    .disabled(isRecognizing || isLoading)
                     Text("识别在本机完成，截图不会上传；识别结果先进入预览，确认后才入账。同一张截图重复导入会自动去重。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -139,18 +133,14 @@ struct StagedImportView: View {
                 errorMessage = error.localizedDescription
             }
         }
-        .sheet(isPresented: $showAddAccount) { AccountFormView() }
         .onChange(of: screenshotItem) { _, newItem in
             guard let newItem else { return }
             screenshotItem = nil
             Task { await importScreenshot(newItem) }
         }
-        .task { await store.refreshAccounts() }
         .onChange(of: store.ledgerId) { _, _ in reset() }
         .errorAlert($errorMessage)
     }
-
-    private var hasActiveAccount: Bool { store.accounts.contains { !$0.isArchived } }
 
     private func sourceName(_ source: String) -> String {
         switch source {

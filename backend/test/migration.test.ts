@@ -113,10 +113,15 @@ test("全新数据库与已有数据库（0001-0018 老库 → 0022）两条迁�
       const gone = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(t);
       assert.equal(gone, undefined, `0025 之后 ${t} 应已被删除`);
     }
-    const acctCols = sqlite.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
-    for (const col of ["credit_limit", "billing_day", "repayment_day"]) {
-      assert.ok(!acctCols.some((c) => c.name === col), `0025 之后 accounts 不应再有 ${col} 列`);
+    // 0029 之后 accounts 表整体下线（连带三张子表的账户列）
+    assert.equal(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").get(), undefined,
+      "0029 之后 accounts 表应已被删除");
+    const txCols = sqlite.prepare("PRAGMA table_info(transactions)").all() as { name: string }[];
+    for (const col of ["account_id", "transfer_to_account_id"]) {
+      assert.ok(!txCols.some((c) => c.name === col), `0029 之后 transactions 不应再有 ${col} 列`);
     }
+    const txDdl = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='transactions'").get() as { sql: string }).sql;
+    assert.ok(txDdl.includes("CHECK (type IN ('income', 'expense'))"), "0029 之后 type CHECK 应只剩收入/支出");
 
     // 验证 0021：users 身份字段 + 迁移质量（老“用户”不迁移为公开昵称）
     const userCols = sqlite.prepare("PRAGMA table_info(users)").all() as { name: string }[];

@@ -10,7 +10,6 @@ security:
   - bearerAuth: []
 tags:
   - name: auth
-  - name: accounts
   - name: categories
   - name: transactions
   - name: recurring
@@ -236,46 +235,6 @@ paths:
                 properties:
                   user: { $ref: "#/components/schemas/User" }
         "409": { $ref: "#/components/responses/Error" }
-  /api/v1/accounts:
-    get:
-      tags: [accounts]
-      operationId: listAccounts
-      parameters:
-        - { name: ledgerId, in: query, schema: { type: string }, required: false }
-      responses:
-        "200":
-          description: 账户列表
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/Account" }
-    post:
-      tags: [accounts]
-      operationId: createAccount
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, type, initialBalance]
-              properties:
-                name: { type: string }
-                type: { type: string, enum: [cash, bank, e-wallet, other] }
-                initialBalance: { type: integer }
-                ledgerId: { type: string }
-      responses:
-        "200":
-          description: 创建成功
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  item: { $ref: "#/components/schemas/Account" }
   /api/v1/categories:
     post:
       tags: [categories]
@@ -313,7 +272,6 @@ paths:
       parameters:
         - { name: from, in: query, schema: { type: string, format: date }, required: false }
         - { name: to, in: query, schema: { type: string, format: date }, required: false }
-        - { name: accountId, in: query, schema: { type: string }, required: false }
         - { name: ledgerId, in: query, schema: { type: string }, required: false }
       responses:
         "200":
@@ -330,9 +288,9 @@ paths:
       tags: [transactions]
       operationId: createTransaction
       description: >
-        收入/支出/转账（transfer 需 transferToAccountId）。可选 clientRequestId（8–64 位
-        字母数字/连字符）为客户端幂等键：同键重复提交返回首次创建的流水，
-        并发窗口由 (ledger_id, client_request_id) 唯一索引兜底。
+        收入/支出。可选 clientRequestId（8–64 位字母数字/连字符）为客户端幂等键：
+        同键重复提交返回首次创建的流水，并发窗口由 (ledger_id, client_request_id)
+        唯一索引兜底。（账户/转账已随账户域下线移除。）
   /api/v1/transactions/import:
     post:
       tags: [imports]
@@ -562,52 +520,6 @@ paths:
                 properties:
                   ok: { type: boolean }
                   revoked: { type: integer, description: 被吊销的会话数 }
-  /api/v1/accounts/{id}:
-    get:
-      tags: [accounts]
-      operationId: getAccount
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: ledgerId, in: query, schema: { type: string }, required: false }
-      responses:
-        "200":
-          description: 账户详情
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  item: { $ref: "#/components/schemas/Account" }
-    patch:
-      tags: [accounts]
-      operationId: updateAccount
-      summary: 更新账户
-      description: >
-        可选 expectedUpdatedAt（ISO 8601）为乐观锁：与当前 updatedAt 不一致返回 409 CONFLICT。
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: 更新后的账户（updatedAt 前移）
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  item: { $ref: "#/components/schemas/Account" }
-        "400":
-          description: 参数非法
-        "409":
-          description: CONFLICT（expectedUpdatedAt 不匹配）
-    delete:
-      tags: [accounts]
-      operationId: deleteAccount
-      summary: 删除账户（软删除=归档，保留流水关联）
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: 已归档
   /api/v1/categories/{id}:
     patch:
       tags: [categories]
@@ -648,7 +560,7 @@ paths:
       tags: [transactions]
       operationId: updateTransaction
       summary: 修改流水（支持乐观锁 expectedUpdatedAt）
-      description: 改 accountId 时只校验目标账户存在且属于当前账本；转账不允许转出与转入为同一账户。
+      description: 可改金额/日期/备注/分类；账户与转账已随账户域下线移除。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -709,16 +621,16 @@ paths:
     get:
       tags: [stats]
       operationId: statsSummary
-      summary: 收支与净资产汇总
+      summary: 收支与累计结余汇总
       description: >
-        balance 为账户余额合计（已按基准币口径折算），totalAssets/net 与账户列表口径一致。
+        cumulativeNet 为该账本历史收入 − 支出（不依赖账户；账户域已下线）。
       parameters:
         - { name: ledgerId, in: query, schema: { type: string }, required: false }
         - { name: year, in: query, schema: { type: integer }, required: false }
         - { name: month, in: query, schema: { type: integer }, required: false }
       responses:
         "200":
-          description: 汇总（income/expense/net/balance/totalAssets/byCategory/byAccount/daily）
+          description: 汇总（income/expense/net/cumulativeNet/byCategory/daily）
   /api/v1/stats/trend:
     get:
       tags: [stats]
@@ -799,15 +711,6 @@ components:
         email: { type: string }
         password: { type: string }
         displayName: { type: string }
-    Account:
-      type: object
-      required: [id, name, type]
-      properties:
-        id: { type: string }
-        ledgerId: { type: string, nullable: true }
-        name: { type: string }
-        type: { type: string }
-        balance: { type: integer }
     Category:
       type: object
       required: [id, name, type]
@@ -819,18 +722,15 @@ components:
         color: { type: string, nullable: true }
     Transaction:
       type: object
-      required: [id, accountId, type, amount, date]
+      required: [id, type, amount, date]
       properties:
         id: { type: string }
         ledgerId: { type: string, nullable: true }
-        accountId: { type: string }
-        type: { type: string, enum: [income, expense, transfer] }
+        type: { type: string, enum: [income, expense] }
         amount: { type: integer }
         note: { type: string, nullable: true }
         date: { type: string, format: date }
         sourceType: { type: string, nullable: true }
-        transferToAccountId: { type: string, nullable: true }
-        paymentGroupId: { type: string, nullable: true, description: 一次还款拆分流水（本金+利息）的分组 ID }
         recorderNickname: { type: string, nullable: true, description: 记账人昵称（家庭流水展示，不含手机号） }
     ImportJob:
       type: object

@@ -24,7 +24,6 @@ func typeColor(_ type: String) -> Color {
     switch type {
     case "income": return .green
     case "expense": return .red
-    case "transfer": return .blue
     default: return .primary
     }
 }

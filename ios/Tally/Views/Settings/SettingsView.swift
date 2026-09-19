@@ -142,7 +142,7 @@ struct SettingsView: View {
         do {
             let transactions = try await TransactionCSVExport.fetchAll { page in
                 try await APIService.shared.transactions(
-                    from: nil, to: nil, accountId: nil, categoryId: nil, type: nil,
+                    from: nil, to: nil, categoryId: nil, type: nil,
                     page: page, limit: 200
                 )
             }

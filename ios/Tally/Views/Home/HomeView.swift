@@ -161,17 +161,7 @@ struct TransactionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if transaction.type == "transfer" {
-                ZStack {
-                    Circle().fill(Color.blue.opacity(0.15))
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.blue)
-                }
-                .frame(width: 34, height: 34)
-            } else {
-                CategoryBadge(icon: transaction.categoryIcon, color: transaction.categoryColor)
-            }
+            CategoryBadge(icon: transaction.categoryIcon, color: transaction.categoryColor)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -187,9 +177,6 @@ struct TransactionRow: View {
     }
 
     private var title: String {
-        if transaction.type == "transfer" {
-            return (transaction.accountName ?? "账户") + " → " + (transaction.transferToAccountName ?? "账户")
-        }
-        return transaction.categoryName ?? (transaction.accountName ?? "未分类")
+        transaction.categoryName ?? "未分类"
     }
 }

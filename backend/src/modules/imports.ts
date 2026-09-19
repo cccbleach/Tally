@@ -12,7 +12,6 @@ import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { buildDedupKey, normalizeMerchant } from "../lib/dedup.js";
 import { writeAudit } from "../lib/audit.js";
-import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
 import {
   decodeBillBuffer,
@@ -64,9 +63,8 @@ const createJobSchema = z.object({
 
 const patchItemSchema = z.object({
   decision: z.enum(["accept", "skip"]).optional(),
-  accountId: z.string().optional(),
   categoryId: z.string().optional(),
-}).refine((v) => v.decision !== undefined || v.accountId !== undefined || v.categoryId !== undefined, {
+}).refine((v) => v.decision !== undefined || v.categoryId !== undefined, {
   message: "至少提供一项变更",
 });
 
@@ -81,11 +79,6 @@ async function createStagedJob(
   const { userId, ledgerId, items, source, filename, fileHash } = opts;
   if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
   if (items.length > 5000) throw badRequest("TOO_MANY_ITEMS", "单次最多导入 5000 条");
-
-  const accts = listAccountsForUser(db, userId, ledgerId);
-  const defaultAccount = accts.find((a) => !a.isArchived);
-  if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
-  // 注意：暂存阶段不决定分类（提交时才按收支类型匹配），因此这里不查分类
 
   const now = new Date().toISOString();
   const jobId = randomUUID();
@@ -289,11 +282,6 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (!job || job.ledgerId !== ledgerId || job.status !== "staged") throw conflict("IMPORT_NOT_STAGED", "任务不可修改");
     const patch: Partial<typeof importItems.$inferInsert> = { createdAt: item.createdAt };
     if (body.decision !== undefined) patch.decision = body.decision;
-    if (body.accountId !== undefined) {
-      const acct = listAccountsForUser(db, userId, ledgerId).find((a) => a.id === body.accountId);
-      if (!acct) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
-      patch.accountId = body.accountId;
-    }
     if (body.categoryId !== undefined) {
       const cat = listCategoriesForUser(db, userId, ledgerId).find((c) => c.id === body.categoryId);
       if (!cat) throw notFound("CATEGORY_NOT_FOUND", "分类不存在");
@@ -314,24 +302,12 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (!job || job.ledgerId !== ledgerId) throw notFound("IMPORT_JOB_NOT_FOUND", "导入任务不存在");
     if (job.status !== "staged") throw conflict("IMPORT_NOT_STAGED", "任务已提交或已失败");
 
-    const accts = listAccountsForUser(db, userId, ledgerId);
-    const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
-    if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户");
     const cats = listCategoriesForUser(db, userId, ledgerId);
     const incomeCat = cats.find((c) => c.type === "income");
     const expenseCat = cats.find((c) => c.type === "expense");
 
     const items = db.select().from(importItems).where(eq(importItems.jobId, id)).all();
     if (items.length === 0) throw badRequest("EMPTY_IMPORT", "任务没有明细项");
-
-    // 明细指定的账户可在暂存后被 PATCH 改过，因此按"最终归属账户"再校验一次存在性，
-    // 且在任何写入之前完成，保证不会产生部分提交。
-    const accountsById = new Map(accts.map((a) => [a.id, a]));
-    for (const it of items) {
-      if (it.decision !== "accept") continue;
-      const accountId = it.accountId ?? defaultAccount.id;
-      if (!accountsById.get(accountId)) throw badRequest("ACCOUNT_NOT_FOUND", "明细指定的账户不存在或不在当前账本");
-    }
 
     const now = new Date().toISOString();
     let imported = 0;
@@ -340,13 +316,11 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
         for (const it of items) {
           if (it.decision !== "accept") continue;
           const forced = it.duplicateStatus === "duplicate" || it.duplicateStatus === "suspected";
-          const accountId = it.accountId ?? defaultAccount.id;
           const categoryId = it.categoryId ?? (it.type === "income" ? incomeCat : expenseCat)?.id ?? null;
           const row = {
             id: randomUUID(),
             userId,
             ledgerId,
-            accountId,
             categoryId,
             type: it.type,
             amount: it.amount,

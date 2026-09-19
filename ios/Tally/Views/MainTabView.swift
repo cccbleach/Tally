@@ -11,8 +11,6 @@ struct MainTabView: View {
                 .tabItem { Label("明细", systemImage: "list.bullet.rectangle") }
             StatsView()
                 .tabItem { Label("统计", systemImage: "chart.pie.fill") }
-            AccountsView()
-                .tabItem { Label("账户", systemImage: "creditcard.fill") }
             SettingsView()
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }

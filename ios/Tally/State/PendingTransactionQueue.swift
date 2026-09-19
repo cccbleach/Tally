@@ -21,9 +21,7 @@ struct QueuedTransaction: Codable, Identifiable, Hashable {
     let amount: Int
     let date: String
     let note: String?
-    let accountId: String
     let categoryId: String?
-    let transferToAccountId: String?
     let queuedAt: Date
 }
 
@@ -64,7 +62,7 @@ enum PendingTransactionQueue {
 
 /// 重放器：依赖注入（生产传 APIService，测试传替身）
 protocol QueuedTransactionCreating: Sendable {
-    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
+    func createTransaction(type: String, amount: Int, date: String, note: String?, categoryId: String?, clientRequestId: String?) async throws -> Transaction
 }
 
 extension APIService: QueuedTransactionCreating {}
@@ -91,9 +89,7 @@ enum OfflineTransactionSyncer {
                     amount: item.amount,
                     date: item.date,
                     note: item.note,
-                    accountId: item.accountId,
                     categoryId: item.categoryId,
-                    transferToAccountId: item.transferToAccountId,
                     clientRequestId: item.id
                 )
                 PendingTransactionQueue.remove(id: item.id)

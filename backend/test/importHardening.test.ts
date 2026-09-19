@@ -50,7 +50,6 @@ before(async () => {
   const reg = await smsRegister(app, "13840000001", "导入测试");
   headers = authHeaders(reg);
   // 创建账户和分类，供导入默认映射
-  await req("POST", "/api/v1/accounts", { name: "储蓄卡", type: "bank" });
 });
 
 after(() => {
@@ -139,9 +138,7 @@ test("暂存提交后的流水能参与下一次软去重", async () => {
   assert.ok(detail.json().items[0].matchedTransactionId, "应指出匹配的正式流水");
 });
 
-test("导入明细可逐项覆盖账户与分类", async () => {
-  const acct = await req("POST", "/api/v1/accounts", { name: "现金", type: "cash" });
-  const accountId = acct.json().item.id;
+test("导入明细可逐项覆盖分类", async () => {
   const cats = await req("GET", "/api/v1/categories");
   const expenseCat = cats.json().items.find((c: { type: string }) => c.type === "expense");
   const create = await req("POST", "/api/v1/imports/jobs", {
@@ -152,10 +149,9 @@ test("导入明细可逐项覆盖账户与分类", async () => {
   const jobId = create.json().item.id;
   const detail = await req("GET", `/api/v1/imports/jobs/${jobId}`);
   const item = detail.json().items[0];
-  const patch = await req("PATCH", `/api/v1/imports/items/${item.id}`, { accountId, categoryId: expenseCat.id });
+  const patch = await req("PATCH", `/api/v1/imports/items/${item.id}`, { categoryId: expenseCat.id });
   assert.equal(patch.statusCode, 200, patch.body);
   const detail2 = await req("GET", `/api/v1/imports/jobs/${jobId}`);
-  assert.equal(detail2.json().items[0].accountId, accountId);
   assert.equal(detail2.json().items[0].categoryId, expenseCat.id);
   const commit = await req("POST", `/api/v1/imports/jobs/${jobId}/commit`);
   assert.equal(commit.statusCode, 200, commit.body);
@@ -165,6 +161,5 @@ test("导入明细可逐项覆盖账户与分类", async () => {
     .where(eq(transactions.externalId, "ali-cover-1"))
     .get();
   assert.ok(row, "应写入正式流水");
-  assert.equal(row!.accountId, accountId, "应使用用户选择的账户");
   assert.equal(row!.categoryId, expenseCat.id, "应使用用户选择的分类");
 });

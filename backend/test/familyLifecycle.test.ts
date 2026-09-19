@@ -34,7 +34,6 @@ let idA: string;
 let idB: string;
 let familyId: string;
 let familyLedger: string;
-let accountId: string;
 let expenseCatId: string;
 
 function api(headers: Record<string, string>, method: string, url: string, body?: unknown) {
@@ -80,10 +79,7 @@ test("A 创建家庭并邀请 B，B 接受后用共享账本记账，A 看到记
   familyLedger = fam.json().item.ledgerId;
   assert.ok(familyLedger, "创建家庭应返回家庭账本");
 
-  // A 在家庭账本建账户和分类
-  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭储蓄", type: "bank", ledgerId: familyLedger });
-  assert.equal(acc.statusCode, 200, acc.body);
-  accountId = acc.json().item.id;
+  // A 确认家庭账本分类（账户域已下线，分类即可支撑记账）
   const cats = await api(hA, "GET", "/api/v1/categories?ledgerId=" + familyLedger);
   const expenseCat = (cats.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
   expenseCatId = expenseCat!.id;
@@ -114,11 +110,10 @@ test("A 创建家庭并邀请 B，B 接受后用共享账本记账，A 看到记
   assert.equal(accept.statusCode, 200, accept.body);
 
   // B 可用共享账本
-  const listB = await api(hB, "GET", "/api/v1/accounts?ledgerId=" + familyLedger);
+  const listB = await api(hB, "GET", "/api/v1/categories?ledgerId=" + familyLedger);
   assert.equal(listB.statusCode, 200, listB.body);
-  assert.equal(listB.json().items.length, 1, "B 应能看到共享账户");
+  assert.ok(listB.json().items.length > 0, "B 应能看到共享账本分类");
   const createByB = await api(hB, "POST", "/api/v1/transactions?ledgerId=" + familyLedger, {
-    accountId,
     categoryId: expenseCatId,
     type: "expense",
     amount: 888,

@@ -89,9 +89,9 @@ final class BillImportTests: XCTestCase {
         let client = APIClient(session: session, tokenStore: tokens, baseURLOverride: "https://import-tests.invalid")
         do {
             let _: UploadOK = try await client.upload("/api/v1/imports/jobs/upload", bodyData: Data("body".utf8), contentType: "multipart/form-data; boundary=boundary")
-            XCTFail("Expected account error")
+            XCTFail("Expected business error")
         } catch APIError.server(let code, _) {
-            XCTAssertEqual(code, "ACCOUNT_REQUIRED")
+            XCTAssertEqual(code, "BILL_CURRENCY_UNSUPPORTED")
         }
         XCTAssertEqual(tokens.loadToken(), "fresh-token")
         XCTAssertFalse(tokens.deleted)
@@ -144,7 +144,7 @@ private final class UploadResponder: @unchecked Sendable {
             authorization: request.value(forHTTPHeaderField: "Authorization") ?? "", query: request.url?.query ?? ""))
         if uploads.count == 1 { return (401, Data(#"{"error":{"code":"UNAUTHORIZED","message":"expired"}}"#.utf8)) }
         return finalStatus == 200 ? (200, Data(#"{"ok":true}"#.utf8))
-            : (400, Data(#"{"error":{"code":"ACCOUNT_REQUIRED","message":"请先创建账户"}}"#.utf8))
+            : (400, Data(#"{"error":{"code":"BILL_CURRENCY_UNSUPPORTED","message":"仅支持人民币账单"}}"#.utf8))
     }
 }
 

@@ -91,9 +91,12 @@ struct StatsView: View {
                     Text(Money.signed(s.net)).font(.headline).monospacedDigit()
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("总资产").font(.caption).foregroundColor(.secondary)
-                    Text(Money.format(s.balance)).font(.headline).monospacedDigit()
+                if let cumulative = s.cumulativeNet {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        // 累计结余：历史收入 − 支出（账户域下线后替代"总资产"的口径）
+                        Text("累计结余").font(.caption).foregroundColor(.secondary)
+                        Text(Money.signed(cumulative)).font(.headline).monospacedDigit()
+                    }
                 }
             }
         }

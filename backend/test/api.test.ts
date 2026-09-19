@@ -11,8 +11,7 @@ import { runDueRecurring } from "../src/lib/recurringRunner.js";
 import { todayStr, addMonths, currentYearMonth } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
-import { ACCOUNT_TYPES } from "../src/modules/accounts.js";
+import { transactions, recurring, ledgers, users } from "../src/db/schema.js";
 import { smsRegister, smsLogin } from "./helpers.js";
 import YAML from "yaml";
 
@@ -138,7 +137,7 @@ test("旧邮箱/密码接口统一 410 AUTH_METHOD_REMOVED", async () => {
 });
 
 test("未带 token 访问受保护接口返回 401", async () => {
-  const res = await app.inject({ method: "GET", url: "/api/v1/accounts" });
+  const res = await app.inject({ method: "GET", url: "/api/v1/transactions" });
   assert.equal(res.statusCode, 401);
 });
 
@@ -147,31 +146,6 @@ test("me 返回当前用户（仅本人返回手机号）", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().user.phone, "+8613800000001");
   assert.equal(res.json().user.nickname, "测试用户");
-});
-
-// ---- 账户 ----
-let accountA = "";
-let accountB = "";
-
-test("创建账户", async () => {
-  const a = await req("POST", "/api/v1/accounts", {
-    name: "银行卡",
-    type: "bank",
-    initialBalance: 0,
-  });
-  assert.equal(a.statusCode, 200);
-  accountA = a.json().item.id;
-
-  const b = await req("POST", "/api/v1/accounts", {
-    name: "现金",
-    type: "cash",
-    initialBalance: 5000,
-  });
-  assert.equal(b.statusCode, 200);
-  accountB = b.json().item.id;
-
-  const list = await req("GET", "/api/v1/accounts");
-  assert.equal(list.json().items.length, 2);
 });
 
 // ---- 分类 ----
@@ -209,7 +183,6 @@ test("记支出与收入", async () => {
   const exp = await req("POST", "/api/v1/transactions", {
     type: "expense",
     amount: 3000,
-    accountId: accountA,
     categoryId: expCat,
     date: todayStr(),
     note: "午餐",
@@ -219,7 +192,6 @@ test("记支出与收入", async () => {
   const inc = await req("POST", "/api/v1/transactions", {
     type: "income",
     amount: 10000,
-    accountId: accountA,
     categoryId: incCat,
     date: todayStr(),
   });
@@ -230,7 +202,6 @@ test("分类类型不匹配返回 400", async () => {
   const res = await req("POST", "/api/v1/transactions", {
     type: "expense",
     amount: 100,
-    accountId: accountA,
     categoryId: incCat,
     date: todayStr(),
   });
@@ -238,48 +209,14 @@ test("分类类型不匹配返回 400", async () => {
   assert.equal(res.json().error.code, "CATEGORY_TYPE_MISMATCH");
 });
 
-test("转账", async () => {
-  const res = await req("POST", "/api/v1/transactions", {
-    type: "transfer",
-    amount: 2000,
-    accountId: accountA,
-    transferToAccountId: accountB,
-    date: todayStr(),
-  });
-  assert.equal(res.statusCode, 200, res.body);
-  assert.equal(res.json().item.type, "transfer");
-});
-
-test("账户余额计算正确", async () => {
-  // A: 收入10000 - 支出3000 - 转出2000 = 5000；B: 初始5000 + 转入2000 = 7000
-  const list = await req("GET", "/api/v1/accounts");
-  const items = list.json().items as Array<{ id: string; balance: number }>;
-  const a = items.find((x) => x.id === accountA)!;
-  const b = items.find((x) => x.id === accountB)!;
-  assert.equal(a.balance, 5000);
-  assert.equal(b.balance, 7000);
-});
-
 test("流水分页与过滤", async () => {
   const all = await req("GET", "/api/v1/transactions?limit=10");
   assert.equal(all.statusCode, 200);
-  assert.equal(all.json().total, 3);
+  assert.equal(all.json().total, 2, "一笔支出 + 一笔收入");
 
   const expOnly = await req("GET", "/api/v1/transactions?type=expense");
   assert.equal(expOnly.json().total, 1);
 
-  const transferOnly = await req("GET", "/api/v1/transactions?type=transfer");
-  assert.equal(transferOnly.json().total, 1);
-  assert.equal(transferOnly.json().items[0].transferToAccountName, "现金");
-});
-
-test("按转入账户过滤可查到转账流水", async () => {
-  const byAccountB = await req("GET", "/api/v1/transactions?accountId=" + accountB);
-  assert.equal(byAccountB.statusCode, 200, byAccountB.body);
-  const transfers = (byAccountB.json().items as Array<{ type: string; transferToAccountId: string | null }>).filter(
-    (t) => t.type === "transfer" && t.transferToAccountId === accountB,
-  );
-  assert.equal(transfers.length, 1, "按转入账户应能查到该笔转账");
 });
 
 test("修改与删除流水", async () => {
@@ -287,7 +224,6 @@ test("修改与删除流水", async () => {
   const created = await req("POST", "/api/v1/transactions", {
     type: "expense",
     amount: 100,
-    accountId: accountA,
     categoryId: expCat,
     date: todayStr(),
     note: "临时",
@@ -312,7 +248,9 @@ test("统计摘要正确", async () => {
   assert.equal(s.income, 10000);
   assert.equal(s.expense, 3000);
   assert.equal(s.net, 7000);
-  assert.equal(s.balance, 5000 + 7000);
+  // 累计结余 = 历史收入 − 支出（本文件此前只造了 income 10000 / expense 3000 两笔）
+  assert.equal(s.cumulativeNet, 7000);
+  assert.ok(!("balance" in s) && !("totalAssets" in s) && !("byAccount" in s), "账户域字段应从契约中消失");
   assert.ok(Array.isArray(s.byCategory));
   assert.ok(Array.isArray(s.daily));
 });
@@ -331,7 +269,6 @@ test("周期账单自动生成且幂等", async () => {
   const created = await req("POST", "/api/v1/recurring", {
     type: "expense",
     amount: 1000,
-    accountId: accountA,
     categoryId: expCat,
     frequency: "monthly",
     interval: 1,
@@ -360,7 +297,6 @@ test("周期账单未来开始日期不生成", async () => {
   const created = await req("POST", "/api/v1/recurring", {
     type: "income",
     amount: 500,
-    accountId: accountA,
     categoryId: incCat,
     frequency: "monthly",
     interval: 1,
@@ -377,7 +313,6 @@ test("周期账单在数据层幂等（重置 nextRunDate 不重复入账）", a
   const created = await req("POST", "/api/v1/recurring", {
     type: "expense",
     amount: 777,
-    accountId: accountA,
     categoryId: expCat,
     frequency: "daily",
     interval: 1,
@@ -421,31 +356,30 @@ test("账本隔离：非默认账本的数据不出现在默认 API 中", async 
   db.insert(ledgers)
     .values({ id: otherLedgerId, userId: u.id, name: "第二个账本", isDefault: false, createdAt: now, updatedAt: now })
     .run();
-  const otherAccountId = randomUUID();
-  db.insert(accounts)
+  const otherTxId = randomUUID();
+  db.insert(transactions)
     .values({
-      id: otherAccountId,
+      id: otherTxId,
       userId: u.id,
       ledgerId: otherLedgerId,
-      name: "另一个账本的账户",
-      type: "bank",
-      initialBalance: 8888,
+      type: "expense",
+      amount: 8888,
+      date: "2026-01-01",
       createdAt: now,
       updatedAt: now,
     })
     .run();
 
-  const list = await req("GET", "/api/v1/accounts");
+  const list = await req("GET", "/api/v1/transactions");
   assert.equal(list.statusCode, 200, list.body);
-  const ids = (list.json().items as Array<{ id: string }>).map((a) => a.id);
-  assert.ok(!ids.includes(otherAccountId), "默认账本接口不应返回其他账本的账户");
+  const ids = (list.json().items as Array<{ id: string }>).map((t) => t.id);
+  assert.ok(!ids.includes(otherTxId), "默认账本接口不应返回其他账本的流水");
 });
 
 test("乐观锁：预期更新时间戳不匹配返回 409", async () => {
   const created = await req("POST", "/api/v1/transactions", {
     type: "expense",
     amount: 50,
-    accountId: accountA,
     categoryId: expCat,
     date: todayStr(),
   });
@@ -480,8 +414,8 @@ test("刷新令牌可换取新访问令牌", async () => {
   assert.ok(refresh.json().refreshToken);
 
   // 用新访问令牌访问受保护接口
-  const r2 = await req("GET", "/api/v1/accounts");
-  const withNew = await app.inject({ method: "GET", url: "/api/v1/accounts", headers: { authorization: "Bearer " + refresh.json().token } });
+  const r2 = await req("GET", "/api/v1/transactions");
+  const withNew = await app.inject({ method: "GET", url: "/api/v1/transactions", headers: { authorization: "Bearer " + refresh.json().token } });
   assert.equal(withNew.statusCode, 200);
   assert.equal(r2.statusCode, 200);
 });
@@ -490,7 +424,7 @@ test("刷新令牌不能当作访问令牌使用", async () => {
   const login = await smsLogin(app, "13800000001");
   const bad = await app.inject({
     method: "GET",
-    url: "/api/v1/accounts",
+    url: "/api/v1/transactions",
     headers: { authorization: "Bearer " + login.refreshToken },
   });
   assert.equal(bad.statusCode, 401);
@@ -574,15 +508,6 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   const familyId = fam.json().item.id as string;
   const familyLedger = fam.json().item.ledgerId as string;
 
-  // A 在家庭账本建账户
-  const acc = await app.inject({
-    method: "POST",
-    url: "/api/v1/accounts",
-    headers: hA,
-    payload: { name: "家庭账户", type: "bank", initialBalance: 0, ledgerId: familyLedger },
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-
   // A 按昵称邀请 B，B 接受后成为家庭成员
   const inviteB = await app.inject({
     method: "POST",
@@ -600,15 +525,15 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   });
   assert.equal(addB.statusCode, 200, addB.body);
 
-  // B 能看到家庭账本里的账户
-  const listB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + familyLedger, headers: hB });
+  // B 能看到家庭账本里的分类（共享读写）
+  const listB = await app.inject({ method: "GET", url: "/api/v1/categories?ledgerId=" + familyLedger, headers: hB });
   assert.equal(listB.statusCode, 200, listB.body);
-  assert.equal(listB.json().items.length, 1, "家庭成员应能看到共享账本账户");
+  assert.ok(listB.json().items.length > 0, "家庭成员应能看到共享账本分类");
 
   // A 的个人默认账本
   const ledgersA = await app.inject({ method: "GET", url: "/api/v1/ledgers", headers: hA });
   const personalA = (ledgersA.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null)!;
-  const forbiddenB = await app.inject({ method: "GET", url: "/api/v1/accounts?ledgerId=" + personalA.id, headers: hB });
+  const forbiddenB = await app.inject({ method: "GET", url: "/api/v1/transactions?ledgerId=" + personalA.id, headers: hB });
   assert.equal(forbiddenB.statusCode, 403, "非成员访问个人账本应 403");
 
   // B 用 A 的共享账户 + 家庭分类记账（家庭共享写入）
@@ -617,13 +542,11 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
   const catB = (catsB.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
   assert.ok(catB, "家庭成员应能读到家庭分类");
 
-  const accountIdB = (listB.json().items as Array<{ id: string }>)[0]!.id;
   const createByB = await app.inject({
     method: "POST",
     url: "/api/v1/transactions?ledgerId=" + familyLedger,
     headers: hB,
     payload: {
-      accountId: accountIdB,
       categoryId: catB!.id,
       type: "expense",
       amount: 3456,
@@ -684,14 +607,6 @@ test("健康检查：live 只探活，ready 校验数据库与迁移", async () 
 });
 
 test("导入暂存流程：建任务→预览→提交，不静默丢弃", async () => {
-  // 确保有默认账户
-  const acc = await req("POST", "/api/v1/accounts", {
-    name: "导入暂存账户",
-    type: "bank",
-    initialBalance: 0,
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-
   // 创建暂存任务（2 条）
   const create = await req("POST", "/api/v1/imports/jobs", {
     mode: "items",
@@ -729,13 +644,6 @@ test("导入暂存流程：建任务→预览→提交，不静默丢弃", async
 });
 
 test("导入 multipart 文件上传：解析建任务且记 SHA-256", async () => {
-  const acc = await req("POST", "/api/v1/accounts", {
-    name: "multipart导入账户",
-    type: "bank",
-    initialBalance: 0,
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-
   const content = `微信支付账单明细
 交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
 2026-08-20 12:00:00,商户消费,某店,外卖,支出,¥12.00,零钱,支付成功,100001,200001,测试`;
@@ -820,11 +728,11 @@ test("OpenAPI 契约与已注册路由集合相等（双向差集为空）", asy
     [],
     "以下契约端点并未在服务端注册（文档写了不存在的接口）：\n  " + extraInSpec.join("\n  "),
   );
-  // 下限只用来抓「路由表解析失败」，不锁具体条数（负债域下线后从 77 → 69）
-  assert.ok(registered.size >= 60, "路由数量异常偏少，可能解析出错: " + registered.size);
+  // 下限只用来抓「路由表解析失败」，不锁具体条数（账户域下线后从 69 → 59）
+  assert.ok(registered.size >= 55, "路由数量异常偏少，可能解析出错: " + registered.size);
 });
 
-test("OpenAPI 关键契约细节：公开端点免鉴权 + 账户类型枚举与实现一致", async () => {
+test("OpenAPI 关键契约细节：公开端点免鉴权", async () => {
   const doc = YAML.parse(readFileSync(resolve("../docs/openapi.yaml"), "utf8")) as {
     security?: unknown[];
     paths: Record<string, Record<string, { security?: unknown[] }>>;
@@ -847,18 +755,6 @@ test("OpenAPI 关键契约细节：公开端点免鉴权 + 账户类型枚举与
     const op = item.get ?? item.post ?? {};
     assert.deepEqual(op.security, [], `${p} 是免鉴权端点，契约必须写 security: []（否则客户端会误加鉴权头）`);
   }
-
-  // 账户类型枚举必须与 accounts.ts 的 ACCOUNT_TYPES 完全一致
-  const accountEnum = (
-    doc.paths["/api/v1/accounts"]!.post!.requestBody as {
-      content: { "application/json": { schema: { properties: { type: { enum: string[] } } } } };
-    }
-  ).content["application/json"].schema.properties.type.enum;
-  assert.deepEqual(
-    [...accountEnum].sort(),
-    [...ACCOUNT_TYPES].sort(),
-    "账户类型枚举必须与后端 ACCOUNT_TYPES 一致（历史文档写的是 wallet/investment/credit_card）",
-  );
 
   // 邮件找回入口必须彻底不在契约里
   const raw = readFileSync(resolve("../docs/openapi.yaml"), "utf8");

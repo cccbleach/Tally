@@ -6,9 +6,7 @@ struct AddTransactionView: View {
 
     @State private var type = "expense"
     @State private var amountString = ""
-    @State private var selectedAccountId = ""
     @State private var selectedCategoryId = ""
-    @State private var transferToAccountId = ""
     @State private var date = Date()
     @State private var note = ""
     @State private var isSaving = false
@@ -18,20 +16,12 @@ struct AddTransactionView: View {
         _type = State(initialValue: initialType)
     }
 
-    private var activeAccounts: [Account] { store.accounts.filter { !$0.isArchived } }
     private var activeCategories: [Category] {
         store.categories.filter { $0.type == (type == "income" ? "income" : "expense") }
     }
 
-    private var selectedAccount: Account? {
-        store.accounts.first(where: { $0.id == selectedAccountId })
-    }
     private var entryCurrencySymbol: String {
         Money.currency.symbol
-    }
-    /// 转账的两个账户都可以选（全站人民币，不存在跨币种转账问题）
-    private var transferCandidates: [Account] {
-        activeAccounts.filter { $0.id != selectedAccountId }
     }
 
     var body: some View {
@@ -41,7 +31,6 @@ struct AddTransactionView: View {
                     Picker("类型", selection: $type) {
                         Text("支出").tag("expense")
                         Text("收入").tag("income")
-                        Text("转账").tag("transfer")
                     }
                     .pickerStyle(.segmented)
                 }
@@ -56,26 +45,8 @@ struct AddTransactionView: View {
                     }
                 }
 
-                Section("账户") {
-                    Picker("账户", selection: $selectedAccountId) {
-                        ForEach(activeAccounts) { a in
-                            Text(a.name + "（" + Money.format(a.balance) + "）").tag(a.id)
-                        }
-                    }
-                }
-
-                if type == "transfer" {
-                    Section("转入账户") {
-                        Picker("转入账户", selection: $transferToAccountId) {
-                            ForEach(transferCandidates) { a in
-                                Text(a.name).tag(a.id)
-                            }
-                        }
-                    }
-                } else {
-                    Section("分类") {
-                        categoryGrid
-                    }
+                Section("分类") {
+                    categoryGrid
                 }
 
                 Section {
@@ -100,13 +71,6 @@ struct AddTransactionView: View {
         .onChange(of: type) { _, _ in
             selectedCategoryId = activeCategories.first?.id ?? ""
         }
-        .onChange(of: selectedAccountId) { _, _ in
-            // 换账户后币种随之变化：转账目标必须重选为同币种账户
-            if type == "transfer", transferToAccountId == selectedAccountId
-                || !transferCandidates.contains(where: { $0.id == transferToAccountId }) {
-                transferToAccountId = transferCandidates.first?.id ?? ""
-            }
-        }
     }
 
     private var categoryGrid: some View {
@@ -123,17 +87,12 @@ struct AddTransactionView: View {
     }
 
     private func ensureSelections() {
-        if selectedAccountId.isEmpty { selectedAccountId = activeAccounts.first?.id ?? "" }
-        if type != "transfer", selectedCategoryId.isEmpty { selectedCategoryId = activeCategories.first?.id ?? "" }
-        if type == "transfer", transferToAccountId.isEmpty {
-            transferToAccountId = transferCandidates.first?.id ?? ""
-        }
+        if selectedCategoryId.isEmpty { selectedCategoryId = activeCategories.first?.id ?? "" }
     }
 
     private var canSave: Bool {
         guard Money.minorUnits(fromInput: amountString) != nil else { return false }
-        if type == "transfer" { return !selectedAccountId.isEmpty && !transferToAccountId.isEmpty }
-        return !selectedAccountId.isEmpty && !selectedCategoryId.isEmpty
+        return !selectedCategoryId.isEmpty
     }
 
     private func save() async {
@@ -148,9 +107,7 @@ struct AddTransactionView: View {
                 amount: amount,
                 date: dateStr,
                 note: note.isEmpty ? nil : note,
-                accountId: selectedAccountId,
-                categoryId: type == "transfer" ? nil : selectedCategoryId,
-                transferToAccountId: type == "transfer" ? transferToAccountId : nil,
+                categoryId: selectedCategoryId,
                 clientRequestId: clientRequestId
             )
             await store.loadAll()
@@ -164,9 +121,7 @@ struct AddTransactionView: View {
                     amount: amount,
                     date: dateStr,
                     note: note.isEmpty ? nil : note,
-                    accountId: selectedAccountId,
-                    categoryId: type == "transfer" ? nil : selectedCategoryId,
-                    transferToAccountId: type == "transfer" ? transferToAccountId : nil,
+                    categoryId: selectedCategoryId,
                     queuedAt: Date()
                 ))
                 store.pendingSyncCount = PendingTransactionQueue.count()

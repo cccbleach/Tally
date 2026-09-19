@@ -52,24 +52,6 @@ enum LocalCache {
 
 // MARK: - 请求体
 
-struct CreateAccountBody: Encodable {
-    let name: String
-    let type: String
-    let initialBalance: Int
-    let icon: String?
-    let color: String?
-}
-
-struct UpdateAccountBody: Encodable {
-    var name: String?
-    var type: String?
-    var initialBalance: Int?
-    var icon: String?
-    var color: String?
-    var isArchived: Bool?
-    var expectedUpdatedAt: String?
-}
-
 struct CreateCategoryBody: Encodable {
     let name: String
     let type: String
@@ -89,9 +71,7 @@ struct CreateTransactionBody: Encodable {
     let amount: Int
     let date: String
     let note: String?
-    let accountId: String
     let categoryId: String?
-    let transferToAccountId: String?
     // 客户端幂等键：离线写队列重放时防重复入账（服务端按 (ledger, key) 唯一）
     let clientRequestId: String?
 }
@@ -100,12 +80,10 @@ struct UpdateTransactionBody: Encodable {
     var amount: Int?
     var date: String?
     var note: String?
-    var accountId: String?
     var categoryId: String?
 }
 
 struct CreateRecurringBody: Encodable {
-    let accountId: String
     let categoryId: String
     let type: String
     let amount: Int
@@ -117,7 +95,6 @@ struct CreateRecurringBody: Encodable {
 }
 
 struct UpdateRecurringBody: Encodable {
-    var accountId: String?
     var categoryId: String?
     var amount: Int?
     var note: String?
@@ -204,28 +181,6 @@ struct APIService {
         return res.user
     }
 
-    // 账户
-    func accounts() async throws -> [Account] {
-        let res: ListResponse<Account> = try await client.request("GET", "/api/v1/accounts")
-        return res.items
-    }
-
-    func createAccount(name: String, type: String, initialBalance: Int, icon: String?, color: String?) async throws -> Account {
-        let body = CreateAccountBody(name: name, type: type, initialBalance: initialBalance, icon: icon, color: color)
-        let res: ItemResponse<Account> = try await client.request("POST", "/api/v1/accounts", body: body)
-        return res.item
-    }
-
-    func updateAccount(id: String, name: String?, type: String?, initialBalance: Int?, icon: String?, color: String?, expectedUpdatedAt: String? = nil) async throws -> Account {
-        let body = UpdateAccountBody(name: name, type: type, initialBalance: initialBalance, icon: icon, color: color, isArchived: nil, expectedUpdatedAt: expectedUpdatedAt)
-        let res: ItemResponse<Account> = try await client.request("PATCH", "/api/v1/accounts/\(id)", body: body)
-        return res.item
-    }
-
-    func archiveAccount(id: String) async throws {
-        let _: OKResponse = try await client.request("DELETE", "/api/v1/accounts/\(id)")
-    }
-
     // 分类
     func categories() async throws -> [Category] {
         let res: ListResponse<Category> = try await client.request("GET", "/api/v1/categories")
@@ -249,24 +204,23 @@ struct APIService {
     }
 
     // 流水
-    func transactions(from: String?, to: String?, accountId: String?, categoryId: String?, type: String?, page: Int = 1, limit: Int = 200) async throws -> TransactionsResponse {
+    func transactions(from: String?, to: String?, categoryId: String?, type: String?, page: Int = 1, limit: Int = 200) async throws -> TransactionsResponse {
         var query: [URLQueryItem] = [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "limit", value: String(limit))]
         if let from { query.append(URLQueryItem(name: "from", value: from)) }
         if let to { query.append(URLQueryItem(name: "to", value: to)) }
-        if let accountId { query.append(URLQueryItem(name: "accountId", value: accountId)) }
         if let categoryId { query.append(URLQueryItem(name: "categoryId", value: categoryId)) }
         if let type { query.append(URLQueryItem(name: "type", value: type)) }
         return try await client.request("GET", "/api/v1/transactions", query: query)
     }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String? = nil) async throws -> Transaction {
-        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, accountId: accountId, categoryId: categoryId, transferToAccountId: transferToAccountId, clientRequestId: clientRequestId)
+    func createTransaction(type: String, amount: Int, date: String, note: String?, categoryId: String?, clientRequestId: String? = nil) async throws -> Transaction {
+        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, categoryId: categoryId, clientRequestId: clientRequestId)
         let res: ItemResponse<Transaction> = try await client.request("POST", "/api/v1/transactions", body: body)
         return res.item
     }
 
-    func updateTransaction(id: String, amount: Int?, date: String?, note: String?, accountId: String?, categoryId: String?) async throws -> Transaction {
-        let body = UpdateTransactionBody(amount: amount, date: date, note: note, accountId: accountId, categoryId: categoryId)
+    func updateTransaction(id: String, amount: Int?, date: String?, note: String?, categoryId: String?) async throws -> Transaction {
+        let body = UpdateTransactionBody(amount: amount, date: date, note: note, categoryId: categoryId)
         let res: ItemResponse<Transaction> = try await client.request("PATCH", "/api/v1/transactions/\(id)", body: body)
         return res.item
     }
@@ -302,8 +256,8 @@ struct APIService {
         return res.items
     }
 
-    func createRecurring(accountId: String, categoryId: String, type: String, amount: Int, note: String?, frequency: String, interval: Int, startDate: String, endDate: String?) async throws -> RecurringBill {
-        let body = CreateRecurringBody(accountId: accountId, categoryId: categoryId, type: type, amount: amount, note: note, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+    func createRecurring(categoryId: String, type: String, amount: Int, note: String?, frequency: String, interval: Int, startDate: String, endDate: String?) async throws -> RecurringBill {
+        let body = CreateRecurringBody(categoryId: categoryId, type: type, amount: amount, note: note, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
         let res: ItemResponse<RecurringBill> = try await client.request("POST", "/api/v1/recurring", body: body)
         return res.item
     }

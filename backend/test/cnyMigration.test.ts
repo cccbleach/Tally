@@ -90,9 +90,7 @@ test("0027/0028：非 CNY 金额按汇率折算并入备注，币种列/汇率�
     assert.equal(hkdIn.dedup_key, null, "折算后旧指纹必然失真，应置空（硬去重靠 external_id）");
     const hkdOut = sqlite.prepare("SELECT amount FROM transactions WHERE id='T_HKD_OUT'").get() as { amount: number };
     assert.equal(hkdOut.amount, 460000);
-    // 账户初始余额同样折算：1000.00 HKD → 920.00 CNY
-    const acct = sqlite.prepare("SELECT initial_balance FROM accounts WHERE id='A2'").get() as { initial_balance: number };
-    assert.equal(acct.initial_balance, 92000, "1000.00 HKD 初始余额应折算为 920.00 CNY");
+    // （0029 已把 accounts 表整体下线：初始余额折算只存在于 0027 生效的窗口期，最终态无账户概念）
 
     // 3) 人民币数据零改动：金额与指纹都保持原样
     const cny = sqlite.prepare("SELECT amount, note, dedup_key, external_id FROM transactions WHERE id='T_CNY'").get() as { amount: number; note: string; dedup_key: string; external_id: string | null };
@@ -102,7 +100,8 @@ test("0027/0028：非 CNY 金额按汇率折算并入备注，币种列/汇率�
 
     // 4) 行数不变、外键与 parent 关系完好
     assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM transactions").get() as { n: number }).n, before.transactions);
-    assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM accounts").get() as { n: number }).n, before.accounts);
+    assert.equal(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").get(), undefined,
+      "0029 之后 accounts 表应已删除");
     assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM import_items").get() as { n: number }).n, before.items);
     assert.deepEqual(sqlite.prepare("PRAGMA foreign_key_check").all(), [], "迁移后外键检查应无误");
     const linked = sqlite.prepare("SELECT matched_transaction_id FROM import_items WHERE id='I2'").get() as { matched_transaction_id: string | null };

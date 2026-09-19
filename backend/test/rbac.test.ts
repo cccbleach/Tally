@@ -27,7 +27,6 @@ let hB: Record<string, string>;
 let idB: string;
 let familyId: string;
 let familyLedger: string;
-let accountId: string;
 let expenseCat: string;
 
 function api(headers: Record<string, string>, method: string, url: string, body?: unknown) {
@@ -74,17 +73,13 @@ test("A 创建家庭、按昵称邀请 B，B 接受后 member 可写共享账本
   const accept = await api(hB, "POST", `/api/v1/families/invitations/${inviteId}/accept`);
   assert.equal(accept.statusCode, 200, accept.body);
 
-  // 建立账户/分类
-  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭户", type: "bank", ledgerId: familyLedger });
-  assert.equal(acc.statusCode, 200, acc.body);
-  accountId = acc.json().item.id;
+  // 建立分类
   const cats = await api(hA, "GET", "/api/v1/categories?ledgerId=" + familyLedger);
   const expense = (cats.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
   expenseCat = expense!.id;
 
   // member 可写：周期账单
   const recurring = await api(hB, "POST", "/api/v1/recurring", {
-    accountId,
     categoryId: expenseCat,
     type: "expense",
     amount: 1000,
@@ -116,7 +111,6 @@ test("A 创建家庭、按昵称邀请 B，B 接受后 member 可写共享账本
 test("member 不能修改/删除其他成员流水，只能改自己的；owner 可改任意", async () => {
   // A 在家庭账本记一笔
   const txA = await api(hA, "POST", "/api/v1/transactions", {
-    accountId,
     categoryId: expenseCat,
     type: "expense",
     amount: 500,
@@ -138,7 +132,6 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
 
   // B 记一笔自己的
   const txB = await api(hB, "POST", "/api/v1/transactions", {
-    accountId,
     categoryId: expenseCat,
     type: "expense",
     amount: 300,
@@ -155,7 +148,6 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
 
   // owner（A）改 B 的流水 → 200
   const txB2 = await api(hB, "POST", "/api/v1/transactions", {
-    accountId,
     categoryId: expenseCat,
     type: "expense",
     amount: 100,

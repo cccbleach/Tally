@@ -3,9 +3,8 @@ import type { AppDb } from "../db/client.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import {
-  netAssetsSummary,
+  ledgerCumulativeNet,
   dailyTotals,
-  expenseByAccount,
   expenseByCategory,
   monthlyTotals,
   trend,
@@ -26,13 +25,12 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
     const { year, month } = parseYearMonthQuery(q, cur);
 
     const totals = monthlyTotals(db, ledgerId, year, month);
-    const ad = netAssetsSummary(db, ledgerId);
+    const cumulativeNet = ledgerCumulativeNet(db, ledgerId);
 
     const byCategory = expenseByCategory(db, ledgerId, year, month).map((c) => ({
       ...c,
       percent: totals.expense > 0 ? Math.round((c.amount / totals.expense) * 1000) / 10 : 0,
     }));
-    const byAccount = expenseByAccount(db, ledgerId, year, month);
     const daily = dailyTotals(db, ledgerId, year, month);
 
     return {
@@ -41,10 +39,9 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
       income: totals.income,
       expense: totals.expense,
       net: totals.income - totals.expense,
-      balance: ad.net,
-      totalAssets: ad.assets,
+      // 累计结余：历史收入 − 支出（账户域下线后替代 balance/totalAssets 的口径）
+      cumulativeNet,
       byCategory,
-      byAccount,
       daily,
     };
   });

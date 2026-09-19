@@ -89,7 +89,6 @@ struct RecurringFormView: View {
 
     @State private var type = "expense"
     @State private var amountString = ""
-    @State private var selectedAccountId = ""
     @State private var selectedCategoryId = ""
     @State private var frequency = "monthly"
     @State private var interval = 1
@@ -99,11 +98,7 @@ struct RecurringFormView: View {
     @State private var note = ""
     @State private var errorMessage: String?
 
-    private var activeAccounts: [Account] { store.accounts.filter { !$0.isArchived } }
     private var activeCategories: [Category] { store.categories.filter { $0.type == type } }
-    private var selectedAccount: Account? {
-        store.accounts.first(where: { $0.id == selectedAccountId })
-    }
 
     var body: some View {
         NavigationStack {
@@ -124,9 +119,6 @@ struct RecurringFormView: View {
                     }
                 }
                 Section {
-                    Picker("账户", selection: $selectedAccountId) {
-                        ForEach(activeAccounts) { a in Text(a.name).tag(a.id) }
-                    }
                     Picker("分类", selection: $selectedCategoryId) {
                         ForEach(activeCategories) { c in Text(c.name).tag(c.id) }
                     }
@@ -160,7 +152,6 @@ struct RecurringFormView: View {
             .errorAlert($errorMessage)
         }
         .onAppear {
-            if selectedAccountId.isEmpty { selectedAccountId = activeAccounts.first?.id ?? "" }
             if selectedCategoryId.isEmpty { selectedCategoryId = activeCategories.first?.id ?? "" }
         }
         .onChange(of: type) { _, _ in
@@ -177,7 +168,6 @@ struct RecurringFormView: View {
         let df = TallyDate.dayFormatter
         do {
             _ = try await APIService.shared.createRecurring(
-                accountId: selectedAccountId,
                 categoryId: selectedCategoryId,
                 type: type,
                 amount: amount,

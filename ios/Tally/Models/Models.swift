@@ -43,21 +43,6 @@ struct NicknameCheckResponse: Codable {
     let reason: String?
 }
 
-// MARK: - 账户
-
-struct Account: Codable, Identifiable, Hashable {
-    let id: String
-    var name: String
-    var type: String
-    var initialBalance: Int
-    var icon: String?
-    var color: String?
-    var isArchived: Bool
-    var balance: Int
-    let createdAt: String
-    var updatedAt: String?
-}
-
 // MARK: - 分类
 
 struct Category: Codable, Identifiable, Hashable {
@@ -74,20 +59,16 @@ struct Category: Codable, Identifiable, Hashable {
 
 struct Transaction: Codable, Identifiable, Hashable {
     let id: String
-    var accountId: String
     var categoryId: String?
     var type: String
     var amount: Int
     var note: String?
     var date: String
-    var transferToAccountId: String?
     let createdAt: String
     var updatedAt: String
-    var accountName: String?
     var categoryName: String?
     var categoryIcon: String?
     var categoryColor: String?
-    var transferToAccountName: String?
     var sourceType: String?
 }
 
@@ -102,7 +83,6 @@ struct TransactionsResponse: Codable {
 
 struct RecurringBill: Codable, Identifiable, Hashable {
     let id: String
-    var accountId: String
     var categoryId: String?
     var type: String
     var amount: Int
@@ -114,7 +94,6 @@ struct RecurringBill: Codable, Identifiable, Hashable {
     var nextRunDate: String
     var lastGeneratedDate: String?
     var isActive: Bool
-    var accountName: String?
     var categoryName: String?
 }
 
@@ -126,10 +105,10 @@ struct StatsSummary: Codable {
     let income: Int
     let expense: Int
     let net: Int
-    let balance: Int
-    let totalAssets: Int?
+    /// 累计结余：该账本历史收入 − 支出（不依赖账户）。
+    /// 可选是为了「新 App 还连着旧后端」的窗口期：旧后端不返回该字段，UI 自动隐藏。
+    let cumulativeNet: Int?
     let byCategory: [CategoryStat]
-    let byAccount: [AccountStat]
     let daily: [DailyStat]
 }
 
@@ -140,12 +119,6 @@ struct CategoryStat: Codable, Hashable {
     let color: String?
     let amount: Int
     let percent: Double
-}
-
-struct AccountStat: Codable, Hashable {
-    let accountId: String
-    let name: String
-    let amount: Int
 }
 
 struct DailyStat: Codable, Hashable {

@@ -1,15 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, gte, lte, or, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, gte, lte, type SQL } from "drizzle-orm";
 import type { AppDb } from "../db/client.js";
-import { accounts, categories, transactions, familyMembers, ledgers, users } from "../db/schema.js";
+import { categories, transactions, familyMembers, ledgers, users } from "../db/schema.js";
 import { getUserId, makeAuth } from "../middleware/auth.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission, requireTransactionModify } from "../lib/authorization.js";
 import { loadRelationMaps, type RelationMaps } from "../services/transactionService.js";
-import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
 import {
   decodeBillBuffer,
@@ -48,7 +47,6 @@ const commonFields = {
   date: dateStr(),
   note: z.string().max(500, "备注过长").optional(),
   ledgerId: z.string().optional(),
-  accountId: z.string().min(1, "账户不能为空"),
   // 客户端幂等键（离线写队列重放）：同一键重复提交返回首次创建的流水，不重复入账
   clientRequestId: z.string().min(8).max(64).regex(/^[A-Za-z0-9-]+$/, "幂等键只允许字母数字与连字符").optional(),
 };
@@ -56,14 +54,12 @@ const commonFields = {
 const createSchema = z.discriminatedUnion("type", [
   z.object({ ...commonFields, type: z.literal("income"), categoryId: z.string().min(1, "分类不能为空") }),
   z.object({ ...commonFields, type: z.literal("expense"), categoryId: z.string().min(1, "分类不能为空") }),
-  z.object({ ...commonFields, type: z.literal("transfer"), transferToAccountId: z.string().min(1, "目标账户不能为空") }),
 ]);
 
 const updateSchema = z.object({
   amount: z.number().int().positive().optional(),
   date: dateStr().optional(),
   note: z.string().max(500).nullable().optional(),
-  accountId: z.string().min(1).optional(),
   categoryId: z.string().min(1).nullable().optional(),
   ledgerId: z.string().optional(),
   // 乐观锁：可选。若提供且与服务端当前 updatedAt 不一致则返回 409。
@@ -133,29 +129,24 @@ function loadUserNicknames(db: AppDb["db"], userId: string, ledgerId: string): M
 
 function toDto(
   tx: TransactionRow,
-  am: RelationMaps["am"],
   cm: RelationMaps["cm"],
   um: Map<string, string>,
 ) {
   const cat = tx.categoryId ? cm.get(tx.categoryId) : undefined;
   return {
     id: tx.id,
-    accountId: tx.accountId,
     categoryId: tx.categoryId,
     type: tx.type,
     amount: tx.amount,
     note: tx.note,
     date: tx.date,
     sourceType: tx.sourceType ?? null,
-    transferToAccountId: tx.transferToAccountId,
     createdAt: tx.createdAt,
     updatedAt: tx.updatedAt,
-    accountName: am.get(tx.accountId)?.name ?? null,
     categoryName: cat?.name ?? null,
     categoryIcon: cat?.icon ?? null,
     categoryColor: cat?.color ?? null,
-    transferToAccountName: tx.transferToAccountId ? (am.get(tx.transferToAccountId)?.name ?? null) : null,
-      recorderNickname: um.get(tx.userId) ?? null,
+    recorderNickname: um.get(tx.userId) ?? null,
   };
 }
 
@@ -174,12 +165,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const conds: SQL[] = [eq(transactions.ledgerId, ledgerId)];
     if (q.from) conds.push(gte(transactions.date, q.from));
     if (q.to) conds.push(lte(transactions.date, q.to));
-    if (q.accountId) {
-      // 转账同时按转出/转入账户检索，保证任一账户都能看到相关流水
-      conds.push(or(eq(transactions.accountId, q.accountId), eq(transactions.transferToAccountId, q.accountId)) as SQL);
-    }
     if (q.categoryId) conds.push(eq(transactions.categoryId, q.categoryId));
-    if (q.type === "income" || q.type === "expense" || q.type === "transfer") {
+    if (q.type === "income" || q.type === "expense") {
       conds.push(eq(transactions.type, q.type));
     }
     const where = and(...conds);
@@ -193,9 +180,9 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .limit(limit)
       .offset(offset)
       .all();
-    const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+    const { cm } = loadRelationMaps(db, userId, ledgerId);
     const um = loadUserNicknames(db, userId, ledgerId);
-    return { items: rows.map((r) => toDto(r, am, cm, um)), total, page, limit };
+    return { items: rows.map((r) => toDto(r, cm, um)), total, page, limit };
   });
 
   app.post("/api/v1/transactions", { preHandler: auth }, async (req) => {
@@ -213,56 +200,31 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.clientRequestId, body.clientRequestId)))
         .get();
       if (replayed) {
-        const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+        const { cm } = loadRelationMaps(db, userId, ledgerId);
         const um = loadUserNicknames(db, userId, ledgerId);
-        return { item: toDto(replayed, am, cm, um) };
+        return { item: toDto(replayed, cm, um) };
       }
     }
 
-    const account = db
+    const cat = db
       .select()
-      .from(accounts)
-      .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
+      .from(categories)
+      .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
       .get();
-    if (!account) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
-
-    let categoryId: string | null = null;
-    let transferToAccountId: string | null = null;
-
-    if (body.type === "transfer") {
-      if (body.transferToAccountId === body.accountId) {
-        throw badRequest("INVALID_TRANSFER", "转出与转入账户不能相同");
-      }
-      const toAccount = db
-        .select()
-        .from(accounts)
-        .where(and(eq(accounts.id, body.transferToAccountId), eq(accounts.ledgerId, ledgerId)))
-        .get();
-      if (!toAccount) throw badRequest("ACCOUNT_NOT_FOUND", "转入账户不存在");
-      transferToAccountId = body.transferToAccountId;
-    } else {
-      const cat = db
-        .select()
-        .from(categories)
-        .where(and(eq(categories.id, body.categoryId), eq(categories.ledgerId, ledgerId)))
-        .get();
-      if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
-      if (cat.type !== body.type) throw badRequest("CATEGORY_TYPE_MISMATCH", "分类类型与收支类型不匹配");
-      categoryId = cat.id;
-    }
+    if (!cat) throw badRequest("CATEGORY_NOT_FOUND", "分类不存在");
+    if (cat.type !== body.type) throw badRequest("CATEGORY_TYPE_MISMATCH", "分类类型与收支类型不匹配");
+    const categoryId = cat.id;
 
     const now = new Date().toISOString();
     const row = {
       id: randomUUID(),
       userId,
       ledgerId,
-      accountId: body.accountId,
       categoryId,
       type: body.type,
       amount: body.amount,
       note: body.note ?? null,
       date: body.date,
-      transferToAccountId,
       sourceType: "manual",
       clientRequestId: body.clientRequestId ?? null,
       createdAt: now,
@@ -281,16 +243,16 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
           .where(and(eq(transactions.ledgerId, ledgerId), eq(transactions.clientRequestId, body.clientRequestId)))
           .get();
         if (winner) {
-          const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+          const { cm } = loadRelationMaps(db, userId, ledgerId);
           const um = loadUserNicknames(db, userId, ledgerId);
-          return { item: toDto(winner, am, cm, um) };
+          return { item: toDto(winner, cm, um) };
         }
       }
       throw error;
     }
-    const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+    const { cm } = loadRelationMaps(db, userId, ledgerId);
     const um = loadUserNicknames(db, userId, ledgerId);
-    return { item: toDto(row as TransactionRow, am, cm, um) };
+    return { item: toDto(row as TransactionRow, cm, um) };
   });
 
   app.get("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
@@ -304,9 +266,9 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
     if (!row) throw notFound("TRANSACTION_NOT_FOUND", "流水不存在");
-    const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+    const { cm } = loadRelationMaps(db, userId, ledgerId);
     const um = loadUserNicknames(db, userId, ledgerId);
-    return { item: toDto(row, am, cm, um) };
+    return { item: toDto(row, cm, um) };
   });
 
   app.patch("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
@@ -330,22 +292,10 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     if (body.amount !== undefined) patch.amount = body.amount;
     if (body.date !== undefined) patch.date = body.date;
     if (body.note !== undefined) patch.note = body.note;
-    if (body.accountId !== undefined) {
-      const acct = db
-        .select()
-        .from(accounts)
-        .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
-        .get();
-      if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
-      if (existing.type === "transfer" && existing.transferToAccountId === body.accountId) {
-        throw badRequest("INVALID_TRANSFER", "转出与转入账户不能相同");
-      }
-      patch.accountId = body.accountId;
-    }
     if (body.categoryId !== undefined) {
       if (body.categoryId === null) {
         patch.categoryId = null;
-      } else if (existing.type !== "transfer") {
+      } else {
         const cat = db
           .select()
           .from(categories)
@@ -366,9 +316,9 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .from(transactions)
       .where(and(eq(transactions.id, id), eq(transactions.ledgerId, ledgerId)))
       .get();
-    const { am, cm } = loadRelationMaps(db, userId, ledgerId);
+    const { cm } = loadRelationMaps(db, userId, ledgerId);
     const um = loadUserNicknames(db, userId, ledgerId);
-    return { item: toDto(updated as TransactionRow, am, cm, um) };
+    return { item: toDto(updated as TransactionRow, cm, um) };
   });
 
   app.delete("/api/v1/transactions/:id", { preHandler: auth }, async (req) => {
@@ -422,10 +372,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     }
     if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
 
-    const accts = listAccountsForUser(db, userId, ledgerId);
-    const defaultAccount = accts.find((a) => !a.isArchived) ?? accts[0];
-    if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
-
     const cats = listCategoriesForUser(db, userId, ledgerId);
     const incomeCat = cats.find((c) => c.type === "income");
     const expenseCat = cats.find((c) => c.type === "expense");
@@ -454,13 +400,11 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         id: randomUUID(),
         userId,
         ledgerId,
-        accountId: defaultAccount.id,
         categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
         type: it.type,
         amount: it.amount,
         note: it.note,
         date: it.date,
-        transferToAccountId: null,
         recurringId: null,
         externalId,
         sourceType,

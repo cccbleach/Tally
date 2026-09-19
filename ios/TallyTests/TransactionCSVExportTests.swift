@@ -13,8 +13,6 @@ final class TransactionCSVExportTests: XCTestCase {
         date: String = "2026-09-01",
         type: String = "expense",
         amount: Int = 123456,
-        accountName: String? = "微信钱包",
-        transferToAccountName: String? = nil,
         categoryName: String? = "餐饮",
         note: String? = nil,
         sourceType: String? = nil,
@@ -22,20 +20,16 @@ final class TransactionCSVExportTests: XCTestCase {
     ) -> Transaction {
         Transaction(
             id: id,
-            accountId: "acc-1",
             categoryId: "cat-1",
             type: type,
             amount: amount,
             note: note,
             date: date,
-            transferToAccountId: nil,
             createdAt: createdAt,
             updatedAt: createdAt,
-            accountName: accountName,
             categoryName: categoryName,
             categoryIcon: nil,
             categoryColor: nil,
-            transferToAccountName: transferToAccountName,
             sourceType: sourceType
         )
     }
@@ -66,9 +60,9 @@ final class TransactionCSVExportTests: XCTestCase {
         // 多币种下线后 amount 一律按人民币 2 位小数输出；currency 列**保留**（值恒为 CNY），
         // 避免改变既有 CSV 的列结构让用户的 Excel/透视流程错位。
         let csv = TransactionCSVExport.csv(from: [
-            makeTransaction(id: "pos", amount: 123456, accountName: "微信钱包"),
-            makeTransaction(id: "neg", amount: -1234, accountName: "现金"),
-            makeTransaction(id: "small", amount: 9, accountName: "现金"),
+            makeTransaction(id: "pos", amount: 123456),
+            makeTransaction(id: "neg", amount: -1234),
+            makeTransaction(id: "small", amount: 9),
         ])
         let lines = csv.components(separatedBy: "\r\n")
         XCTAssertTrue(lines[1].contains(",1234.56,CNY,"), "人民币两位小数：\(lines[1])")
@@ -80,18 +74,15 @@ final class TransactionCSVExportTests: XCTestCase {
 
     func testTextColumnsAreFormulaSanitized() {
         let csv = TransactionCSVExport.csv(from: [
-            makeTransaction(
-                accountName: "=WEBSERVICE(\"evil\")",
-                transferToAccountName: "+SUM(1)",
-                categoryName: "-1+1",
-                note: "@cmd"
-            ),
+            makeTransaction(categoryName: "=WEBSERVICE(\"evil\")", note: "+SUM(1)"),
+            makeTransaction(categoryName: "-1+1"),
+            makeTransaction(categoryName: "@cmd"),
         ])
-        let line = String(csv.components(separatedBy: "\r\n")[1])
-        XCTAssertTrue(line.contains("\"'=WEBSERVICE(\"\"evil\"\")\""), "账户名以 = 开头需前置单引号：\(line)")
-        XCTAssertTrue(line.contains("'+SUM(1)"), "以 + 开头需防护：\(line)")
-        XCTAssertTrue(line.contains("'-1+1"), "以 - 开头需防护：\(line)")
-        XCTAssertTrue(line.contains("'@cmd"), "以 @ 开头需防护：\(line)")
+        let lines = csv.components(separatedBy: "\r\n")
+        XCTAssertTrue(lines[1].contains("\"'=WEBSERVICE(\"\"evil\"\")\""), "分类名以 = 开头需前置单引号：\(lines[1])")
+        XCTAssertTrue(lines[1].contains("'+SUM(1)"), "备注以 + 开头需防护：\(lines[1])")
+        XCTAssertTrue(lines[2].contains("'-1+1"), "以 - 开头需防护：\(lines[2])")
+        XCTAssertTrue(lines[3].contains("'@cmd"), "以 @ 开头需防护：\(lines[3])")
     }
 
     func testAmountColumnIsNeverPrefixed() {
@@ -107,7 +98,7 @@ final class TransactionCSVExportTests: XCTestCase {
         let comma = TransactionCSVExport.csv(from: [makeTransaction(note: "午餐, 与同事")])
         XCTAssertTrue(comma.contains("\"午餐, 与同事\""), "含逗号字段需引号包裹")
 
-        let quote = TransactionCSVExport.csv(from: [makeTransaction(accountName: "招行\"经典\"")])
+        let quote = TransactionCSVExport.csv(from: [makeTransaction(note: "招行\"经典\"")])
         XCTAssertTrue(quote.contains("\"招行\"\"经典\"\"\""), "内部引号需翻倍")
 
         let newline = TransactionCSVExport.csv(from: [makeTransaction(categoryName: "餐\n饮")])

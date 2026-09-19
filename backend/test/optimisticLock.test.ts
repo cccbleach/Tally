@@ -12,9 +12,10 @@ import { runMigrations } from "../src/db/runner.js";
 import { buildApp } from "../src/server.js";
 import { smsRegister } from "./helpers.js";
 
-// 账户/分类乐观锁回归（里程碑 P2）：
+// 分类/流水乐观锁回归（里程碑 P2）：
 // 历史缺陷：只有流水/预算/周期账单支持 expectedUpdatedAt，家庭共享账本下
-// 两台设备并发修改同一账户/分类会静默相互覆盖（Last-Write-Wins 且无任何感知）。
+// 两台设备并发修改同一资源会静默相互覆盖（Last-Write-Wins 且无任何感知）。
+// （账户域已下线，分类是共享账本下「两端并发改同一资源」的现成载体。）
 //
 // 本文件锁死的不变量：
 //   1) PATCH 带 expectedUpdatedAt 且与当前 updatedAt 不一致 → 409 CONFLICT；
@@ -53,28 +54,28 @@ function resolveMigrations() {
   return candidates.find((c) => existsSync(c)) ?? candidates[0];
 }
 
-test("账户 PATCH：expectedUpdatedAt 过期返回 409，成功修改会前移 updatedAt", async () => {
-  const created = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", initialBalance: 0 });
+test("分类 PATCH：expectedUpdatedAt 过期返回 409，成功修改会前移 updatedAt", async () => {
+  const created = await req("POST", "/api/v1/categories", { name: "餐饮", type: "expense" });
   assert.equal(created.statusCode, 200, created.body);
-  const accountId = created.json().item.id as string;
+  const categoryId = created.json().item.id as string;
   const v1 = created.json().item.updatedAt as string;
   assert.ok(typeof v1 === "string" && v1.length > 0, "创建即应返回 updatedAt（存量回填为 created_at）");
 
   // 用 v1 版本号改一次 → 成功且 updatedAt 前移
-  const first = await req("PATCH", `/api/v1/accounts/${accountId}`, { name: "钱包A", expectedUpdatedAt: v1 });
+  const first = await req("PATCH", `/api/v1/categories/${categoryId}`, { name: "餐饮A", expectedUpdatedAt: v1 });
   assert.equal(first.statusCode, 200, first.body);
   const v2 = first.json().item.updatedAt as string;
   assert.notEqual(v1, v2, "成功修改必须前移 updatedAt");
 
   // 再用旧版本号 v1 改 → 409（模拟另一台设备持有过期数据）
-  const stale = await req("PATCH", `/api/v1/accounts/${accountId}`, { name: "钱包B", expectedUpdatedAt: v1 });
+  const stale = await req("PATCH", `/api/v1/categories/${categoryId}`, { name: "餐饮B", expectedUpdatedAt: v1 });
   assert.equal(stale.statusCode, 409);
   assert.equal(stale.json().error.code, "CONFLICT");
 
   // 不带版本号 → 兼容旧行为（LWW 直接成功）
-  const lww = await req("PATCH", `/api/v1/accounts/${accountId}`, { name: "钱包C" });
+  const lww = await req("PATCH", `/api/v1/categories/${categoryId}`, { name: "餐饮C" });
   assert.equal(lww.statusCode, 200, lww.body);
-  assert.equal(lww.json().item.name, "钱包C");
+  assert.equal(lww.json().item.name, "餐饮C");
 });
 
 test("分类 PATCH：expectedUpdatedAt 过期返回 409", async () => {
