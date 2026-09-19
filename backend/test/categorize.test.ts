@@ -54,6 +54,79 @@ test("支出：关键词命中对应分类（生产备注的真实样例）", ()
   }
 });
 
+test("支出：第二批关键词（未分类流水复盘出的真实样例）", () => {
+  const cases: Array<[string, string]> = [
+    // 用户点名的人工判定样例
+    ["DeepSeek-API服务(188******31)", "c-qita"],
+    ["超级吃货卡", "c-canyin"],
+    ["智能货柜消费_三得利无糖乌龙茶500ml_消费时间:2026-01-29 10:23", "c-canyin"],
+    ["智能货柜消费_沃隆每日坚果A混合果仁25g_消费时间:2026-01-09 16:40", "c-canyin"],
+    // 茶饮/酒水/餐馆
+    ["CHAGEE霸王茶姬（浙江杭州余杭阿里巴巴西溪A区店）", "c-canyin"],
+    ["酒钥匙（亲橙里店）", "c-canyin"],
+    ["外婆家杭州亲橙里店", "c-canyin"],
+    ["厨创东北大厨（亲橙里店）", "c-canyin"],
+    ["福鼎肉片馄饨排骨藕汤(4283)", "c-canyin"],
+    ["美川小居麻辣香锅未来科技城店", "c-canyin"],
+    ["越南 金枕榴莲 散称", "c-canyin"],
+    ["扫码付款_东广场芭比馒头", "c-canyin"],
+    ["盛马售货机仅售2999元-统一冰红茶500ml", "c-canyin"],
+    ["智盘消费_杭州-西溪园区A5-中华小厨A（西溪A区店）-7393", "c-canyin"],
+    // 购物
+    ["美宜佳浙01975店", "c-gouwu"],
+    ["快捷支付 美商海盗船专卖店", "c-gouwu"],
+    ["快捷支付 JD Health (HK) Limited", "c-gouwu"],
+    ["shopping", "c-gouwu"],
+    ["先购后付", "c-gouwu"],
+    // 生活账单/资金往来 → 其他支出
+    ["Kimi-Vip", "c-qita"],
+    ["网上国网", "c-qita"],
+    ["为18813920931话费充值", "c-qita"],
+    ["为177****3159充值100.0元，谨防诈骗", "c-qita"],
+    ["户号1400512570账单缴费", "c-qita"],
+    ["先充后付", "c-qita"],
+    ["免押租借充电宝", "c-qita"],
+    ["银联无卡自助消费 （特约）平安口袋银行（信用卡", "c-qita"],
+    ["钉钉转账", "c-qita"],
+    // 交通（新能源充电/车牌停车/租车/乘车）
+    ["e充电订单", "c-jiaotong"],
+    ["充电支付", "c-jiaotong"],
+    ["特来电充值", "c-jiaotong"],
+    ["湖北交投新能源投资有限公司", "c-jiaotong"],
+    ["快捷支付 润诚达", "c-jiaotong"],
+    ["95号车用乙醇汽油(E10)(VIB) 35.62 升", "c-jiaotong"],
+    ["神州租车", "c-jiaotong"],
+    ["2026-02-13乘车", "c-jiaotong"],
+    ["港鐵乘車", "c-jiaotong"],
+    ["通道支付 杭州西溪天街 浙AE28248", "c-jiaotong"],
+    // 居住/医疗/娱乐
+    ["【亲橙客栈】周末特惠房高级客房199元/晚，员工亲友专享价 ，需提前预约哦~", "c-juzhu"],
+    ["浙江疫苗安心宝", "c-yiliao"],
+    ["银联快捷支付 杭州余杭盲左健康管理门市部", "c-yiliao"],
+    ["DOTA2MOD全功能魔法助手辅助换肤国服演技派上分利器Melonity", "c-yule"],
+    ["16对战平台账号 自己设置密码和自定义昵称 16平台账号即拍即用", "c-yule"],
+    ["白金VIP升级星钻VIP30天", "c-yule"],
+    ["银联快捷支付 网易UU加速器", "c-yule"],
+    ["3张[5元观影代金券]", "c-yule"],
+    ["足本纪（文二西路店）", "c-yule"],
+  ];
+  for (const [note, expected] of cases) {
+    assert.equal(suggestCategoryId(note, cats, "expense"), expected, note);
+  }
+});
+
+test("支出：顺序敏感的边界——相近词不能串类", () => {
+  // 充电宝是租借服务费，不是新能源充电
+  assert.equal(suggestCategoryId("免押租借充电宝", cats, "expense"), "c-qita");
+  assert.equal(suggestCategoryId("漂流伞租借费", cats, "expense"), "c-qita");
+  // Kimi-Vip 是 AI 订阅，不能被 vip 抢去娱乐
+  assert.equal(suggestCategoryId("Kimi-Vip", cats, "expense"), "c-qita");
+  assert.equal(suggestCategoryId("白金VIP升级星钻VIP30天", cats, "expense"), "c-yule");
+  // 酒店是住宿，酒钥匙才是酒水
+  assert.equal(suggestCategoryId("酒店", cats, "expense"), "c-juzhu");
+  assert.equal(suggestCategoryId("酒钥匙（亲橙里店）", cats, "expense"), "c-canyin");
+});
+
 test("支出：无法识别的备注返回 null（未分类），不再硬塞第一个分类", () => {
   assert.equal(suggestCategoryId("58260129342520@9245", cats, "expense"), null);
   assert.equal(suggestCategoryId("", cats, "expense"), null);
