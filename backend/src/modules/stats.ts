@@ -25,15 +25,15 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
     const cur = currentYearMonth();
     const { year, month } = parseYearMonthQuery(q, cur);
 
-    const totals = monthlyTotals(db, userId, ledgerId, year, month);
-    const ad = netAssetsSummary(db, userId, ledgerId);
+    const totals = monthlyTotals(db, ledgerId, year, month);
+    const ad = netAssetsSummary(db, ledgerId);
 
-    const byCategory = expenseByCategory(db, userId, ledgerId, year, month).map((c) => ({
+    const byCategory = expenseByCategory(db, ledgerId, year, month).map((c) => ({
       ...c,
       percent: totals.expense > 0 ? Math.round((c.amount / totals.expense) * 1000) / 10 : 0,
     }));
-    const byAccount = expenseByAccount(db, userId, ledgerId, year, month);
-    const daily = dailyTotals(db, userId, ledgerId, year, month);
+    const byAccount = expenseByAccount(db, ledgerId, year, month);
+    const daily = dailyTotals(db, ledgerId, year, month);
 
     return {
       year,
@@ -54,6 +54,6 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { db: AppDb["db"
     const q = req.query as Record<string, string | undefined>;
     const ledgerId = getAccessibleLedger(db, userId, q.ledgerId).id;
     const months = Math.max(1, Math.min(60, Number(q.months ?? 6) || 6));
-    return { months: trend(db, userId, ledgerId, months) };
+    return { months: trend(db, ledgerId, months) };
   });
 }

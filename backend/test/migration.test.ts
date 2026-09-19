@@ -95,13 +95,13 @@ test("全新数据库与已有数据库（0001-0018 老库 → 0022）两条迁�
       assert.ok(applied2.some((r) => r.name.startsWith(p)), p + " 应已应用");
     }
 
-    // 验证新结构：ledgers.deleted_at 存在、预算唯一索引为 ledger 作用域
+    // 验证新结构：ledgers.deleted_at 存在
     const cols = sqlite.prepare("PRAGMA table_info(ledgers)").all() as { name: string }[];
     assert.ok(cols.some((c) => c.name === "deleted_at"), "ledgers 应有 deleted_at 列");
-    const idx = sqlite.prepare("PRAGMA index_list(budgets)").all() as { name: string }[];
-    const names = idx.map((i) => i.name);
-    assert.ok(names.includes("uniq_budget_total"), "应有 uniq_budget_total");
-    assert.ok(names.includes("uniq_budget_cat"), "应有 uniq_budget_cat");
+
+    // 预算随 0026 下线：这里钉死最终状态（表不存在，索引随表一并消失）。
+    const budgetsTable = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='budgets'").get();
+    assert.equal(budgetsTable, undefined, "0026 之后 budgets 表应已被删除");
 
     // 0020 曾建 loan_payment_idempotency（贷款还款幂等）；0025 随负债域下线把它删掉了。
     // 这里断言「全套迁移跑完后它不存在」，把最终状态钉死（历史结构由 git 记录保留）。
@@ -154,18 +154,6 @@ test("全新数据库与已有数据库（0001-0018 老库 → 0022）两条迁�
     // 外键检查无误
     const fk = sqlite.prepare("PRAGMA foreign_key_check").all();
     assert.deepEqual(fk, [], "升级后外键检查应无误");
-
-    // 同一用户、不同 ledger、同月同分类预算可共存（不再触发旧 userId 唯一冲突）
-    sqlite.prepare("PRAGMA foreign_keys = OFF").run();
-    sqlite.prepare("INSERT INTO ledgers (id, user_id, name, currency, is_default, created_at, updated_at) VALUES ('L1','U1','个人','CNY',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run();
-    sqlite.prepare("INSERT INTO ledgers (id, user_id, name, currency, is_default, created_at, updated_at) VALUES ('L2','U1','家庭','CNY',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run();
-    sqlite.prepare("INSERT INTO budgets (id, user_id, ledger_id, year, month, category_id, amount, created_at, updated_at) VALUES ('B1','U1','L1',2026,1,'C1',100,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run();
-    sqlite.prepare("INSERT INTO budgets (id, user_id, ledger_id, year, month, category_id, amount, created_at, updated_at) VALUES ('B2','U1','L2',2026,1,'C1',200,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run(); // 不应抛唯一冲突
-    // 同 ledger 同月同分类仍应唯一
-    assert.throws(() =>
-      sqlite.prepare("INSERT INTO budgets (id, user_id, ledger_id, year, month, category_id, amount, created_at, updated_at) VALUES ('B3','U1','L1',2026,1,'C1',300,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run(),
-    );
-    sqlite.prepare("PRAGMA foreign_keys = ON").run();
   } finally {
     sqlite.close();
     rmSync(dir, { recursive: true, force: true });

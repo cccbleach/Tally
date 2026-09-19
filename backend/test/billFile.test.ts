@@ -94,7 +94,7 @@ before(async () => {
   app = await buildApp({ db: created.db, jwtSecret: "test-import-secret" });
   headers = authHeaders(await smsRegister(app, "13841000001", "统一导入测试"));
   noAccountHeaders = authHeaders(await smsRegister(app, "13841000002", "无账户测试"));
-  const account = await app.inject({ method: "POST", url: "/api/v1/accounts", headers, payload: { name: "储蓄卡", type: "bank", currency: "CNY" } });
+  const account = await app.inject({ method: "POST", url: "/api/v1/accounts", headers, payload: { name: "储蓄卡", type: "bank" } });
   assert.equal(account.statusCode, 200, account.body);
 });
 after(async () => { await app.close(); sqlite.close(); rmSync(dir, { recursive: true, force: true }); });

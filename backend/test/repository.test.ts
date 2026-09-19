@@ -56,7 +56,6 @@ before(() => {
       ledgerId,
       name,
       type: "bank",
-      currency: "CNY",
       initialBalance: 0,
       createdAt: now,
       updatedAt: now,

@@ -57,7 +57,6 @@ services:
       # 业务时区：与账本“今天/当月”口径一致
       TZ: "${TZ:-Asia/Shanghai}"
       APP_TIMEZONE: "${APP_TIMEZONE:-Asia/Shanghai}"
-      BASE_CURRENCY: "${BASE_CURRENCY:-CNY}"
       # 浏览器端来源白名单（逗号分隔）。生产为空时后端只放行无 Origin 的请求，
       # iOS 原生客户端不带 Origin，故可留空；有 Web 端务必填写。
       CORS_ORIGINS: "${CORS_ORIGINS:-}"

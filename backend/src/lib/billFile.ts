@@ -1,7 +1,7 @@
 import { badRequest } from "./errors.js";
 import {
-  decodeBillBuffer, normalizeBillDate, parseAlipayRows, parseBankPdf, parseTextRows,
-  parseWechatRows, readXlsxRows, type ParsedBill,
+  assertBillCurrencyCny, decodeBillBuffer, normalizeBillDate, parseAlipayRows, parseBankPdf,
+  parseTextRows, parseWechatRows, readXlsxRows, type ParsedBill,
 } from "./billParser.js";
 
 export type BillSource = "wechat" | "alipay" | "bank";
@@ -50,9 +50,8 @@ function parseBankRows(rows: string[][]): ParsedBill[] {
         `第 ${i + 1} 行日期无法解析（"${(row[di] ?? "").slice(0, 24)}"）：请确认是银行导出的原始交易明细`,
       );
     }
-    const currencyRaw = (row[ci] ?? "CNY").trim();
-    const currency = ["", "人民币", "RMB", "CNY"].includes(currencyRaw) ? "CNY" : currencyRaw.toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency)) continue;
+    // 币种列只在是人民币时放行；外币直接报错（历史实现会静默跳过整行，等于悄悄丢数据）
+    assertBillCurrencyCny(row[ci], `第 ${i + 1} 行`);
     const direction = row[ti] ?? "";
     const type = ["支出", "借", "借方"].includes(direction) ? "expense"
       : ["收入", "贷", "贷方"].includes(direction) ? "income"
@@ -60,8 +59,10 @@ function parseBankRows(rows: string[][]): ParsedBill[] {
     const cents = Math.round(Math.abs(amount) * 100);
     if (!Number.isSafeInteger(cents) || cents <= 0) continue;
     const note = [row[ni], row[pi]].filter(Boolean).join(" ").trim();
-    items.push({ date, amount: cents, type, currency, note: note || null,
-      externalId: row[ei] || `bank:${date}:${currency}:${type}:${cents}:${note}` });
+    // external_id 的币种位置固定写 "CNY"（历史格式保留字面量）：人民币账单的存量 external_id
+    // 就是这一形态，换掉字面量会让重新导入同一份账单绕过硬去重产生重复流水。
+    items.push({ date, amount: cents, type, note: note || null,
+      externalId: row[ei] || `bank:${date}:CNY:${type}:${cents}:${note}` });
   }
   return items;
 }

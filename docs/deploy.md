@@ -98,9 +98,6 @@ pm2 save
 | `DATABASE_URL` | ./data/tally.db | SQLite 文件路径 |
 | `JWT_SECRET` | dev-local-only-not-for-production | JWT 签名密钥。**生产必须为 ≥32 位强随机且非占位值**，否则生产模式直接拒绝启动（`openssl rand -hex 32`） |
 | `APP_TIMEZONE` / `TZ` | Asia/Shanghai | 业务时区，决定“今天/当月”口径；建议保持与用户一致的时区 |
-| `BASE_CURRENCY` | CNY | 基准币种，统计/总资产的统一换算口径。**非 CNY 时必须同时提供该基准的汇率数据**：内置兜底汇率表是人民币视角，缺少对应数据时会静默按 CNY 汇率换算（实测偏差可达数倍），启动日志会打印告警 |
-| `EXCHANGE_RATE_FETCH_ENABLED` | false | 汇率自动拉取开关。设为 `1` 后启动 30 秒拉一次、每日 04:30 定时刷新**全局兜底汇率**（用户手工设置的汇率仍优先）；失败只记日志、绝不删除已有汇率 |
-| `EXCHANGE_RATE_FETCH_URL` | open.er-api.com 免费接口 | 汇率源地址（返回 `{ result, base_code, rates }` 的 JSON 接口；自部署可换内网镜像/代理）。源基准与 `BASE_CURRENCY` 不一致时，抓取会自动交叉换算到基准后入库（`rate(基准→X) = rates[X] / rates[基准]`）；若响应里没有基准币的汇率则明确报错并保留旧值，绝不按对方基准写错 |
 | `CORS_ORIGINS` | （空） | CORS 白名单，逗号分隔。开发为空放行所有；**生产为空则不放行任意 Origin**，生产务必显式列出前端域名 |
 | `TRUST_PROXY` | 0 | 可信反向代理层数；部署在反代后才设置，用于从 `X-Forwarded-For` 还原客户端 IP 做限流。默认不信任客户端伪造的 XFF |
 | `LOG_LEVEL` | warn | Fastify(pino) 日志级别；生产建议 `info`，`off` 关闭 |

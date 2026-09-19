@@ -1,12 +1,10 @@
 import Foundation
 
-/// 币种元数据。金额一律以「最小货币单位的整数」表示（CNY/USD 为分、JPY 为円），
+/// 币种元数据。金额一律以「最小货币单位的整数」表示（人民币为分），
 /// 展示与输入解析都按对应币种的小数位处理，任何金额运算都不经过 Double。
 ///
-/// 在线版币种语义（与服务端约定，见 backend/src/lib/currency.ts 与 aggregates.ts）：
-/// - 流水、账户余额按**自身币种**的整数分存储；
-/// - 统计/预算/负债等聚合金额已由服务端折算到账本本位币（BASE_CURRENCY，默认 CNY）再返回；
-/// - 服务端强制「流水币种 = 账户币种」，跨币种写入返回 400 CURRENCY_MISMATCH。
+/// 全站单一币种：2026-09 起多币种与汇率已下线（服务端不再有 currency 字段，
+/// 历史外币数据已在迁移里按汇率折算成人民币并保留原币种备注），因此这里只保留人民币。
 struct CurrencyInfo: Equatable, Hashable, Sendable {
     let code: String
     let symbol: String
@@ -166,35 +164,8 @@ struct CurrencyInfo: Equatable, Hashable, Sendable {
     }
 }
 
-/// 币种注册表。`common` 覆盖服务端内置兜底汇率（BUILTIN_RATES）支持的币种集合；
-/// 服务端币种校验只要求 3 位字母代码，因此未知代码也要能如实展示（以代码为符号、按 2 位小数）。
+/// 币种注册表：全站只支持人民币。保留 `CurrencyInfo` 是因为它承载金额格式化/解析规则
+/// （千分位、小数位校验、符号剔除），这些规则与具体币种无关，将来若要重新支持多币种只需往这里加。
 enum Currencies {
     static let cny = CurrencyInfo(code: "CNY", symbol: "¥", minorUnits: 2)
-    static let usd = CurrencyInfo(code: "USD", symbol: "$", minorUnits: 2)
-    static let eur = CurrencyInfo(code: "EUR", symbol: "€", minorUnits: 2)
-    static let gbp = CurrencyInfo(code: "GBP", symbol: "£", minorUnits: 2)
-    static let hkd = CurrencyInfo(code: "HKD", symbol: "HK$", minorUnits: 2)
-    static let twd = CurrencyInfo(code: "TWD", symbol: "NT$", minorUnits: 2)
-    static let jpy = CurrencyInfo(code: "JPY", symbol: "JP¥", minorUnits: 0)
-    static let krw = CurrencyInfo(code: "KRW", symbol: "₩", minorUnits: 0)
-    static let sgd = CurrencyInfo(code: "SGD", symbol: "S$", minorUnits: 2)
-    static let aud = CurrencyInfo(code: "AUD", symbol: "A$", minorUnits: 2)
-    static let cad = CurrencyInfo(code: "CAD", symbol: "C$", minorUnits: 2)
-
-    static let common: [CurrencyInfo] = [cny, usd, eur, gbp, hkd, twd, jpy, krw, sgd, aud, cad]
-
-    static func knownCode(_ code: String) -> CurrencyInfo? {
-        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return common.first { $0.code == normalized }
-    }
-
-    /// nil / 空白 → 默认 CNY；已知代码 → 注册表；未知代码 → 代码前缀兜底（2 位小数）。
-    static func info(for code: String?) -> CurrencyInfo {
-        guard let code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return cny
-        }
-        if let known = knownCode(code) { return known }
-        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return CurrencyInfo(code: normalized, symbol: normalized + " ", minorUnits: 2)
-    }
 }

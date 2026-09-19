@@ -54,7 +54,7 @@ function resolveMigrations() {
 }
 
 test("账户 PATCH：expectedUpdatedAt 过期返回 409，成功修改会前移 updatedAt", async () => {
-  const created = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", currency: "CNY", initialBalance: 0 });
+  const created = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", initialBalance: 0 });
   assert.equal(created.statusCode, 200, created.body);
   const accountId = created.json().item.id as string;
   const v1 = created.json().item.updatedAt as string;

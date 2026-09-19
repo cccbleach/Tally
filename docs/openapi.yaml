@@ -13,11 +13,9 @@ tags:
   - name: accounts
   - name: categories
   - name: transactions
-  - name: budgets
   - name: recurring
   - name: stats
   - name: families
-  - name: loans
   - name: imports
   - name: audit
 paths:
@@ -263,11 +261,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, type, currency, initialBalance]
+              required: [name, type, initialBalance]
               properties:
                 name: { type: string }
-                type: { type: string, enum: [cash, bank, e-wallet, credit, loan, other] }
-                currency: { type: string }
+                type: { type: string, enum: [cash, bank, e-wallet, other] }
                 initialBalance: { type: integer }
                 ledgerId: { type: string }
       responses:
@@ -371,6 +368,7 @@ paths:
         未传 source 或传 auto 时按文件内容与表头识别微信、支付宝、银行，不依赖文件名。
         XLSX 最大 5MB，其他文件最大 20MB，最多 5000 条；ZIP 需先解压，不支持扫描 PDF。
         银行表格支持记账日期/交易日期、交易金额/发生额、余额等标准表头；PDF 支持文字版“日期 币种 金额 余额 摘要”。
+        （币种列只接受人民币；外币账单会在解析阶段明确报错 BILL_CURRENCY_UNSUPPORTED，不会被静默跳过。）
         创建暂存任务，不直接写正式流水；当前账本需至少一个非归档账户。
       parameters:
         - { name: ledgerId, in: query, required: false, schema: { type: string }, description: 固定导入所属账本，缺省使用当前账本 }
@@ -585,9 +583,7 @@ paths:
       operationId: updateAccount
       summary: 更新账户
       description: >
-        改 `currency` 受 ACCOUNT_CURRENCY_LOCKED 约束：账户已被流水/贷款/信用卡账单引用时返回 400
-        （否则历史金额会被重新解释成另一种币种）。可选 expectedUpdatedAt（ISO 8601）
-        为乐观锁：与当前 updatedAt 不一致返回 409 CONFLICT。
+        可选 expectedUpdatedAt（ISO 8601）为乐观锁：与当前 updatedAt 不一致返回 409 CONFLICT。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -600,7 +596,7 @@ paths:
                 properties:
                   item: { $ref: "#/components/schemas/Account" }
         "400":
-          description: 参数非法或账户币种被锁定
+          description: 参数非法
         "409":
           description: CONFLICT（expectedUpdatedAt 不匹配）
     delete:
@@ -652,7 +648,7 @@ paths:
       tags: [transactions]
       operationId: updateTransaction
       summary: 修改流水（支持乐观锁 expectedUpdatedAt）
-      description: 改 accountId 时目标账户币种必须与流水币种一致，否则 400 CURRENCY_MISMATCH。
+      description: 改 accountId 时只校验目标账户存在且属于当前账本；转账不允许转出与转入为同一账户。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -676,51 +672,6 @@ paths:
       responses:
         "200":
           description: 关联结果
-  /api/v1/budgets:
-    get:
-      tags: [budgets]
-      operationId: listBudgets
-      parameters:
-        - { name: ledgerId, in: query, schema: { type: string }, required: false }
-        - { name: year, in: query, schema: { type: integer }, required: false }
-        - { name: month, in: query, schema: { type: integer }, required: false }
-      responses:
-        "200":
-          description: 预算列表（含已用额度）
-    post:
-      tags: [budgets]
-      operationId: createBudget
-      summary: 新建或更新预算（upsert，同账本同月同分类唯一；已存在则更新金额并返回该项）
-      responses:
-        "200":
-          description: 已创建或已更新（同月同分类重复提交不会 409，而是覆盖金额）
-  /api/v1/budgets/overview:
-    get:
-      tags: [budgets]
-      operationId: budgetOverview
-      summary: 预算总览（全部预算的执行进度）
-      parameters:
-        - { name: ledgerId, in: query, schema: { type: string }, required: false }
-      responses:
-        "200":
-          description: 总览
-  /api/v1/budgets/{id}:
-    patch:
-      tags: [budgets]
-      operationId: updateBudget
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: 更新后的预算
-    delete:
-      tags: [budgets]
-      operationId: deleteBudget
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        "200":
-          description: 已删除
   /api/v1/recurring:
     get:
       tags: [recurring]
@@ -733,7 +684,7 @@ paths:
     post:
       tags: [recurring]
       operationId: createRecurring
-      summary: 新建周期账单（币种继承所选账户，避免多币种下硬编码 CNY）
+      summary: 新建周期账单（到期自动生成流水，按日期幂等）
       responses:
         "200":
           description: 已创建
@@ -758,17 +709,16 @@ paths:
     get:
       tags: [stats]
       operationId: statsSummary
-      summary: 收支与资产负债汇总
+      summary: 收支与净资产汇总
       description: >
-        totalDebt / balance 均为基准币口径，且与 `/liabilities` 的 totalDebt 必须相等
-        （外币贷款与外币信用卡欠款都按汇率折算后再汇总）。
+        balance 为账户余额合计（已按基准币口径折算），totalAssets/net 与账户列表口径一致。
       parameters:
         - { name: ledgerId, in: query, schema: { type: string }, required: false }
         - { name: year, in: query, schema: { type: integer }, required: false }
         - { name: month, in: query, schema: { type: integer }, required: false }
       responses:
         "200":
-          description: 汇总（income/expense/net/balance/totalAssets/totalDebt/byCategory/byAccount/daily）
+          description: 汇总（income/expense/net/balance/totalAssets/byCategory/byAccount/daily）
   /api/v1/stats/trend:
     get:
       tags: [stats]
@@ -851,13 +801,12 @@ components:
         displayName: { type: string }
     Account:
       type: object
-      required: [id, name, type, currency]
+      required: [id, name, type]
       properties:
         id: { type: string }
         ledgerId: { type: string, nullable: true }
         name: { type: string }
         type: { type: string }
-        currency: { type: string }
         balance: { type: integer }
     Category:
       type: object
@@ -870,14 +819,13 @@ components:
         color: { type: string, nullable: true }
     Transaction:
       type: object
-      required: [id, accountId, type, amount, currency, date]
+      required: [id, accountId, type, amount, date]
       properties:
         id: { type: string }
         ledgerId: { type: string, nullable: true }
         accountId: { type: string }
         type: { type: string, enum: [income, expense, transfer] }
         amount: { type: integer }
-        currency: { type: string }
         note: { type: string, nullable: true }
         date: { type: string, format: date }
         sourceType: { type: string, nullable: true }

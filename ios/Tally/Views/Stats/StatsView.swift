@@ -28,7 +28,7 @@ struct StatsView: View {
                                     CategoryBadge(icon: c.icon, color: c.color)
                                     Text(c.name)
                                     Spacer()
-                                    Text(Money.format(c.amount, currency: store.baseCurrencyCode)).monospacedDigit()
+                                    Text(Money.format(c.amount)).monospacedDigit()
                                     Text(String(format: "%.1f%%", c.percent))
                                         .foregroundColor(.secondary)
                                         .frame(width: 56, alignment: .trailing)
@@ -77,23 +77,23 @@ struct StatsView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("支出").font(.caption).foregroundColor(.secondary)
-                    Text(Money.format(s.expense, currency: store.baseCurrencyCode)).font(.title2.bold()).foregroundColor(.red).monospacedDigit()
+                    Text(Money.format(s.expense)).font(.title2.bold()).foregroundColor(.red).monospacedDigit()
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("收入").font(.caption).foregroundColor(.secondary)
-                    Text(Money.format(s.income, currency: store.baseCurrencyCode)).font(.title2.bold()).foregroundColor(.green).monospacedDigit()
+                    Text(Money.format(s.income)).font(.title2.bold()).foregroundColor(.green).monospacedDigit()
                 }
             }
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("结余").font(.caption).foregroundColor(.secondary)
-                    Text(Money.signed(s.net, currency: store.baseCurrencyCode)).font(.headline).monospacedDigit()
+                    Text(Money.signed(s.net)).font(.headline).monospacedDigit()
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("总资产").font(.caption).foregroundColor(.secondary)
-                    Text(Money.format(s.balance, currency: store.baseCurrencyCode)).font(.headline).monospacedDigit()
+                    Text(Money.format(s.balance)).font(.headline).monospacedDigit()
                 }
             }
         }

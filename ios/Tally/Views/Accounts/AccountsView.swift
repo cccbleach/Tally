@@ -27,9 +27,8 @@ struct AccountsView: View {
 
     private var activeAccounts: [Account] { store.accounts.filter { !$0.isArchived } }
 
-    // 优先用服务端折算后的口径（StatsSummary.totalAssets 已按本位币换算）；
-    // 账户余额是各自币种的原生值，本地直接相加在多币种账本下会算错。
-    // summary 尚未加载时退回本地求和（与历史行为一致，单币种账本下结果相同）。
+    // 总资产：全站人民币，本地求和与服务端 totalAssets 口径一致；
+    // 仍优先用服务端汇总值（含未归档账户过滤等口径），未加载时本地兜底。
     private var totalAssets: Int {
         store.summary?.totalAssets ?? activeAccounts.reduce(0) { $0 + $1.balance }
     }
@@ -41,7 +40,7 @@ struct AccountsView: View {
                     HStack {
                         Text("总资产").foregroundColor(.secondary)
                         Spacer()
-                        Text(Money.format(totalAssets, currency: store.baseCurrencyCode)).font(.title3.bold()).monospacedDigit()
+                        Text(Money.format(totalAssets)).font(.title3.bold()).monospacedDigit()
                     }
                 }
                 Section("账户") {
@@ -109,7 +108,7 @@ struct AccountRow: View {
                 Text(accountTypeName(account.type)).font(.caption).foregroundColor(.secondary)
             }
             Spacer()
-            Text(Money.format(account.balance, currency: account.currency)).font(.headline).monospacedDigit()
+            Text(Money.format(account.balance)).font(.headline).monospacedDigit()
         }
     }
 }
@@ -121,7 +120,6 @@ struct AccountFormView: View {
 
     @State private var name = ""
     @State private var type = "other"
-    @State private var currency = Money.defaultCurrencyCode
     @State private var initialBalance = ""
     @State private var errorMessage: String?
 
@@ -133,15 +131,8 @@ struct AccountFormView: View {
         self.existing = existing
         _name = State(initialValue: existing?.name ?? "")
         _type = State(initialValue: existing?.type ?? "other")
-        _currency = State(initialValue: existing?.currency ?? Money.defaultCurrencyCode)
-        if let existing {
-            _initialBalance = State(initialValue: Currencies.info(for: existing.currency).decimalString(existing.initialBalance))
-        } else {
-            _initialBalance = State(initialValue: "")
-        }
+        _initialBalance = State(initialValue: existing.map { Money.currency.decimalString($0.initialBalance) } ?? "")
     }
-
-    private var currencyInfo: CurrencyInfo { Currencies.info(for: currency) }
 
     var body: some View {
         NavigationStack {
@@ -150,17 +141,8 @@ struct AccountFormView: View {
                 Picker("类型", selection: $type) {
                     ForEach(types, id: \.0) { t in Text(t.1).tag(t.0) }
                 }
-                if existing == nil {
-                    // 新建可选币种（默认账本本位币）；编辑不换币种——已有流水的账户
-                    // 换币种会让历史金额被新币种重新解释，服务端也会拒绝
-                    Picker("币种", selection: $currency) {
-                        ForEach(Currencies.common, id: \.code) { c in
-                            Text("\(c.code) \(c.symbol)").tag(c.code)
-                        }
-                    }
-                }
                 HStack {
-                    Text(currencyInfo.symbol).font(.title2).foregroundColor(.secondary)
+                    Text(Money.currency.symbol).font(.title2).foregroundColor(.secondary)
                     TextField("初始余额", text: $initialBalance).keyboardType(.decimalPad)
                 }
             }
@@ -172,20 +154,14 @@ struct AccountFormView: View {
             }
             .errorAlert($errorMessage)
         }
-        .onAppear {
-            // 未显式选择时跟随账本本位币（而非写死 CNY）
-            if existing == nil, currency == Money.defaultCurrencyCode {
-                currency = store.baseCurrencyCode
-            }
-        }
     }
 
     private func save() async {
-        // 解析失败必须报错：`?? 0` 会让「12.345」（CNY 只允许 2 位小数）静默变成 0 元账户，
+        // 解析失败必须报错：`?? 0` 会让「12.345」（人民币只允许 2 位小数）静默变成 0 元账户，
         // 用户以为存了余额、实际记成 0，属于不可见的账实不符。
         let trimmedBalance = initialBalance.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let balance = Money.minorUnits(fromInput: trimmedBalance.isEmpty ? "0" : trimmedBalance, currency: currency) else {
-            errorMessage = "\(Currencies.info(for: currency).code) 金额格式不正确：最多 \(Currencies.info(for: currency).minorUnits) 位小数，请检查后重试"
+        guard let balance = Money.minorUnits(fromInput: trimmedBalance.isEmpty ? "0" : trimmedBalance) else {
+            errorMessage = "\(Money.currency.code) 金额格式不正确：最多 \(Money.currency.minorUnits) 位小数，请检查后重试"
             return
         }
         do {
@@ -196,7 +172,7 @@ struct AccountFormView: View {
                     icon: nil, color: nil, expectedUpdatedAt: existing.updatedAt
                 )
             } else {
-                _ = try await APIService.shared.createAccount(name: name, type: type, currency: currency, initialBalance: balance, icon: nil, color: nil)
+                _ = try await APIService.shared.createAccount(name: name, type: type, initialBalance: balance, icon: nil, color: nil)
             }
             await store.refreshAccounts()
             dismiss()

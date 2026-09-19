@@ -1,7 +1,7 @@
 import { and, eq, lte } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { DB } from "../db/client.js";
-import { accounts, recurring, transactions } from "../db/schema.js";
+import { recurring, transactions } from "../db/schema.js";
 import { addDays, addMonths, addYears, todayStr } from "./date.js";
 
 function advance(date: string, frequency: string, interval: number): string {
@@ -31,13 +31,6 @@ export function runDueRecurring(db: DB): number {
     .all();
   const now = new Date().toISOString();
 
-  const accountIds = [...new Set(due.map((r) => r.accountId))];
-  const currencyByAccount = new Map<string, string>();
-  for (const id of accountIds) {
-    const a = db.select().from(accounts).where(eq(accounts.id, id)).get();
-    if (a) currencyByAccount.set(a.id, a.currency);
-  }
-
   return db.transaction((tx) => {
     let generated = 0;
     for (const r of due) {
@@ -48,7 +41,6 @@ export function runDueRecurring(db: DB): number {
           ended = true;
           break;
         }
-        const currency = currencyByAccount.get(r.accountId) ?? "CNY";
         const result = tx
           .insert(transactions)
           .values({
@@ -59,7 +51,6 @@ export function runDueRecurring(db: DB): number {
             categoryId: r.categoryId,
             type: r.type,
             amount: r.amount,
-            currency, // 继承账户币种，避免多币种下硬编码 CNY 算错
             note: r.note ?? null,
             date: cursor,
             transferToAccountId: null,

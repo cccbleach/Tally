@@ -5,13 +5,13 @@ import XCTest
 private typealias Category = Tally.Category
 
 // 快捷指令记账（App Intents）核心流程回归：
-//   1) 默认账户/分类/币种选择正确（币种必须跟随账户，服务端护栏强制）；
+//   1) 默认账户/分类选择正确；
 //   2) 未登录、无账户、非法金额都返回可读中文提示而不是抛异常（快捷指令环境无 UI 可弹错）；
 //   3) Double 金额参数立即转整数分，之后不再经过浮点。
 final class QuickAddIntentTests: XCTestCase {
 
-    private func makeAccount(id: String = "acc-1", name: String = "微信钱包", currency: String = "CNY", archived: Bool = false) -> Account {
-        Account(id: id, name: name, type: "e-wallet", currency: currency, initialBalance: 0,
+    private func makeAccount(id: String = "acc-1", name: String = "微信钱包", archived: Bool = false) -> Account {
+        Account(id: id, name: name, type: "e-wallet", initialBalance: 0,
                 icon: nil, color: nil, isArchived: archived, balance: 0,
                 createdAt: "2026-01-01T00:00:00Z")
     }
@@ -20,19 +20,19 @@ final class QuickAddIntentTests: XCTestCase {
         Category(id: id, name: name, type: type, icon: nil, color: nil, sortOrder: 0)
     }
 
-    private func makeTransaction(currency: String = "CNY", amount: Int = 2500) -> Transaction {
+    private func makeTransaction(amount: Int = 2500) -> Transaction {
         Transaction(id: "tx-new", accountId: "acc-1", categoryId: "cat-1", type: "expense",
-                    amount: amount, currency: currency, note: nil, date: "2026-09-12",
+                    amount: amount, note: nil, date: "2026-09-12",
                     transferToAccountId: nil, createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
                     accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-                    transferToAccountName: nil, sourceType: "shortcut", paymentGroupId: nil)
+                    transferToAccountName: nil, sourceType: "shortcut")
     }
 
-    func testExpensePicksFirstActiveAccountWithItsCurrency() async {
+    func testExpensePicksFirstActiveAccount() async {
         let mock = MockQuickAddService()
         mock.accounts = [
             makeAccount(id: "archived", name: "旧账户", archived: true),
-            makeAccount(id: "acc-1", name: "微信钱包", currency: "USD"),
+            makeAccount(id: "acc-1", name: "微信钱包"),
         ]
         mock.categories = [makeCategory(id: "income-cat", type: "income"), makeCategory(id: "cat-1", type: "expense")]
 
@@ -46,11 +46,10 @@ final class QuickAddIntentTests: XCTestCase {
             return
         }
         XCTAssertTrue(message.contains("支出"), message)
-        XCTAssertTrue(message.contains("$25.00"), "确认弹窗应按账户币种格式化：\(message)")
+        XCTAssertTrue(message.contains("¥25.00"), "确认弹窗应按人民币格式化：\(message)")
         XCTAssertTrue(message.contains("微信钱包"), message)
 
         XCTAssertEqual(mock.capturedAccountId, "acc-1", "应跳过归档账户选第一个活跃账户")
-        XCTAssertEqual(mock.capturedCurrency, "USD", "币种必须跟随账户（服务端护栏强制同币种）")
         XCTAssertEqual(mock.capturedCategoryId, "cat-1", "应选支出类型的第一个分类")
         XCTAssertEqual(mock.capturedAmount, 2500)
         XCTAssertEqual(mock.capturedNote, "咖啡")
@@ -117,7 +116,7 @@ final class QuickAddIntentTests: XCTestCase {
         LocalCache.clearAll()
         defer { LocalCache.clearAll() }
         LocalCache.save([
-            makeAccount(id: "cached-acc", name: "现金", currency: "CNY"),
+            makeAccount(id: "cached-acc", name: "现金"),
         ], forKey: "accounts")
 
         let mock = MockQuickAddService()
@@ -132,7 +131,6 @@ final class QuickAddIntentTests: XCTestCase {
         XCTAssertEqual(queued.count, 1)
         XCTAssertEqual(queued.first?.amount, 1250)
         XCTAssertEqual(queued.first?.accountId, "cached-acc", "断网兜底用缓存里的第一个活跃账户")
-        XCTAssertEqual(queued.first?.currency, "CNY", "币种跟随兜底账户（服务端护栏要求）")
         XCTAssertNotNil(queued.first?.id.range(of: #"^[0-9A-F-]{36}$"#, options: .regularExpression), "幂等键为 UUID")
     }
 
@@ -165,7 +163,6 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
     private var _createCallCount = 0
     private var _capturedAccountId: String?
     private var _capturedCategoryId: String?
-    private var _capturedCurrency: String?
     private var _capturedAmount: Int?
     private var _capturedNote: String?
     private var _capturedType: String?
@@ -188,7 +185,6 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
     var createCallCount: Int { lock.lock(); defer { lock.unlock() }; return _createCallCount }
     var capturedAccountId: String? { lock.lock(); defer { lock.unlock() }; return _capturedAccountId }
     var capturedCategoryId: String? { lock.lock(); defer { lock.unlock() }; return _capturedCategoryId }
-    var capturedCurrency: String? { lock.lock(); defer { lock.unlock() }; return _capturedCurrency }
     var capturedAmount: Int? { lock.lock(); defer { lock.unlock() }; return _capturedAmount }
     var capturedNote: String? { lock.lock(); defer { lock.unlock() }; return _capturedNote }
     var capturedType: String? { lock.lock(); defer { lock.unlock() }; return _capturedType }
@@ -209,13 +205,12 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
         return value
     }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
+    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
         lock.lock()
         _createCallCount += 1
         _capturedType = type
         _capturedAmount = amount
         _capturedNote = note
-        _capturedCurrency = currency
         _capturedAccountId = accountId
         _capturedCategoryId = categoryId
         let error = _errorToThrow
@@ -223,11 +218,11 @@ private final class MockQuickAddService: QuickAddServicing, @unchecked Sendable 
         if let error { throw error }
         return Transaction(
             id: "tx-new", accountId: accountId, categoryId: categoryId, type: type,
-            amount: amount, currency: currency, note: note, date: date,
+            amount: amount, note: note, date: date,
             transferToAccountId: transferToAccountId,
             createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
             accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-            transferToAccountName: nil, sourceType: "shortcut", paymentGroupId: nil
+            transferToAccountName: nil, sourceType: "shortcut"
         )
     }
 }

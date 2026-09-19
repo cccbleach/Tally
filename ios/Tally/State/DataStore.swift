@@ -9,15 +9,10 @@ final class DataStore {
     var transactions: [Transaction] = []
     var summary: StatsSummary?
     var trend: [TrendPoint] = []
-    var budgetOverview: BudgetOverview?
     var recurring: [RecurringBill] = []
     var isLoading = false
     var errorMessage: String?
     var isOffline = false
-
-    /// 当前账本本位币（统计/预算/负债等聚合金额的折算目标，服务端 BASE_CURRENCY 口径）。
-    /// 由 SharedLedgerStore 在账本快照刷新/切换后同步；展示聚合金额时传给 Money.format。
-    var baseCurrencyCode = Money.defaultCurrencyCode
 
     /// 待同步的离线记账条数（断网入队、联网重放后清零），供 UI 展示角标/提示
     var pendingSyncCount = 0
@@ -53,18 +48,12 @@ final class DataStore {
         clearState()
     }
 
-    /// 由 SharedLedgerStore 在账本快照刷新/切换时同步本位币（统计聚合金额的展示币种）。
-    func setBaseCurrency(code: String) {
-        baseCurrencyCode = code
-    }
-
     private func clearState() {
         accounts = []
         categories = []
         transactions = []
         summary = nil
         trend = []
-        budgetOverview = nil
         recurring = []
         pendingSyncCount = PendingTransactionQueue.count()
     }
@@ -111,7 +100,6 @@ final class DataStore {
         if let t: [Transaction] = LocalCache.load([Transaction].self, forKey: "transactions") { transactions = t }
         if let s: StatsSummary = LocalCache.load(StatsSummary.self, forKey: "summary") { summary = s }
         if let r: [RecurringBill] = LocalCache.load([RecurringBill].self, forKey: "recurring") { recurring = r }
-        if let o: BudgetOverview = LocalCache.load(BudgetOverview.self, forKey: "budgetOverview") { budgetOverview = o }
         if let tr: [TrendPoint] = LocalCache.load([TrendPoint].self, forKey: "trend") { trend = tr }
 
         let range = TallyDate.monthRange(year: selectedYear, month: selectedMonth)
@@ -121,22 +109,19 @@ final class DataStore {
             async let t = APIService.shared.transactions(from: range.from, to: range.to, accountId: nil, categoryId: nil, type: nil)
             async let s = APIService.shared.summary(year: selectedYear, month: selectedMonth)
             async let r = APIService.shared.recurring()
-            async let bo = APIService.shared.budgetOverview(year: selectedYear, month: selectedMonth)
             async let tr = APIService.shared.trend(months: 6)
-            let (accounts, categories, tx, summary, recurring, overview, trend) = try await (a, c, t, s, r, bo, tr)
+            let (accounts, categories, tx, summary, recurring, trend) = try await (a, c, t, s, r, tr)
             self.accounts = accounts
             self.categories = categories
             self.transactions = tx.items
             self.summary = summary
             self.recurring = recurring
-            self.budgetOverview = overview
             self.trend = trend
             LocalCache.save(accounts, forKey: "accounts")
             LocalCache.save(categories, forKey: "categories")
             LocalCache.save(tx.items, forKey: "transactions")
             LocalCache.save(summary, forKey: "summary")
             LocalCache.save(recurring, forKey: "recurring")
-            LocalCache.save(overview, forKey: "budgetOverview")
             LocalCache.save(trend, forKey: "trend")
             isOffline = false
             errorMessage = nil
@@ -216,20 +201,6 @@ final class DataStore {
             isOffline = false
         } catch {
             if let value: StatsSummary = LocalCache.load(StatsSummary.self, forKey: "summary") { summary = value }
-            let r = classify(error)
-            isOffline = r.offline
-            errorMessage = r.message
-        }
-    }
-
-    func refreshBudgetOverview() async {
-        do {
-            let value = try await APIService.shared.budgetOverview(year: selectedYear, month: selectedMonth)
-            budgetOverview = value
-            LocalCache.save(value, forKey: "budgetOverview")
-            isOffline = false
-        } catch {
-            if let value: BudgetOverview = LocalCache.load(BudgetOverview.self, forKey: "budgetOverview") { budgetOverview = value }
             let r = classify(error)
             isOffline = r.offline
             errorMessage = r.message

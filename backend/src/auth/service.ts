@@ -142,7 +142,6 @@ export function makeAuthService(db: DB, jwt: Jwt) {
         id: ledgerId,
         userId,
         name: "默认账本",
-        currency: "CNY",
         isDefault: true,
         createdAt: now,
         updatedAt: now,

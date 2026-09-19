@@ -8,6 +8,8 @@ import Foundation
 ///
 /// - `amount` 是**币种原生小数**：按每行 `currency` 的小数位输出（JPY 无小数位），
 ///   负数带减号，不包含千分位——保证任何工具回读时无需再清洗；
+/// - `currency` 列**保留**（全站人民币，值恒为 CNY）：这是导出给用户的外部产物格式，
+///   多币种下线不该改变既有 CSV 的列结构，否则用户已建好的 Excel/透视流程会错位；
 /// - 文本列（account/counterAccount/category/note）可能来自导入的微信/支付宝账单文件，
 ///   按 OWASP CSV Injection 指南做公式注入防护：以 `=` `+` `-` `@` 或前导 Tab/CR
 ///   开头的字段前置单引号 `'`，防止 Excel/Numbers 把其当公式执行（DDE 等风险）；
@@ -41,8 +43,8 @@ enum TransactionCSVExport {
                 t.id,
                 t.date,
                 t.type,
-                Currencies.info(for: t.currency).decimalString(t.amount),
-                t.currency,
+                Money.currency.decimalString(t.amount),
+                Money.currency.code,
                 sanitizeFormula(t.accountName ?? ""),
                 sanitizeFormula(t.transferToAccountName ?? ""),
                 sanitizeFormula(t.categoryName ?? ""),

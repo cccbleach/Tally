@@ -61,7 +61,7 @@ const now = new Date().toISOString();
 created.sqlite.prepare("INSERT INTO users (id, phone, nickname, nickname_key, phone_verified_at, nickname_changed_at, profile_completed_at, default_ledger_id, current_ledger_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
   "prod-user", "+8613800000001", "生产用户", "生产用户", now, now, now, "prod-ledger", "prod-ledger", now, now
 );
-created.sqlite.prepare("INSERT INTO ledgers (id, user_id, name, currency, is_default, created_at, updated_at) VALUES ('prod-ledger', 'prod-user', '默认账本', 'CNY', 1, ?, ?)").run(now, now);
+created.sqlite.prepare("INSERT INTO ledgers (id, user_id, name, is_default, created_at, updated_at) VALUES ('prod-ledger', 'prod-user', '默认账本', 1, ?, ?)").run(now, now);
 
 // 1) 生产模式 + 短信未配置：申请验证码必须是 503，不能是 200（否则用户永远收不到验证码）
 const res = await app.inject({ method: "POST", url: "/api/v1/auth/request-code", headers: { "content-type": "application/json" }, payload: JSON.stringify({ phone: "13800000001" }) });

@@ -12,7 +12,7 @@
 - 认证接口限流命中时返回 `429`，并带 `Retry-After` 头。短信相关错误码：
   `SMS_COOLDOWN`（同号码冷却中）、`SMS_DAILY_LIMIT`（该号码当日配额用尽）、
   `SMS_GLOBAL_DAILY_LIMIT`（全局日预算用尽）、`RATE_LIMITED`（IP/号码分钟级限流）。
-- **金额一律为整数「分」**（如 12.34 元 = `1234`），避免浮点误差；客户端负责按币种本地化展示
+- **金额一律为整数「分」**（如 12.34 元 = `1234`），避免浮点误差；全站人民币单币种（多币种与汇率已下线）
 - 日期（流水 `date`、周期 `startDate/endDate/nextRunDate`）为 `YYYY-MM-DD` 字符串；时间戳（`createdAt/updatedAt`）为 ISO 8601 字符串
 - 错误统一返回 `{ "error": { "code": "...", "message": "..." } }`
 
@@ -20,7 +20,7 @@
 
 - **当前策略：Last-Write-Wins + 乐观锁**。服务端以 `updatedAt` 为版本号，写接口返回最新的 `updatedAt`。
 - PATCH 写接口可携带可选参数 `expectedUpdatedAt`（ISO 8601）；若其与服务端当前 `updatedAt` 不一致，返回 `409 { error: { code: "CONFLICT" } }`，客户端应刷新后再提交。
-- `expectedUpdatedAt` 支持：流水、预算、周期账单、**账户、分类**（账户/分类自 0023 迁移起携带 `updatedAt`，每次成功 PATCH 前移；归档账户同样前移）。
+- `expectedUpdatedAt` 支持：流水、周期账单、**账户、分类**（账户/分类自 0023 迁移起携带 `updatedAt`，每次成功 PATCH 前移；归档账户同样前移）。
 - `POST /transactions` 支持可选 `clientRequestId`（8–64 位字母数字/连字符）：离线写队列重放与网络重发的幂等键，同键重复提交返回首次创建的流水（并发窗口由 `(ledger_id, client_request_id)` 唯一索引兜底）。
 - 客户端多端同步建议：拉取 → 记录 `updatedAt` → 修改时带上 → 遇 409 提示冲突并拉取最新。
 - 服务端不提供合并/三方合并；冲突由客户端引导用户处理（或按策略直接覆盖）。
@@ -76,19 +76,15 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | /accounts | 列表，返回 `{items:[...]}`，每项含实时 `balance` |
-| POST | /accounts | 新建，入参 `{name, type, currency?, initialBalance?, icon?, color?}` |
+| POST | /accounts | 新建，入参 `{name, type, initialBalance?, icon?, color?}` |
 | GET | /accounts/:id | 详情 |
-| PATCH | /accounts/:id | 更新（name/type/currency/initialBalance/icon/color/isArchived） |
+| PATCH | /accounts/:id | 更新（name/type/initialBalance/icon/color/isArchived） |
 | DELETE | /accounts/:id | **软删除（归档）**，保留流水关联 |
 
 - `type` 取值：`cash | bank | e-wallet | credit | loan | other`（与后端 `ACCOUNT_TYPES` 一致）
-- `currency` 为 3 位字母代码（`^[A-Za-z]{3}$`，大小写不敏感，落库统一大写）。非法值返回 400。
 - 账户余额 = 初始余额 + 收入 − 支出 + 转入 − 转出（**账户本位币**口径）
 
   `debt` 为当前未结清欠款且**已换算为基准币**（供客户端跨账户求和算净资产）
-- **改币种受限**：账户一旦被流水引用，`PATCH /accounts/:id` 改 `currency` 返回
-  400 `ACCOUNT_CURRENCY_LOCKED`（否则历史金额会被重新解释成另一种币种）。需改请新建账户后迁移。
-- **跨币种暂不支持**：流水的 `currency` 必须与目标账户币种一致，否则 400 `CURRENCY_MISMATCH`。
   该护栏覆盖创建、修改（含改挂账户）、导入、导入暂存与提交。
 
 ## 分类 Categories
@@ -136,29 +132,16 @@
 - 返回 `{imported, skipped, total}`；硬去重唯一索引为 `(ledger_id, source_type, external_id)`
   （同账本 + 同来源 + 同外部 ID），另有非唯一的 `dedup_key` 软指纹用于"疑似重复"判定。
 - 导入流水的账户/分类取当前账本默认（首个非归档账户 + 匹配收支类型的分类），后续可扩展为逐条指定。
-- **币种语义**：`items` 模式无法携带币种，因此按目标账户币种入账；`raw` 模式使用账单文件里解析出的币种
-  （银行账单带 `币种` 列），与默认账户不一致时整批 400 `CURRENCY_MISMATCH`，不会部分写入。
+- **币种语义**：全站人民币。账单文件里的 `币种` 列只接受人民币/`CNY`/`RMB`/空；
+  其他取值整份账单拒绝（400 `BILL_CURRENCY_UNSUPPORTED`），不会静默跳过该行。
 
 新建入参按 `type` 区分：
 
-- 支出/收入：`{type:"income"|"expense", amount, date, accountId, categoryId, note?, currency?}`
-- 转账：`{type:"transfer", amount, date, accountId, transferToAccountId, note?, currency?}`
+- 支出/收入：`{type:"income"|"expense", amount, date, accountId, categoryId, note?}`
+- 转账：`{type:"transfer", amount, date, accountId, transferToAccountId, note?}`
 
 校验：分类类型必须与收支类型匹配；转账源/目标账户不能相同；转账不计入收入/支出汇总。
 `GET /transactions?accountId=` 会同时匹配转出与转入账户，保证任一账户都能检索到相关转账流水。
-
-## 预算 Budgets
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /budgets?year&month | 列表（默认当月），返回 `{year,month,items}`，每项含 `spent/percent` |
-| POST | /budgets | upsert `{year, month, categoryId?, amount}`；`categoryId` 为空表示总预算 |
-| PATCH | /budgets/:id | 更新金额 `{amount, expectedUpdatedAt?}`（支持乐观锁） |
-| DELETE | /budgets/:id | 删除 |
-| GET | /budgets/overview?year&month | 汇总 `{totalBudget,totalSpent,totalPercent,items}` |
-
-- POST 与 PATCH 均返回与列表一致的预算项（含 `spent/percent`），保证客户端契约一致。
-- 预算仅针对支出；`percent` 为已用百分比（0-100，可超过 100 表示超支）。
 
 ## 周期账单 Recurring
 
@@ -177,15 +160,11 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | /stats/summary?year&month | `{income, expense, net, balance, totalAssets, totalDebt, byCategory, byAccount, daily}` |
+| GET | /stats/summary?year&month | `{income, expense, net, balance, totalAssets, byCategory, byAccount, daily}` |
 | GET | /stats/trend?months=6 | `{months:[{year,month,income,expense}]}` |
 
-- `net = income - expense`；`balance` 为各账户余额按汇率折算到基准币种（默认 CNY）后的净值总和。
-- `totalAssets` 为非归档账户余额合计（负债域已下线，不再有 `totalDebt` 字段），
-  **两部分均按各自币种汇率折算为基准币后求和**；`balance = totalAssets - totalDebt`（兼容字段，保持净值口径）。
-  负债域已下线：账户不再有负债类型，统计也不再有 `totalDebt`（见「统计 Stats」）。
-- 账户级 `balance`（见账户接口）以该账户本位币计价；跨账户的 `income/expense/net/balance/byCategory/byAccount/daily` 均按汇率折算到基准币种，不再直接相加。
-- 汇率：优先用户级 → 全局 → 内置兜底；未知币种按 1:1 兜底。内置常见币种（USD/EUR/GBP/JPY/HKD/KRW/SGD/AUD/CAD）为人民币视角的近似参考值。
+- `net = income - expense`；`balance` 与 `totalAssets` 都是非归档账户余额合计（全站人民币，直接相加）。
+- 负债域与多币种都已下线：没有 `totalDebt`，也没有任何汇率折算（历史外币金额已在迁移里折算成人民币）。
 - `byCategory`/ 为支出按分类汇总（含占比 `percent`）；`byAccount` 为支出按账户汇总；`daily` 为当月每日收入/支出。
 
 ## 共享账本（内部兼容 `/families` 路径）
@@ -212,12 +191,12 @@
 | POST | /ledgers/switch | 切换当前账本 `{ledgerId}` |
 
 - 产品界面只暴露“个人账本 / 共享账本”；`family` 仅作为后端兼容的成员关系命名。
-- 账户/分类/流水/预算/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
+- 账户/分类/流水/周期账单/统计等接口支持 `ledgerId`（query 或 body），用于指定共享账本。
 - 访问控制：个人账本仅创建者；共享账本仅活跃成员；越权返回 403。
 
 ## 账单导入去重
 
-- 导入时生成跨来源指纹 `dedup_key`（日期+金额+币种+规范化商家）
+- 导入时生成跨来源指纹 `dedup_key`（日期+金额+规范化商家；指纹载荷里的 `CNY` 是历史格式保留字面量，不是可变币种）
 - 默认遇到同账本相同指纹自动跳过，并返回 `suspectedDuplicates`
 - `force:true` 可强制新增重复项（清空 `dedup_key` 并记录 `linked_transaction_id`）
 - `POST /transactions/link` 可手动将疑似重复流水关联到已有流水

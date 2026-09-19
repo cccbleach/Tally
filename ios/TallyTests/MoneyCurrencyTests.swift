@@ -1,16 +1,14 @@
 import XCTest
 @testable import Tally
 
-// 多币种 Money/Currency 回归：
+// 金额格式化/解析回归（全站人民币）。
 //
-// 历史缺陷：Money.swift 把币种/符号/locale 全部写死 CNY/¥/zh_CN，而模型与后端都
-// 支持多币种（账户/流水带 currency 字段、后端有折算与跨币种护栏），展示层被硬编码掐死：
-// 美元账户余额显示成 ¥、向美元账户记账会因币种不符被服务端 400 拒绝。
-//
-// 本文件锁死的不变量：
-//   1) 格式化按币种小数位输出（JPY 0 位、CNY 2 位），未知币种有兜底而非崩溃/错显；
-//   2) 输入解析纯整数运算（不经过 Double），小数位超精度拒绝而非静默丢精度；
-//   3) 缺省币种 = 账本本位币（DataStore 默认 CNY）。
+// 历史缺陷：Money.swift 曾把币种/符号/locale 全部写死 CNY/¥/zh_CN，而模型与后端当时
+// 支持多币种，展示层被硬编码掐死：美元账户余额显示成 ¥、向美元账户记账会被服务端 400 拒绝。
+// 2026-09 多币种与汇率整体下线，全站只剩人民币，但下面这些不变量仍然要守住：
+//   1) 格式化按人民币 2 位小数输出、千分位正确、负数带减号；
+//   2) 输入解析纯整数运算（不经过 Double），小数位超精度拒绝而不是静默丢精度；
+//   3) 解析溢出返回 nil 而不是崩溃。
 final class MoneyCurrencyTests: XCTestCase {
 
     // MARK: - 格式化
@@ -23,37 +21,24 @@ final class MoneyCurrencyTests: XCTestCase {
         XCTAssertEqual(Money.format(123456789), "¥1,234,567.89")
     }
 
-    func testJPYHasZeroMinorUnits() {
-        XCTAssertEqual(Currencies.jpy.format(1500), "JP¥1,500")
-        XCTAssertEqual(Currencies.jpy.format(1234567), "JP¥1,234,567")
-        XCTAssertEqual(Currencies.jpy.format(-500), "-JP¥500")
-        XCTAssertEqual(Currencies.jpy.scale, 1)
-    }
-
-    func testUnknownCurrencyFallsBackToCodePrefix() {
-        // 服务端币种校验只要求 3 位字母，客户端不认识的合法币种也必须如实展示
-        XCTAssertEqual(Money.format(123456, currency: "XYZ"), "XYZ 1,234.56")
-        XCTAssertEqual(Currencies.info(for: "XYZ").minorUnits, 2)
-    }
-
-    func testNilOrEmptyCurrencyMeansDefault() {
-        XCTAssertEqual(Currencies.info(for: nil).code, "CNY")
-        XCTAssertEqual(Currencies.info(for: "  ").code, "CNY")
-        XCTAssertEqual(Currencies.info(for: " usd ").code, "USD", "币种代码应做 trim + 大小写归一")
+    func testCurrencyIsCNYOnly() {
+        XCTAssertEqual(Money.currency.code, "CNY")
+        XCTAssertEqual(Money.currency.symbol, "¥")
+        XCTAssertEqual(Money.currency.minorUnits, 2)
+        XCTAssertEqual(Money.currency.scale, 100)
+        XCTAssertEqual(Currencies.cny.code, "CNY")
     }
 
     func testSignedAmounts() {
         XCTAssertEqual(Money.signed(-500), "-¥5.00")
         XCTAssertEqual(Money.signed(500), "¥5.00")
         XCTAssertEqual(Money.signed(0), "¥0.00")
-        XCTAssertEqual(Money.signed(-123456, currency: "USD"), "-$1,234.56")
     }
 
     func testDecimalStringHasNoGroupingForInputPrefillAndCSV() {
         XCTAssertEqual(Currencies.cny.decimalString(123456), "1234.56")
         XCTAssertEqual(Currencies.cny.decimalString(-123456), "-1234.56")
-        XCTAssertEqual(Currencies.jpy.decimalString(1500), "1500")
-        XCTAssertEqual(Currencies.cny.scale, 100)
+        XCTAssertEqual(Currencies.cny.decimalString(9), "0.09")
     }
 
     // MARK: - 输入解析（纯整数运算）
@@ -87,21 +72,12 @@ final class MoneyCurrencyTests: XCTestCase {
     }
 
     func testParseRejectsExcessPrecisionInsteadOfSilentlyTruncating() {
-        XCTAssertNil(Money.minorUnits(fromInput: "12.345"), "CNY 输入 3 位小数必须拒绝")
-        XCTAssertNil(Money.minorUnits(fromInput: "0.005", currency: "USD"))
-        XCTAssertNil(Money.minorUnits(fromInput: "1500.5", currency: "JPY"), "JPY 无小数位")
-        XCTAssertEqual(Money.minorUnits(fromInput: "1500", currency: "JPY"), 1500)
+        XCTAssertNil(Money.minorUnits(fromInput: "12.345"), "人民币输入 3 位小数必须拒绝")
+        XCTAssertNil(Money.minorUnits(fromInput: "0.005"))
     }
 
     func testParseOverflowReturnsNil() {
         XCTAssertNil(Money.minorUnits(fromInput: "999999999999999999.99"), "超出 Int64 范围必须返回 nil 而不是崩溃")
         XCTAssertEqual(Money.minorUnits(fromInput: "92233720368547758.07"), 9223372036854775807, "Int64 上限金额可解析")
-    }
-
-    // MARK: - 本位币缺省
-
-    @MainActor
-    func testDataStoreDefaultsToCNYBaseCurrency() {
-        XCTAssertEqual(DataStore().baseCurrencyCode, "CNY", "未同步账本信息前默认 CNY（服务端 BASE_CURRENCY 默认值）")
     }
 }

@@ -34,11 +34,6 @@ struct RecurringRow: View {
         store.categories.first(where: { $0.id == bill.categoryId })
     }
 
-    /// 周期账单金额继承其账户币种（服务端生成流水时按账户币种入账）
-    private var currencyCode: String? {
-        store.accounts.first(where: { $0.id == bill.accountId })?.currency
-    }
-
     var body: some View {
         HStack(spacing: 12) {
             CategoryBadge(icon: category?.icon, color: category?.color)
@@ -48,7 +43,7 @@ struct RecurringRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                AmountLabel(amount: bill.amount, type: bill.type, currency: currencyCode)
+                AmountLabel(amount: bill.amount, type: bill.type)
                 Toggle("", isOn: Binding(
                     get: { bill.isActive },
                     set: { _ in Task { await toggle() } }
@@ -109,10 +104,6 @@ struct RecurringFormView: View {
     private var selectedAccount: Account? {
         store.accounts.first(where: { $0.id == selectedAccountId })
     }
-    /// 金额币种跟随所选账户（生成流水时按账户币种入账）
-    private var entryCurrency: String {
-        selectedAccount?.currency ?? store.baseCurrencyCode
-    }
 
     var body: some View {
         NavigationStack {
@@ -126,7 +117,7 @@ struct RecurringFormView: View {
                 }
                 Section {
                     HStack {
-                        Text(Currencies.info(for: entryCurrency).symbol).font(.title2).foregroundColor(.secondary)
+                        Text(Money.currency.symbol).font(.title2).foregroundColor(.secondary)
                         TextField("0.00", text: $amountString)
                             .keyboardType(.decimalPad)
                             .font(.title2.bold())
@@ -179,8 +170,8 @@ struct RecurringFormView: View {
 
     private func save() async {
         // 解析失败要明确提示：静默 return 会表现为「保存按钮没反应」，用户不知道哪里错了
-        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else {
-            errorMessage = "金额格式不正确：\(Currencies.info(for: entryCurrency).code) 最多 \(Currencies.info(for: entryCurrency).minorUnits) 位小数，且必须大于 0"
+        guard let amount = Money.minorUnits(fromInput: amountString) else {
+            errorMessage = "金额格式不正确：\(Money.currency.code) 最多 \(Money.currency.minorUnits) 位小数，且必须大于 0"
             return
         }
         let df = TallyDate.dayFormatter

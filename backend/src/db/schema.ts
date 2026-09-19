@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const users = sqliteTable(
@@ -99,7 +99,6 @@ export const ledgers = sqliteTable(
     userId: text("user_id").notNull(),
     familyId: text("family_id"), // NULL=个人账本；非空=家庭共享账本
     name: text("name").notNull(),
-    currency: text("currency").notNull().default("CNY"),
     isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
@@ -168,7 +167,6 @@ export const accounts = sqliteTable(
     ledgerId: text("ledger_id"),
     name: text("name").notNull(),
     type: text("type").notNull().default("other"),
-    currency: text("currency").notNull().default("CNY"),
     initialBalance: integer("initial_balance").notNull().default(0),
     icon: text("icon"),
     color: text("color"),
@@ -210,16 +208,14 @@ export const transactions = sqliteTable(
     categoryId: text("category_id"),
     type: text("type").notNull(), // income | expense | transfer
     amount: integer("amount").notNull(), // 分，恒为正
-    currency: text("currency").notNull().default("CNY"),
     note: text("note"),
     date: text("date").notNull(), // YYYY-MM-DD
     transferToAccountId: text("transfer_to_account_id"),
     recurringId: text("recurring_id"), // 周期账单生成关联，用于幂等
     externalId: text("external_id"), // 账单导入来源唯一号，用于去重
     sourceType: text("source_type"), // manual | wechat | alipay | bank | import
-    dedupKey: text("dedup_key"), // 跨来源指纹（日期+金额+币种+规范化商家）
+    dedupKey: text("dedup_key"), // 跨来源指纹（日期+金额+规范化商家，载荷里的 CNY 是历史格式字面量）
     linkedTransactionId: text("linked_transaction_id"), // 人工关联的目标流水
-    paymentGroupId: text("payment_group_id"), // 一次还款拆分出的多条流水的分组关联
     clientRequestId: text("client_request_id"), // 客户端幂等键（离线写队列重放去重）
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
@@ -232,29 +228,6 @@ export const transactions = sqliteTable(
     uniqueIndex("uniq_tx_external_source").on(t.ledgerId, t.sourceType, t.externalId), // 硬去重：同账本同来源同外部 ID（NULL 互不冲突）
     index("idx_tx_dedup").on(t.ledgerId, t.dedupKey), // 软去重指纹（不唯一，允许同商家同金额正常消费共存）
     uniqueIndex("uniq_tx_client_request").on(t.ledgerId, t.clientRequestId).where(sql`${t.clientRequestId} IS NOT NULL`), // 客户端幂等键（NULL 互不冲突）
-  ],
-);
-
-export const budgets = sqliteTable(
-  "budgets",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    ledgerId: text("ledger_id"),
-    year: integer("year").notNull(),
-    month: integer("month").notNull(), // 1-12
-    categoryId: text("category_id"), // null = 总预算
-    amount: integer("amount").notNull(), // 分
-    createdAt: text("created_at").notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (t) => [
-    index("idx_budgets_user").on(t.userId, t.year, t.month),
-    index("idx_budgets_ledger").on(t.ledgerId),
-    // 与迁移 0019 保持一致：预算唯一性作用于账本（ledger_id + year + month + category_id），
-    // category_id=NULL 表示总预算（部分唯一索引）。
-    uniqueIndex("uniq_budget_total").on(t.ledgerId, t.year, t.month).where(sql`${t.categoryId} IS NULL`),
-    uniqueIndex("uniq_budget_cat").on(t.ledgerId, t.year, t.month, t.categoryId).where(sql`${t.categoryId} IS NOT NULL`),
   ],
 );
 
@@ -282,21 +255,6 @@ export const recurring = sqliteTable(
   (t) => [index("idx_recurring_user").on(t.userId), index("idx_recurring_ledger").on(t.ledgerId)],
 );
 
-export const exchangeRates = sqliteTable(
-  "exchange_rates",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id"), // NULL = 全局默认汇率
-    baseCurrency: text("base_currency").notNull(),
-    currency: text("currency").notNull(),
-    rate: real("rate").notNull(), // 1 unit currency = rate base
-    createdAt: text("created_at").notNull(),
-  },
-  (t) => [
-    uniqueIndex("uniq_rate_user").on(t.userId, t.baseCurrency, t.currency),
-    uniqueIndex("uniq_rate_global").on(t.baseCurrency, t.currency),
-  ],
-);
 
 export const auditLogs = sqliteTable(
   "audit_logs",
@@ -348,7 +306,6 @@ export const importItems = sqliteTable(
     occurredAt: text("occurred_at").notNull(),
     type: text("type").notNull(),
     amount: integer("amount").notNull(),
-    currency: text("currency").notNull().default("CNY"),
     merchant: text("merchant"),
     rawDescription: text("raw_description"),
     dedupKey: text("dedup_key"),
@@ -370,5 +327,4 @@ export type FamilyMemberRow = typeof familyMembers.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type CategoryRow = typeof categories.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
-export type BudgetRow = typeof budgets.$inferSelect;
 export type RecurringRow = typeof recurring.$inferSelect;

@@ -11,7 +11,6 @@ import { badRequest, conflict, notFound } from "../lib/errors.js";
 import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { buildDedupKey, normalizeMerchant } from "../lib/dedup.js";
-import { assertCurrencyCompatible } from "../lib/currency.js";
 import { writeAudit } from "../lib/audit.js";
 import { listAccountsForUser } from "../repositories/accountRepository.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
@@ -88,15 +87,6 @@ async function createStagedJob(
   if (!defaultAccount) throw badRequest("ACCOUNT_REQUIRED", "请先创建至少一个账户再导入");
   // 注意：暂存阶段不决定分类（提交时才按收支类型匹配），因此这里不查分类
 
-  // items 模式无法携带币种，一律跟随目标账户币种（此前硬编码 CNY，USD 账户会记错）
-  const effectiveCurrency = (it: ParsedBill) => it.currency ?? defaultAccount.currency;
-
-  // 跨币种护栏（暂存阶段）：历史缺陷是导入路径完全不校验账户币种，
-  // 外币流水会落到本币账户并被按账户币种重新解释。这里在写任何行之前全量拒绝。
-  for (const it of items) {
-    assertCurrencyCompatible(defaultAccount, effectiveCurrency(it));
-  }
-
   const now = new Date().toISOString();
   const jobId = randomUUID();
   // 暂存要么整体成功、要么不留任何 job/明细（历史行为是逐条 insert，失败会留下半成品 job）
@@ -123,7 +113,7 @@ async function createStagedJob(
   const seenDedup = new Set<string>();
   for (const it of items) {
     const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
-    const dedupKey = buildDedupKey(it.date, it.amount, effectiveCurrency(it), it.note);
+    const dedupKey = buildDedupKey(it.date, it.amount, it.note);
     const merchant = normalizeMerchant(it.note);
     // 硬去重：同一账本、同一来源、同一外部 ID（稳定来源 ID，不依赖启发式指纹）
     const hard = seenExternal.has(externalId)
@@ -161,7 +151,6 @@ async function createStagedJob(
         occurredAt: it.date,
         type: it.type,
         amount: it.amount,
-        currency: effectiveCurrency(it),
         merchant: merchant || null,
         rawDescription: it.note,
         dedupKey,
@@ -303,8 +292,6 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (body.accountId !== undefined) {
       const acct = listAccountsForUser(db, userId, ledgerId).find((a) => a.id === body.accountId);
       if (!acct) throw notFound("ACCOUNT_NOT_FOUND", "账户不存在");
-      // 改归属账户时同样受跨币种护栏约束（明细的币种在解析时就已确定）
-      assertCurrencyCompatible(acct, item.currency);
       patch.accountId = body.accountId;
     }
     if (body.categoryId !== undefined) {
@@ -337,15 +324,13 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const items = db.select().from(importItems).where(eq(importItems.jobId, id)).all();
     if (items.length === 0) throw badRequest("EMPTY_IMPORT", "任务没有明细项");
 
-    // 跨币种护栏（提交阶段）：明细的账户可在暂存后被 PATCH 改过，因此必须按
-    // "最终归属账户" 再校验一次，且在任何写入之前完成，保证不会产生部分提交。
+    // 明细指定的账户可在暂存后被 PATCH 改过，因此按"最终归属账户"再校验一次存在性，
+    // 且在任何写入之前完成，保证不会产生部分提交。
     const accountsById = new Map(accts.map((a) => [a.id, a]));
     for (const it of items) {
       if (it.decision !== "accept") continue;
       const accountId = it.accountId ?? defaultAccount.id;
-      const acct = accountsById.get(accountId);
-      if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "明细指定的账户不存在或不在当前账本");
-      assertCurrencyCompatible(acct, it.currency);
+      if (!accountsById.get(accountId)) throw badRequest("ACCOUNT_NOT_FOUND", "明细指定的账户不存在或不在当前账本");
     }
 
     const now = new Date().toISOString();
@@ -365,7 +350,6 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
             categoryId,
             type: it.type,
             amount: it.amount,
-            currency: it.currency,
             note: it.rawDescription,
             date: it.occurredAt,
             transferToAccountId: null,

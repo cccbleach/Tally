@@ -74,6 +74,6 @@ export function isNicknameUniqueViolation(err: unknown): boolean {
   if (/uniq_users_nickname_key|nickname_key/i.test(msg)) return true;
   // 老版本 SQLite 报错可能不带列名：只有「纯唯一约束」错误且没有其它明确指向时，
   // 才按撞名处理（避免吞掉触发器/其它约束的真实失败）。
-  if (code === "SQLITE_CONSTRAINT_UNIQUE" && !/family|ledger|budget|auth_session/i.test(msg)) return true;
+  if (code === "SQLITE_CONSTRAINT_UNIQUE" && !/family|ledger|auth_session/i.test(msg)) return true;
   return false;
 }

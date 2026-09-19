@@ -46,7 +46,7 @@ after(async () => {
 });
 
 async function setupAccountAndCategory() {
-  const account = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", currency: "CNY", initialBalance: 0 });
+  const account = await req("POST", "/api/v1/accounts", { name: "微信钱包", type: "e-wallet", initialBalance: 0 });
   assert.equal(account.statusCode, 200, account.body);
   const category = await req("POST", "/api/v1/categories", { name: "餐饮", type: "expense" });
   assert.equal(category.statusCode, 200, category.body);
@@ -58,7 +58,6 @@ test("同一 clientRequestId 重复提交返回首次流水，不重复入账", 
   const payload = {
     type: "expense",
     amount: 2500,
-    currency: "CNY",
     date: "2026-09-12",
     accountId,
     categoryId,
@@ -84,7 +83,6 @@ test("并发两个相同键请求：唯一索引兜底，只有一个入账且�
   const payload = {
     type: "expense",
     amount: 1000,
-    currency: "CNY",
     date: "2026-09-12",
     accountId,
     categoryId,
@@ -110,7 +108,6 @@ test("不带 clientRequestId 维持原行为：每条独立入账", async () => 
   const payload = {
     type: "expense",
     amount: 100,
-    currency: "CNY",
     date: "2026-09-12",
     accountId,
     categoryId,
@@ -124,7 +121,7 @@ test("不带 clientRequestId 维持原行为：每条独立入账", async () => 
 
 test("幂等键格式非法被 zod 拒绝（空格/特殊字符/过短）", async () => {
   const { accountId, categoryId } = await setupAccountAndCategory();
-  const base = { type: "expense", amount: 100, currency: "CNY", date: "2026-09-12", accountId, categoryId };
+  const base = { type: "expense", amount: 100, date: "2026-09-12", accountId, categoryId };
   for (const bad of ["", "abc", "has space", "中文键值", "a".repeat(65)]) {
     const res = await req("POST", "/api/v1/transactions", { ...base, clientRequestId: bad });
     assert.equal(res.statusCode, 400, `非法幂等键 ${JSON.stringify(bad)} 应被拒绝`);

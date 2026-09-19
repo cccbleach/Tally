@@ -81,7 +81,7 @@ test("A 创建家庭并邀请 B，B 接受后用共享账本记账，A 看到记
   assert.ok(familyLedger, "创建家庭应返回家庭账本");
 
   // A 在家庭账本建账户和分类
-  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭储蓄", type: "bank", currency: "CNY", ledgerId: familyLedger });
+  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭储蓄", type: "bank", ledgerId: familyLedger });
   assert.equal(acc.statusCode, 200, acc.body);
   accountId = acc.json().item.id;
   const cats = await api(hA, "GET", "/api/v1/categories?ledgerId=" + familyLedger);
@@ -122,7 +122,6 @@ test("A 创建家庭并邀请 B，B 接受后用共享账本记账，A 看到记
     categoryId: expenseCatId,
     type: "expense",
     amount: 888,
-    currency: "CNY",
     date: todayStr(),
     note: "B 记的第一笔",
     ledgerId: familyLedger,

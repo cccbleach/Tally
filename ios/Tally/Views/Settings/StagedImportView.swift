@@ -86,7 +86,7 @@ struct StagedImportView: View {
                             HStack {
                                 Text(item.occurredAt).font(.caption).foregroundColor(.secondary)
                                 Spacer()
-                                Text(Money.format(item.amount, currency: item.currency)).font(.subheadline)
+                                Text(Money.format(item.amount)).font(.subheadline)
                             }
                             HStack {
                                 if item.duplicateStatus == "duplicate" {
@@ -249,7 +249,7 @@ struct StagedImportView: View {
         do {
             try await APIService.shared.decideImportItem(id: id, decision: decision, ledgerId: job.ledgerId)
             guard store.ledgerId == job.ledgerId else { return }
-            items = items.map { $0.id == id ? ImportItem(id: $0.id, jobId: $0.jobId, externalId: $0.externalId, occurredAt: $0.occurredAt, type: $0.type, amount: $0.amount, currency: $0.currency, merchant: $0.merchant, rawDescription: $0.rawDescription, duplicateStatus: $0.duplicateStatus, matchedTransactionId: $0.matchedTransactionId, decision: decision) : $0 }
+            items = items.map { $0.id == id ? ImportItem(id: $0.id, jobId: $0.jobId, externalId: $0.externalId, occurredAt: $0.occurredAt, type: $0.type, amount: $0.amount, merchant: $0.merchant, rawDescription: $0.rawDescription, duplicateStatus: $0.duplicateStatus, matchedTransactionId: $0.matchedTransactionId, decision: decision) : $0 }
         } catch {
             errorMessage = error.localizedDescription
         }

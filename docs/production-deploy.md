@@ -54,7 +54,6 @@ PORT=18080
 HOST=127.0.0.1
 DATABASE_URL=/var/lib/tally/tally.db
 JWT_SECRET=<openssl rand -hex 32 的输出>
-BASE_CURRENCY=CNY
 APP_TIMEZONE=Asia/Shanghai
 CORS_ORIGINS=https://<你的域名>
 TRUST_PROXY=1

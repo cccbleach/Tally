@@ -123,7 +123,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
         .run();
       const ledgerId = randomUUID();
       db.insert(ledgers)
-        .values({ id: ledgerId, userId, familyId, name: body.name, currency: "CNY", isDefault: false, createdAt: now, updatedAt: now })
+        .values({ id: ledgerId, userId, familyId, name: body.name, isDefault: false, createdAt: now, updatedAt: now })
         .run();
       db.update(users).set({ currentLedgerId: ledgerId, updatedAt: now }).where(eq(users.id, userId)).run();
 
@@ -188,7 +188,7 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
         expiresAt: i.expiresAt,
         createdAt: i.createdAt,
       }));
-    return { item: { ...familyDto(f), members, ledgers: ledgerRows.map((l) => ({ id: l.id, name: l.name, currency: l.currency })), invitations } };
+    return { item: { ...familyDto(f), members, ledgers: ledgerRows.map((l) => ({ id: l.id, name: l.name })), invitations } };
   });
 
   // Owner 按精确昵称邀请成员。目标已是其他家庭 active 成员时 → ALREADY_IN_FAMILY。
@@ -549,7 +549,6 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: { db: AppDb["db
     const items = [...map.values()].map((l) => ({
       id: l.id,
       name: l.name,
-      currency: l.currency,
       isDefault: l.isDefault,
       familyId: l.familyId,
       isCurrent: u?.currentLedgerId === l.id || (!u?.currentLedgerId && u?.defaultLedgerId === l.id),

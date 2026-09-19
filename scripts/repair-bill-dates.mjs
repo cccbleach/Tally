@@ -15,10 +15,12 @@
 //   1) 文本形如 "<Weekday> <Mon> <D>"，在 [2000, 今年] 窗口内找星期吻合的年份，必须唯一；
 //   2) 若 external_id 内嵌 YYYYMMDD（微信交易单号确实含日期），必须与推得的日期一致。
 //
-// 另外：transactions.dedup_key = sha1(日期|金额|币种|规范化商家)，**含日期**，
+// 另外：transactions.dedup_key = sha1(日期|金额|规范化商家)，**含日期**，
 // 所以改日期必须同步重算 dedup_key，否则跨来源（微信 vs 银行）模糊去重会失配。
 // 重算用的是部署产物里的 dist/lib/dedup.js（与服务端同一份实现，避免算法漂移）；
 // 找不到产物时跳过重算并告警（此时只有硬去重 external_id 生效，不影响账目）。
+// 注：指纹载荷里还有一段历史格式的保留字面量 "CNY"（多币种年代写入的唯一币种），
+// 那由 dedup.js 内部负责，本脚本不需要（也无法）感知币种。
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -173,7 +175,7 @@ try {
 }
 
 const details = new Map(
-  db.prepare("SELECT id, amount, currency, note, dedup_key FROM transactions WHERE id IN (" +
+  db.prepare("SELECT id, amount, note, dedup_key FROM transactions WHERE id IN (" +
     fixes.map(() => "?").join(",") + ")").all(fixes.map((f) => f.id))
     .map((r) => [r.id, r]),
 );
@@ -186,7 +188,7 @@ const applyAll = db.transaction((list) => {
     n += update.run(f.to, f.id, f.from).changes;
     const row = details.get(f.id);
     if (buildDedupKey && row && row.dedup_key) {
-      const next = buildDedupKey(f.to, row.amount, row.currency, row.note);
+      const next = buildDedupKey(f.to, row.amount, row.note);
       if (next !== row.dedup_key) dedup += updateDedup.run(next, f.id).changes;
     }
   }

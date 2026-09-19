@@ -9,7 +9,7 @@ import Foundation
 // 的重试不会重复入账。
 //
 // 队列语义：
-// - 服务端 2xx/4xx → 出队（4xx 是业务拒绝，如账户已删/币种不符，重放永远
+// - 服务端 2xx/4xx → 出队（4xx 是业务拒绝，如账户已删/金额不合法，重放永远
 //   不会成功，保留只会无限堆积；结果如实上报给用户）；
 // - 网络错误 → 保留在队列，停止本轮重放（网络又断了），下次再试。
 
@@ -21,7 +21,6 @@ struct QueuedTransaction: Codable, Identifiable, Hashable {
     let amount: Int
     let date: String
     let note: String?
-    let currency: String
     let accountId: String
     let categoryId: String?
     let transferToAccountId: String?
@@ -65,7 +64,7 @@ enum PendingTransactionQueue {
 
 /// 重放器：依赖注入（生产传 APIService，测试传替身）
 protocol QueuedTransactionCreating: Sendable {
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
+    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
 }
 
 extension APIService: QueuedTransactionCreating {}
@@ -92,7 +91,6 @@ enum OfflineTransactionSyncer {
                     amount: item.amount,
                     date: item.date,
                     note: item.note,
-                    currency: item.currency,
                     accountId: item.accountId,
                     categoryId: item.categoryId,
                     transferToAccountId: item.transferToAccountId,

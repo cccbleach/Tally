@@ -10,7 +10,18 @@ export interface ParsedBill {
   type: "income" | "expense";
   note: string | null;
   externalId: string | null; // 来源流水号，用于去重
-  currency?: string;
+}
+
+// 账单币种护栏：全站只支持人民币。历史实现遇到无法识别的币种（如「港币」）直接 `continue` 跳过该行，
+// 属于**静默丢数据**（用户以为整份账单都导进来了）；现在改为明确报错，让用户自己决定怎么处理。
+// 返回归一化后的币种（仅 CNY），非人民币直接 400。
+export function assertBillCurrencyCny(raw: string | undefined, rowLabel: string): "CNY" {
+  const value = (raw ?? "").trim().toUpperCase();
+  if (value === "" || value === "CNY" || value === "RMB" || value === "人民币") return "CNY";
+  throw badRequest(
+    "BILL_CURRENCY_UNSUPPORTED",
+    `${rowLabel}币种为「${raw?.trim()}」：本应用只记账人民币，外币账单请先换算成人民币再导入`,
+  );
 }
 
 // 识别账单文件编码：优先 UTF-8，若出现替换字符则尝试 GBK（微信/支付宝导出常见编码）
@@ -396,27 +407,29 @@ export async function parseBankPdf(buf: Uint8Array): Promise<ParsedBill[]> {
 
   const lineRe = /^(\d{4}-\d{2}-\d{2})\s+([A-Z]{3})\s+(-?[\d,]+\.\d{2})\s+[\d,]+\.\d{2}\s+(.+)$/;
   const items: ParsedBill[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
+  for (const [lineNo, rawLine] of text.split(/\r?\n/).entries()) {
     const line = rawLine.trim();
     if (!line) continue;
     const m = lineRe.exec(line);
     if (!m) continue;
     const date = m[1]!;
-    const currency = m[2]!;
+    // PDF 行的第 2 列是币种：本应用只支持人民币，外币账单直接拒绝（见 assertBillCurrencyCny）。
+    assertBillCurrencyCny(m[2]!, `第 ${lineNo + 1} 行`);
     const amountNum = Number(m[3]!.replace(/,/g, ""));
     if (!Number.isFinite(amountNum) || amountNum === 0) continue;
     const type: ParsedBill["type"] = amountNum > 0 ? "income" : "expense";
     const cents = Math.round(Math.abs(amountNum) * 100);
     const rest = m[4]!.trim();
-    // 用“日期+币种+金额+摘要”生成确定 externalId，保证同一份 PDF 重复导入不重复
-    const externalId = `bank:${date}:${currency}:${cents}:${rest}`;
+    // 用“日期+币种+金额+摘要”生成确定 externalId，保证同一份 PDF 重复导入不重复。
+    // 币种位置固定写 "CNY"（历史格式保留字面量）：人民币账单的存量 external_id 就是这一形态，
+    // 换掉字面量会让重新导入同一份账单绕过硬去重产生重复流水。
+    const externalId = `bank:${date}:CNY:${cents}:${rest}`;
     items.push({
       date,
       amount: cents,
       type,
       note: rest,
       externalId,
-      currency,
     });
   }
   return items;

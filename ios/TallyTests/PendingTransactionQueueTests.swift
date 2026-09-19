@@ -29,7 +29,7 @@ final class PendingTransactionQueueTests: XCTestCase {
     private func makeQueued(id: String, amount: Int = 1000) -> QueuedTransaction {
         QueuedTransaction(
             id: id, type: "expense", amount: amount, date: "2026-09-12",
-            note: nil, currency: "CNY", accountId: "acc-1", categoryId: "cat-1",
+            note: nil, accountId: "acc-1", categoryId: "cat-1",
             transferToAccountId: nil, queuedAt: Date()
         )
     }
@@ -65,7 +65,7 @@ final class PendingTransactionQueueTests: XCTestCase {
     func testTransportErrorClassification() {
         XCTAssertTrue(PendingTransactionQueue.isRetryableTransportError(URLError(.notConnectedToInternet)))
         XCTAssertTrue(PendingTransactionQueue.isRetryableTransportError(URLError(.timedOut)))
-        XCTAssertFalse(PendingTransactionQueue.isRetryableTransportError(APIError.server(code: "CURRENCY_MISMATCH", message: "x")))
+        XCTAssertFalse(PendingTransactionQueue.isRetryableTransportError(APIError.server(code: "CATEGORY_TYPE_MISMATCH", message: "x")))
         XCTAssertFalse(PendingTransactionQueue.isRetryableTransportError(APIError.http(status: 500)), "服务端已应答的错误重放无意义")
         XCTAssertFalse(PendingTransactionQueue.isRetryableTransportError(APIError.unauthorized))
     }
@@ -153,7 +153,7 @@ private final class MockQueueService: QueuedTransactionCreating, @unchecked Send
     var capturedIds: [String] { lock.lock(); defer { lock.unlock() }; return capturedIdsStorage }
     var capturedAmounts: [Int] { lock.lock(); defer { lock.unlock() }; return capturedAmountsStorage }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
+    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction {
         lock.lock()
         let index = calls
         calls += 1
@@ -166,11 +166,11 @@ private final class MockQueueService: QueuedTransactionCreating, @unchecked Send
         case .success:
             return Transaction(
                 id: "server-\(clientRequestId ?? UUID().uuidString)", accountId: accountId, categoryId: categoryId,
-                type: type, amount: amount, currency: currency, note: note, date: date,
+                type: type, amount: amount, note: note, date: date,
                 transferToAccountId: transferToAccountId,
                 createdAt: "2026-09-12T00:00:00Z", updatedAt: "2026-09-12T00:00:00Z",
                 accountName: nil, categoryName: nil, categoryIcon: nil, categoryColor: nil,
-                transferToAccountName: nil, sourceType: "manual", paymentGroupId: nil
+                transferToAccountName: nil, sourceType: "manual"
             )
         case .networkFailure:
             throw URLError(.notConnectedToInternet)

@@ -13,8 +13,6 @@ struct MainTabView: View {
                 .tabItem { Label("统计", systemImage: "chart.pie.fill") }
             AccountsView()
                 .tabItem { Label("账户", systemImage: "creditcard.fill") }
-            BudgetsView()
-                .tabItem { Label("预算", systemImage: "target") }
             SettingsView()
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }

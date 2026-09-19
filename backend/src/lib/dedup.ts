@@ -14,9 +14,13 @@ export function normalizeMerchant(raw: string | null | undefined): string {
   return s.slice(0, 12);
 }
 
-// 生成跨来源去重指纹：日期(±1天) + 金额(分) + 币种 + 规范化商家
-export function buildDedupKey(date: string, amount: number, currency: string, note: string | null): string {
+// 生成跨来源去重指纹：日期(±1天) + 金额(分) + 规范化商家
+//
+// 载荷里的 "CNY" 是**历史格式的保留字面量**，不是可变币种：存量 dedup_key 全部是按
+// `${date}|${amount}|CNY|${merchant}` 生成的（多币种年代唯一写入过的币种就是 CNY）。
+// 保留它，老指纹与新指纹才仍然可比，软去重不会因为删掉币种字段而整体失效。
+export function buildDedupKey(date: string, amount: number, note: string | null): string {
   const merchant = normalizeMerchant(note);
-  const payload = `${date}|${amount}|${currency || "CNY"}|${merchant}`;
+  const payload = `${date}|${amount}|CNY|${merchant}`;
   return createHash("sha1").update(payload, "utf8").digest("hex");
 }

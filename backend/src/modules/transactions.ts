@@ -20,7 +20,6 @@ import {
   type ParsedBill,
 } from "../lib/billParser.js";
 import { buildDedupKey } from "../lib/dedup.js";
-import { assertCurrencyCompatible, currencySchema } from "../lib/currency.js";
 import { badRequest as _badRequest } from "../lib/errors.js";
 import { isUniqueViolation } from "../lib/sqliteErrors.js";
 import { dateStr } from "../lib/schemas.js";
@@ -48,8 +47,6 @@ const commonFields = {
   amount: z.number().int("金额必须为整数（分）").positive("金额必须大于 0"),
   date: dateStr(),
   note: z.string().max(500, "备注过长").optional(),
-  // 币种统一走 currencySchema：3 位字母、大小写归一为大写，拒绝 "hello" 这类脏值
-  currency: currencySchema.default("CNY"),
   ledgerId: z.string().optional(),
   accountId: z.string().min(1, "账户不能为空"),
   // 客户端幂等键（离线写队列重放）：同一键重复提交返回首次创建的流水，不重复入账
@@ -147,12 +144,10 @@ function toDto(
     categoryId: tx.categoryId,
     type: tx.type,
     amount: tx.amount,
-    currency: tx.currency,
     note: tx.note,
     date: tx.date,
     sourceType: tx.sourceType ?? null,
     transferToAccountId: tx.transferToAccountId,
-    paymentGroupId: tx.paymentGroupId ?? null,
     createdAt: tx.createdAt,
     updatedAt: tx.updatedAt,
     accountName: am.get(tx.accountId)?.name ?? null,
@@ -231,9 +226,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       .get();
     if (!account) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
 
-    // 未实现交易级汇率换算：禁止在账户币种与流水币种不一致的场合入账，避免账实不符。
-    assertCurrencyCompatible(account, body.currency);
-
     let categoryId: string | null = null;
     let transferToAccountId: string | null = null;
 
@@ -247,8 +239,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         .where(and(eq(accounts.id, body.transferToAccountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!toAccount) throw badRequest("ACCOUNT_NOT_FOUND", "转入账户不存在");
-      // 转入账户也必须与流水币种一致（与转出账户同一护栏，避免跨币种转账）。
-      assertCurrencyCompatible(toAccount, body.currency);
       transferToAccountId = body.transferToAccountId;
     } else {
       const cat = db
@@ -270,7 +260,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
       categoryId,
       type: body.type,
       amount: body.amount,
-      currency: body.currency,
       note: body.note ?? null,
       date: body.date,
       transferToAccountId,
@@ -348,22 +337,8 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         .where(and(eq(accounts.id, body.accountId), eq(accounts.ledgerId, ledgerId)))
         .get();
       if (!acct) throw badRequest("ACCOUNT_NOT_FOUND", "账户不存在");
-      // 历史缺陷（已实测复现）：创建时有跨币种护栏，PATCH 改 accountId 时却只校验账户归属，
-      // 于是可以把一笔 CNY 流水改挂到 USD 账户（接口返回 200，账实不符）。
-      // 这里复用同一护栏：流水的既有币种必须与目标账户币种一致；转账还要校验转入侧账户。
-      assertCurrencyCompatible(acct, existing.currency);
       if (existing.type === "transfer" && existing.transferToAccountId === body.accountId) {
         throw badRequest("INVALID_TRANSFER", "转出与转入账户不能相同");
-      }
-      if (existing.type === "transfer" && existing.transferToAccountId) {
-        const toAccount = db
-          .select()
-          .from(accounts)
-          .where(and(eq(accounts.id, existing.transferToAccountId), eq(accounts.ledgerId, ledgerId)))
-          .get();
-        if (toAccount && existing.transferToAccountId !== body.accountId) {
-          assertCurrencyCompatible(toAccount, acct.currency);
-        }
       }
       patch.accountId = body.accountId;
     }
@@ -455,18 +430,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const incomeCat = cats.find((c) => c.type === "income");
     const expenseCat = cats.find((c) => c.type === "expense");
 
-    // items 模式无法携带币种（zod 会剥离未知字段），此前一律按 CNY 落库——
-    // 若账本默认账户是 USD，会静默把 CNY 金额记成 USD。这里改为"跟随目标账户币种"。
-    const effectiveCurrency = (it: { currency?: string }) => it.currency ?? defaultAccount.currency;
-
-    // 导入落库前先做跨币种全量校验（历史缺陷：导入路径完全没有校验账户币种，
-    // 外币流水会被记到本币账户并按账户币种重新解释金额）。
-    // 放在任何写入之前，保证"要么整批通过、要么一条都不写"，不产生部分导入。
-    // 银行 PDF/CSV 解析出的币种（如 USD）与默认账户不一致时，这里会整批拒绝。
-    for (const it of items) {
-      assertCurrencyCompatible(defaultAccount, effectiveCurrency(it));
-    }
-
     const now = new Date().toISOString();
     const sourceType = body.mode === "raw" ? body.source! : "import";
     let imported = 0;
@@ -475,7 +438,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     const failed: Array<{ externalId: string; reason: string }> = [];
     for (const it of items) {
       const externalId = it.externalId ?? `imp:${it.date}:${it.amount}:${it.type}:${it.note ?? ""}`;
-      const dedupKey = buildDedupKey(it.date, it.amount, effectiveCurrency(it), it.note);
+      const dedupKey = buildDedupKey(it.date, it.amount, it.note);
       const existing = db
         .select()
         .from(transactions)
@@ -495,7 +458,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
         type: it.type,
         amount: it.amount,
-        currency: effectiveCurrency(it),
         note: it.note,
         date: it.date,
         transferToAccountId: null,

@@ -55,7 +55,6 @@ enum LocalCache {
 struct CreateAccountBody: Encodable {
     let name: String
     let type: String
-    let currency: String
     let initialBalance: Int
     let icon: String?
     let color: String?
@@ -90,7 +89,6 @@ struct CreateTransactionBody: Encodable {
     let amount: Int
     let date: String
     let note: String?
-    let currency: String
     let accountId: String
     let categoryId: String?
     let transferToAccountId: String?
@@ -104,13 +102,6 @@ struct UpdateTransactionBody: Encodable {
     var note: String?
     var accountId: String?
     var categoryId: String?
-}
-
-struct UpsertBudgetBody: Encodable {
-    let year: Int
-    let month: Int
-    let categoryId: String?
-    let amount: Int
 }
 
 struct CreateRecurringBody: Encodable {
@@ -219,8 +210,8 @@ struct APIService {
         return res.items
     }
 
-    func createAccount(name: String, type: String, currency: String, initialBalance: Int, icon: String?, color: String?) async throws -> Account {
-        let body = CreateAccountBody(name: name, type: type, currency: currency, initialBalance: initialBalance, icon: icon, color: color)
+    func createAccount(name: String, type: String, initialBalance: Int, icon: String?, color: String?) async throws -> Account {
+        let body = CreateAccountBody(name: name, type: type, initialBalance: initialBalance, icon: icon, color: color)
         let res: ItemResponse<Account> = try await client.request("POST", "/api/v1/accounts", body: body)
         return res.item
     }
@@ -268,8 +259,8 @@ struct APIService {
         return try await client.request("GET", "/api/v1/transactions", query: query)
     }
 
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String? = nil) async throws -> Transaction {
-        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, currency: currency, accountId: accountId, categoryId: categoryId, transferToAccountId: transferToAccountId, clientRequestId: clientRequestId)
+    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String? = nil) async throws -> Transaction {
+        let body = CreateTransactionBody(type: type, amount: amount, date: date, note: note, accountId: accountId, categoryId: categoryId, transferToAccountId: transferToAccountId, clientRequestId: clientRequestId)
         let res: ItemResponse<Transaction> = try await client.request("POST", "/api/v1/transactions", body: body)
         return res.item
     }
@@ -303,22 +294,6 @@ struct APIService {
     func trend(months: Int) async throws -> [TrendPoint] {
         let res: TrendResponse = try await client.request("GET", "/api/v1/stats/trend", query: [URLQueryItem(name: "months", value: String(months))])
         return res.months
-    }
-
-    // 预算
-    func budgets(year: Int, month: Int) async throws -> BudgetsResponse {
-        let query = [URLQueryItem(name: "year", value: String(year)), URLQueryItem(name: "month", value: String(month))]
-        return try await client.request("GET", "/api/v1/budgets", query: query)
-    }
-
-    func budgetOverview(year: Int, month: Int) async throws -> BudgetOverview {
-        let query = [URLQueryItem(name: "year", value: String(year)), URLQueryItem(name: "month", value: String(month))]
-        return try await client.request("GET", "/api/v1/budgets/overview", query: query)
-    }
-
-    func upsertBudget(year: Int, month: Int, categoryId: String?, amount: Int) async throws {
-        let body = UpsertBudgetBody(year: year, month: month, categoryId: categoryId, amount: amount)
-        let _: ItemResponse<Budget> = try await client.request("POST", "/api/v1/budgets", body: body)
     }
 
     // 周期账单

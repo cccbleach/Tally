@@ -23,3 +23,6 @@ DerivedData/
 .prod-sec-*.ts
 .trust-proxy-*.ts
 *.tmp
+
+# 本机 agent/工具产物（不是仓库内容，避免污染工作树与部署前置的干净树检查）
+.zcode/

@@ -11,7 +11,6 @@ import { registerUserRoutes } from "./modules/users.js";
 import { registerAccountRoutes } from "./modules/accounts.js";
 import { registerCategoryRoutes } from "./modules/categories.js";
 import { registerTransactionRoutes } from "./modules/transactions.js";
-import { registerBudgetRoutes } from "./modules/budgets.js";
 import { registerRecurringRoutes } from "./modules/recurring.js";
 import { registerStatsRoutes } from "./modules/stats.js";
 import { registerFamilyRoutes } from "./modules/families.js";
@@ -110,7 +109,6 @@ export async function buildApp(deps: Deps) {
   registerAccountRoutes(app, shared);
   registerCategoryRoutes(app, shared);
   registerTransactionRoutes(app, shared);
-  registerBudgetRoutes(app, shared);
   registerRecurringRoutes(app, shared);
   registerStatsRoutes(app, shared);
   registerFamilyRoutes(app, shared);

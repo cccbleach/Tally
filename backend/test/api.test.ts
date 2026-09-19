@@ -12,7 +12,7 @@ import { todayStr, addMonths, currentYearMonth } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { transactions, recurring, ledgers, accounts, users } from "../src/db/schema.js";
-import { setRate } from "../src/lib/currency.js";
+import { ACCOUNT_TYPES } from "../src/modules/accounts.js";
 import { smsRegister, smsLogin } from "./helpers.js";
 import YAML from "yaml";
 
@@ -323,25 +323,6 @@ test("趋势接口", async () => {
   assert.equal(res.json().months.length, 6);
 });
 
-// ---- 预算 ----
-test("预算 upsert 与 overview", async () => {
-  const { year, month } = currentYearMonth();
-  const total = await req("POST", "/api/v1/budgets", { year, month, amount: 20000 });
-  assert.equal(total.statusCode, 200);
-  const cat = await req("POST", "/api/v1/budgets", { year, month, categoryId: expCat, amount: 5000 });
-  assert.equal(cat.statusCode, 200);
-
-  // 再次 upsert 总预算
-  const again = await req("POST", "/api/v1/budgets", { year, month, amount: 30000 });
-  assert.equal(again.statusCode, 200);
-
-  const overview = await req("GET", "/api/v1/budgets/overview?year=" + year + "&month=" + month);
-  assert.equal(overview.statusCode, 200);
-  const o = overview.json();
-  assert.equal(o.totalBudget, 30000);
-  assert.equal(o.totalSpent, 3000);
-});
-
 // ---- 周期账单 ----
 test("周期账单自动生成且幂等", async () => {
   const before2 = await req("GET", "/api/v1/stats/summary");
@@ -390,27 +371,6 @@ test("周期账单未来开始日期不生成", async () => {
   assert.equal(n, 0);
 });
 
-// 契约回归：POST/PATCH 预算必须返回 spent/percent，iOS 客户端依赖这些字段解码。
-test("预算创建与更新返回 spent/percent 字段", async () => {
-  const { year, month } = currentYearMonth();
-
-  const created = await req("POST", "/api/v1/budgets", { year, month, amount: 9999 });
-  assert.equal(created.statusCode, 200, created.body);
-  const createdItem = created.json().item;
-  assert.ok("spent" in createdItem, "POST /budgets 返回项应含 spent");
-  assert.ok("percent" in createdItem, "POST /budgets 返回项应含 percent");
-
-  const patched = await req("PATCH", "/api/v1/budgets/" + createdItem.id, { amount: 12345 });
-  assert.equal(patched.statusCode, 200, patched.body);
-  const patchedItem = patched.json().item;
-  assert.ok("spent" in patchedItem, "PATCH /budgets/:id 返回项应含 spent");
-  assert.ok("percent" in patchedItem, "PATCH /budgets/:id 返回项应含 percent");
-  assert.equal(patchedItem.amount, 12345);
-
-  const del = await req("DELETE", "/api/v1/budgets/" + createdItem.id);
-  assert.equal(del.statusCode, 200);
-});
-
 // 真正数据层幂等：即使把 nextRunDate 重置回过去（模拟旧 bug / 崩溃恢复后的重跑），
 // (recurring_id, date) 唯一约束也会让重复流水被跳过。
 test("周期账单在数据层幂等（重置 nextRunDate 不重复入账）", async () => {
@@ -454,38 +414,6 @@ test("周期账单在数据层幂等（重置 nextRunDate 不重复入账）", a
   assert.equal(del.statusCode, 200);
 });
 
-test("多币种流水按汇率折算到基准币种（不直接相加）", async () => {
-  const before = await req("GET", "/api/v1/stats/summary");
-  assert.equal(before.statusCode, 200, before.body);
-  const expenseBefore = before.json().expense;
-
-  // 自定义币种 XYZ（不在内置表内），1 XYZ = 2.5 CNY
-  setRate(db, null, "CNY", "XYZ", 2.5);
-
-  const acc = await req("POST", "/api/v1/accounts", {
-    name: "外币账户",
-    type: "bank",
-    currency: "XYZ",
-    initialBalance: 0,
-  });
-  assert.equal(acc.statusCode, 200, acc.body);
-  const accId = acc.json().item.id;
-
-  const tx = await req("POST", "/api/v1/transactions", {
-    type: "expense",
-    amount: 100,
-    accountId: accId,
-    categoryId: expCat,
-    currency: "XYZ",
-    date: todayStr(),
-  });
-  assert.equal(tx.statusCode, 200, tx.body);
-
-  const s = await req("GET", "/api/v1/stats/summary");
-  assert.equal(s.statusCode, 200, s.body);
-  assert.equal(s.json().expense, expenseBefore + 250, "外币支出应按汇率折算为基准币种");
-});
-
 test("账本隔离：非默认账本的数据不出现在默认 API 中", async () => {
   const u = db.select().from(users).where(eq(users.phone, "+8613800000001")).get()!;
   const otherLedgerId = randomUUID();
@@ -501,7 +429,6 @@ test("账本隔离：非默认账本的数据不出现在默认 API 中", async 
       ledgerId: otherLedgerId,
       name: "另一个账本的账户",
       type: "bank",
-      currency: "CNY",
       initialBalance: 8888,
       createdAt: now,
       updatedAt: now,
@@ -700,7 +627,6 @@ test("家庭共享账本：成员可读共享数据，非成员不可访问个�
       categoryId: catB!.id,
       type: "expense",
       amount: 3456,
-      currency: "CNY",
       date: todayStr(),
       note: "B 在家庭账本记账",
       ledgerId: familyLedger,
@@ -762,7 +688,6 @@ test("导入暂存流程：建任务→预览→提交，不静默丢弃", async
   const acc = await req("POST", "/api/v1/accounts", {
     name: "导入暂存账户",
     type: "bank",
-    currency: "CNY",
     initialBalance: 0,
   });
   assert.equal(acc.statusCode, 200, acc.body);
@@ -807,7 +732,6 @@ test("导入 multipart 文件上传：解析建任务且记 SHA-256", async () =
   const acc = await req("POST", "/api/v1/accounts", {
     name: "multipart导入账户",
     type: "bank",
-    currency: "CNY",
     initialBalance: 0,
   });
   assert.equal(acc.statusCode, 200, acc.body);
@@ -932,7 +856,7 @@ test("OpenAPI 关键契约细节：公开端点免鉴权 + 账户类型枚举与
   ).content["application/json"].schema.properties.type.enum;
   assert.deepEqual(
     [...accountEnum].sort(),
-    ["bank", "cash", "credit", "e-wallet", "loan", "other"].sort(),
+    [...ACCOUNT_TYPES].sort(),
     "账户类型枚举必须与后端 ACCOUNT_TYPES 一致（历史文档写的是 wallet/investment/credit_card）",
   );
 

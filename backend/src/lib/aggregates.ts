@@ -2,14 +2,12 @@ import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { DB } from "../db/client.js";
 import { accounts, categories, transactions } from "../db/schema.js";
 import { currentYearMonth, daysInMonth, todayStr } from "./date.js";
-import { convert } from "./currency.js";
-import { config } from "../config.js";
 
 export interface BalanceRow { accountId: string; balance: number; }
 
-// 账户余额（账户本币口径）= 初始余额 + 收入 - 支出 + 转入 - 转出（转账不计入收支）。
-// 每个账户按其自身币种核算，不做跨币种换算。
-export function computeAccountBalances(db: DB, _userId: string, ledgerId: string): Map<string, number> {
+// 账户余额 = 初始余额 + 收入 - 支出 + 转入 - 转出（转账不计入收支）。
+// 全站单一币种（人民币），金额直接相加，不做任何折算。
+export function computeAccountBalances(db: DB, ledgerId: string): Map<string, number> {
   const rows = db.all(sql`
     SELECT a.id AS accountId,
       a.initial_balance
@@ -27,20 +25,17 @@ export function computeAccountBalances(db: DB, _userId: string, ledgerId: string
 
 export interface NetAssetsSummary { assets: number; net: number; }
 
-// 账户净值（基准币）：非归档账户余额之和，借/贷已无负债域后的唯一口径。
-// 历史版本还返回 debts（信用卡欠款 + 贷款剩余本金），负债功能下线后一并移除。
-export function netAssetsSummary(db: DB, userId: string, ledgerId: string): NetAssetsSummary {
-  const balances = computeAccountBalances(db, userId, ledgerId);
+// 账户净值：非归档账户余额之和。
+// 历史版本还返回 debts（信用卡欠款 + 贷款剩余本金）并按汇率折算，两者都已随功能下线移除。
+export function netAssetsSummary(db: DB, ledgerId: string): NetAssetsSummary {
+  const balances = computeAccountBalances(db, ledgerId);
   const accts = db
     .select()
     .from(accounts)
     .where(and(eq(accounts.ledgerId, ledgerId), eq(accounts.isArchived, false)))
     .all();
   let assets = 0;
-  for (const a of accts) {
-    const native = balances.get(a.id) ?? a.initialBalance;
-    assets += convert(db, userId, native, a.currency, config.baseCurrency);
-  }
+  for (const a of accts) assets += balances.get(a.id) ?? a.initialBalance;
   return { assets, net: assets };
 }
 
@@ -53,23 +48,23 @@ export function monthRange(year: number, month: number): { from: string; to: str
 
 export interface MonthlyTotals { income: number; expense: number; }
 
-export function monthlyTotals(db: DB, userId: string, ledgerId: string, year: number, month: number): MonthlyTotals {
+export function monthlyTotals(db: DB, ledgerId: string, year: number, month: number): MonthlyTotals {
   const { from, to } = monthRange(year, month);
-  const rows = txRowsInRange(db, userId, ledgerId, from, to);
+  const rows = txRowsInRange(db, ledgerId, from, to);
   let income = 0;
   let expense = 0;
   for (const t of rows) {
-    if (t.type === "income") income += convert(db, userId, t.amount, t.currency, config.baseCurrency);
-    else if (t.type === "expense") expense += convert(db, userId, t.amount, t.currency, config.baseCurrency);
+    if (t.type === "income") income += t.amount;
+    else if (t.type === "expense") expense += t.amount;
   }
   return { income, expense };
 }
 
 export interface CategoryAgg { categoryId: string | null; name: string; icon: string | null; color: string | null; amount: number; }
 
-export function expenseByCategory(db: DB, userId: string, ledgerId: string, year: number, month: number): CategoryAgg[] {
+export function expenseByCategory(db: DB, ledgerId: string, year: number, month: number): CategoryAgg[] {
   const { from, to } = monthRange(year, month);
-  const rows = txRowsInRange(db, userId, ledgerId, from, to).filter((t) => t.type === "expense");
+  const rows = txRowsInRange(db, ledgerId, from, to).filter((t) => t.type === "expense");
   const cats = db
     .select()
     .from(categories)
@@ -85,7 +80,7 @@ export function expenseByCategory(db: DB, userId: string, ledgerId: string, year
     cur.name = cat?.name ?? "未分类";
     cur.icon = cat?.icon ?? null;
     cur.color = cat?.color ?? null;
-    cur.amount += convert(db, userId, t.amount, t.currency, config.baseCurrency);
+    cur.amount += t.amount;
     acc.set(key, cur);
   }
   return [...acc.values()].sort((a, b) => b.amount - a.amount).map((x) => x);
@@ -93,9 +88,9 @@ export function expenseByCategory(db: DB, userId: string, ledgerId: string, year
 
 export interface AccountAgg { accountId: string; name: string; amount: number; }
 
-export function expenseByAccount(db: DB, userId: string, ledgerId: string, year: number, month: number): AccountAgg[] {
+export function expenseByAccount(db: DB, ledgerId: string, year: number, month: number): AccountAgg[] {
   const { from, to } = monthRange(year, month);
-  const rows = txRowsInRange(db, userId, ledgerId, from, to).filter((t) => t.type === "expense");
+  const rows = txRowsInRange(db, ledgerId, from, to).filter((t) => t.type === "expense");
   const accts = db
     .select()
     .from(accounts)
@@ -105,7 +100,7 @@ export function expenseByAccount(db: DB, userId: string, ledgerId: string, year:
   const acc = new Map<string, AccountAgg>();
   for (const t of rows) {
     const cur = acc.get(t.accountId) ?? { accountId: t.accountId, name: nameMap.get(t.accountId) ?? "未知", amount: 0 };
-    cur.amount += convert(db, userId, t.amount, t.currency, config.baseCurrency);
+    cur.amount += t.amount;
     acc.set(t.accountId, cur);
   }
   return [...acc.values()].sort((a, b) => b.amount - a.amount);
@@ -113,14 +108,14 @@ export function expenseByAccount(db: DB, userId: string, ledgerId: string, year:
 
 export interface DailyAgg { date: string; income: number; expense: number; }
 
-export function dailyTotals(db: DB, userId: string, ledgerId: string, year: number, month: number): DailyAgg[] {
+export function dailyTotals(db: DB, ledgerId: string, year: number, month: number): DailyAgg[] {
   const { from, to } = monthRange(year, month);
-  const rows = txRowsInRange(db, userId, ledgerId, from, to);
+  const rows = txRowsInRange(db, ledgerId, from, to);
   const acc = new Map<string, DailyAgg>();
   for (const t of rows) {
     const cur = acc.get(t.date) ?? { date: t.date, income: 0, expense: 0 };
-    if (t.type === "income") cur.income += convert(db, userId, t.amount, t.currency, config.baseCurrency);
-    else if (t.type === "expense") cur.expense += convert(db, userId, t.amount, t.currency, config.baseCurrency);
+    if (t.type === "income") cur.income += t.amount;
+    else if (t.type === "expense") cur.expense += t.amount;
     acc.set(t.date, cur);
   }
   return [...acc.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
@@ -128,20 +123,20 @@ export function dailyTotals(db: DB, userId: string, ledgerId: string, year: numb
 
 export interface TrendPoint { year: number; month: number; income: number; expense: number; }
 
-export function trend(db: DB, userId: string, ledgerId: string, months: number): TrendPoint[] {
+export function trend(db: DB, ledgerId: string, months: number): TrendPoint[] {
   const n = Math.max(1, Math.min(60, months));
   const { year: curYear, month: curMonth } = currentYearMonth();
   const curIndex = curYear * 12 + (curMonth - 1);
   const startIndex = curIndex - (n - 1);
   const from = startIndexToDateStr(startIndex);
   const to = todayStr();
-  const rows = txRowsInRange(db, userId, ledgerId, from, to);
+  const rows = txRowsInRange(db, ledgerId, from, to);
   const acc = new Map<string, { income: number; expense: number }>();
   for (const t of rows) {
     const ym = t.date.slice(0, 7);
     const cur = acc.get(ym) ?? { income: 0, expense: 0 };
-    if (t.type === "income") cur.income += convert(db, userId, t.amount, t.currency, config.baseCurrency);
-    else if (t.type === "expense") cur.expense += convert(db, userId, t.amount, t.currency, config.baseCurrency);
+    if (t.type === "income") cur.income += t.amount;
+    else if (t.type === "expense") cur.expense += t.amount;
     acc.set(ym, cur);
   }
   const out: TrendPoint[] = [];
@@ -162,7 +157,7 @@ function startIndexToDateStr(index: number): string {
   return y + "-" + String(m).padStart(2, "0") + "-01";
 }
 
-function txRowsInRange(db: DB, _userId: string, ledgerId: string, from: string, to: string) {
+function txRowsInRange(db: DB, ledgerId: string, from: string, to: string) {
   return db
     .select()
     .from(transactions)

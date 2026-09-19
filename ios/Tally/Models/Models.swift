@@ -49,7 +49,6 @@ struct Account: Codable, Identifiable, Hashable {
     let id: String
     var name: String
     var type: String
-    var currency: String
     var initialBalance: Int
     var icon: String?
     var color: String?
@@ -79,7 +78,6 @@ struct Transaction: Codable, Identifiable, Hashable {
     var categoryId: String?
     var type: String
     var amount: Int
-    var currency: String
     var note: String?
     var date: String
     var transferToAccountId: String?
@@ -91,8 +89,6 @@ struct Transaction: Codable, Identifiable, Hashable {
     var categoryColor: String?
     var transferToAccountName: String?
     var sourceType: String?
-    // 一次还款拆分的本金/利息流水共用同一分组 ID，用于追溯
-    var paymentGroupId: String?
 }
 
 struct TransactionsResponse: Codable {
@@ -100,43 +96,6 @@ struct TransactionsResponse: Codable {
     let total: Int
     let page: Int
     let limit: Int
-}
-
-// MARK: - 预算
-
-struct Budget: Codable, Identifiable, Hashable {
-    let id: String
-    let year: Int
-    let month: Int
-    let categoryId: String?
-    let amount: Int
-    let spent: Int
-    let percent: Double
-}
-
-struct BudgetsResponse: Codable {
-    let year: Int
-    let month: Int
-    let items: [Budget]
-}
-
-struct BudgetOverview: Codable {
-    let year: Int
-    let month: Int
-    let totalBudget: Int
-    let totalSpent: Int
-    let totalPercent: Double
-    let items: [BudgetOverviewItem]
-}
-
-struct BudgetOverviewItem: Codable, Identifiable, Hashable {
-    let budgetId: String
-    let categoryId: String?
-    let categoryName: String
-    let budget: Int
-    let spent: Int
-    let percent: Double
-    var id: String { budgetId }
 }
 
 // MARK: - 周期账单
@@ -267,7 +226,6 @@ struct FamilyCreateItem: Codable {
 struct LedgerInfo: Codable, Identifiable, Hashable {
     let id: String
     let name: String
-    let currency: String
     let isDefault: Bool
     let familyId: String?
     let isCurrent: Bool
@@ -324,7 +282,6 @@ struct FamilyDetail: Codable, Identifiable, Hashable {
 struct FamilyLedgerInfo: Codable, Identifiable, Hashable {
     let id: String
     let name: String
-    let currency: String
 }
 
 struct InvitationLine: Codable, Identifiable, Hashable {
@@ -359,7 +316,6 @@ struct ImportItem: Codable, Identifiable, Hashable {
     let occurredAt: String
     let type: String
     let amount: Int
-    let currency: String
     let merchant: String?
     let rawDescription: String?
     let duplicateStatus: String

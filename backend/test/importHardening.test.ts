@@ -50,7 +50,7 @@ before(async () => {
   const reg = await smsRegister(app, "13840000001", "导入测试");
   headers = authHeaders(reg);
   // 创建账户和分类，供导入默认映射
-  await req("POST", "/api/v1/accounts", { name: "储蓄卡", type: "bank", currency: "CNY" });
+  await req("POST", "/api/v1/accounts", { name: "储蓄卡", type: "bank" });
 });
 
 after(() => {
@@ -140,7 +140,7 @@ test("暂存提交后的流水能参与下一次软去重", async () => {
 });
 
 test("导入明细可逐项覆盖账户与分类", async () => {
-  const acct = await req("POST", "/api/v1/accounts", { name: "现金", type: "cash", currency: "CNY" });
+  const acct = await req("POST", "/api/v1/accounts", { name: "现金", type: "cash" });
   const accountId = acct.json().item.id;
   const cats = await req("GET", "/api/v1/categories");
   const expenseCat = cats.json().items.find((c: { type: string }) => c.type === "expense");

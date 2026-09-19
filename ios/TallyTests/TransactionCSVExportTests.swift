@@ -13,7 +13,6 @@ final class TransactionCSVExportTests: XCTestCase {
         date: String = "2026-09-01",
         type: String = "expense",
         amount: Int = 123456,
-        currency: String = "CNY",
         accountName: String? = "微信钱包",
         transferToAccountName: String? = nil,
         categoryName: String? = "餐饮",
@@ -27,7 +26,6 @@ final class TransactionCSVExportTests: XCTestCase {
             categoryId: "cat-1",
             type: type,
             amount: amount,
-            currency: currency,
             note: note,
             date: date,
             transferToAccountId: nil,
@@ -38,8 +36,7 @@ final class TransactionCSVExportTests: XCTestCase {
             categoryIcon: nil,
             categoryColor: nil,
             transferToAccountName: transferToAccountName,
-            sourceType: sourceType,
-            paymentGroupId: nil
+            sourceType: sourceType
         )
     }
 
@@ -63,18 +60,20 @@ final class TransactionCSVExportTests: XCTestCase {
         XCTAssertTrue(lines[2].contains("old"))
     }
 
-    // MARK: - 金额与币种
+    // MARK: - 金额与币种列
 
-    func testAmountUsesEachRowCurrencyDecimals() {
+    func testAmountIsTwoDecimalsAndCurrencyColumnIsConstantCNY() {
+        // 多币种下线后 amount 一律按人民币 2 位小数输出；currency 列**保留**（值恒为 CNY），
+        // 避免改变既有 CSV 的列结构让用户的 Excel/透视流程错位。
         let csv = TransactionCSVExport.csv(from: [
-            makeTransaction(id: "cny", amount: 123456, currency: "CNY"),
-            makeTransaction(id: "jpy", amount: 1500, currency: "JPY"),
-            makeTransaction(id: "neg", amount: -1234, currency: "USD"),
+            makeTransaction(id: "pos", amount: 123456, accountName: "微信钱包"),
+            makeTransaction(id: "neg", amount: -1234, accountName: "现金"),
+            makeTransaction(id: "small", amount: 9, accountName: "现金"),
         ])
         let lines = csv.components(separatedBy: "\r\n")
-        XCTAssertTrue(lines[1].contains(",1234.56,CNY,"), "CNY 两位小数：\(lines[1])")
-        XCTAssertTrue(lines[2].contains(",1500,JPY,"), "JPY 无小数位：\(lines[2])")
-        XCTAssertTrue(lines[3].contains(",-12.34,USD,"), "负金额保留减号：\(lines[3])")
+        XCTAssertTrue(lines[1].contains(",1234.56,CNY,"), "人民币两位小数：\(lines[1])")
+        XCTAssertTrue(lines[2].contains(",-12.34,CNY,"), "负金额保留减号：\(lines[2])")
+        XCTAssertTrue(lines[3].contains(",0.09,CNY,"), "不足 1 元补齐两位：\(lines[3])")
     }
 
     // MARK: - 公式注入防护（OWASP CSV Injection）
@@ -97,7 +96,7 @@ final class TransactionCSVExportTests: XCTestCase {
 
     func testAmountColumnIsNeverPrefixed() {
         // 金额列本身可能以 - 开头（退款/负数），加防护前缀会破坏回读
-        let csv = TransactionCSVExport.csv(from: [makeTransaction(amount: -500, currency: "CNY")])
+        let csv = TransactionCSVExport.csv(from: [makeTransaction(amount: -500)])
         let line = String(csv.components(separatedBy: "\r\n")[1])
         XCTAssertTrue(line.contains(",-5.00,CNY,"), "负金额不得被加单引号前缀：\(line)")
     }

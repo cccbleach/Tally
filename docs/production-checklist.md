@@ -132,20 +132,21 @@
       `test/api.test.ts` + `completeProfileAtomic.test.ts` 覆盖短信登录与强制昵称闭环）；
       编排层由 `scripts/check-compose-auth-mode.mjs` 守门（CI 已接入）。
 
-## 6.5 数据审计：币种口径（本次修复后的上线前检查）
+## 6.5 数据审计：单币种（人民币）
 
-- [ ] **币种合法性审计**：历史版本允许写入任意币种字符串（如 `hello`），统计侧对未知币种按 1:1 兜底
-      会静默算错金额。升级后写接口已强校验，存量数据请用下面的 SQL 确认一次：
+多币种与汇率已下线（迁移 `0027_cny_only.sql`）：`accounts`/`transactions`/`ledgers`/`import_items`
+的 `currency` 列与 `exchange_rates` 表都已删除，历史外币金额在那次迁移里按汇率折算成人民币，
+原币种与原金额写进了流水备注（如「（原 HKD 5000.00，已按 1 HKD = 0.92 CNY 折算）」）。
+
+- [ ] **折算结果抽查**（升级后跑一次，确认外币数据被正确折算而不是 1:1 改列）：
       ```bash
-      sqlite3 /app/data/tally.db "
-        SELECT 'accounts' t, currency, COUNT(*) FROM accounts GROUP BY currency
-        UNION ALL SELECT 'transactions', currency, COUNT(*) FROM transactions GROUP BY currency
-        UNION ALL SELECT 'recurring', currency, COUNT(*) FROM recurring GROUP BY currency;"
+      cd /opt/tally/current && /opt/tally/runtime/node-v24.20.0-linux-x64/bin/node -e "
+        const D=require('better-sqlite3');const db=new D('/var/lib/tally/tally.db',{readonly:true});
+        console.log(db.prepare(\"SELECT id, amount, note FROM transactions WHERE note LIKE '%已按 1 %' ORDER BY date\").all());"
       ```
-      期望：所有 `currency` 都是 3 位大写字母（`CNY`/`USD`…）。小写值（如 `usd`）已被读侧自动归一；
-      非 3 字母的脏值需要人工确认后修正（例如按实际来源改为 `CNY`）。
-- [ ] **账户改币种限制**：升级后，已被流水/贷款/信用卡账单引用的账户改币种会返回
-      400 `ACCOUNT_CURRENCY_LOCKED`。若业务上确需改，请"新建同币种账户 → 迁移流水 → 归档旧账户"。
+      注意：服务器自带的 sqlite3 CLI 版本过低，读新 schema 会误报，用 better-sqlite3（见第 7 节）。
+- [ ] **确认列已消失**：`PRAGMA table_info(accounts)` / `table_info(transactions)` 中不再有 `currency`，
+      且 `sqlite_master` 里不存在 `exchange_rates` / `budgets` 表。
 - [ ] **短信频控参数**（当前为代码内默认值，**没有**环境变量开关；要改需改代码或注入
       `SmsThrottleOptions`）：同号码冷却 60 秒、同号码 5 条/天、全局 2000 条/天。
       另建议在阿里云控制台再设一层号码级频控。
@@ -185,7 +186,7 @@
       " /var/lib/tally/backups/<备份文件>.db        # 期望输出 ok（单行）
       ```
       （`.backup` 本身是页级拷贝，不受 CLI 版本影响，仍可用 CLI 执行。）
-- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0023_*.sql`，共 23 个）；
+- [ ] 迁移脚本评审：只允许**追加**新编号迁移（当前最新已到 `backend/migrations/0028_*.sql`，共 28 个）；
       已上线的迁移文件与数据库里已应用的记录一律不许改（`test/migration.test.ts` 会校验）。
 - [ ] 回滚预案：SQLite 无 down migration，**先判断迁移是不是纯增量**：
       - 纯增量（只加表/列/索引，旧代码在新库上仍能跑）⇒ 只回代码即可：裸机把 `current` 软链切回上一个
@@ -291,7 +292,7 @@
 ## 12. iOS 发布资产与 Release 构建
 
 - [ ] **真机验收已执行**（CI 与单测覆盖不到的系统交互）：按 `docs/ios-device-acceptance.md` 逐项走一遍
-      —— 应用锁(Face ID)、小组件与深链、快捷指令、截图 OCR 导入、离线写队列、多币种、CSV 导出、登出。
+      —— 应用锁(Face ID)、小组件与深链、快捷指令、截图 OCR 导入、离线写队列、单币种与历史折算、CSV 导出、登出。
       这些恰恰是"CI 全绿但用户一上手就出问题"的典型来源（例如缺少 `NSFaceIDUsageDescription` 会在真机直接崩溃）。
 - [ ] 联网版（`ios/`）与离线版（`ios-local/`）都通过资产检查：
       ```bash
@@ -327,7 +328,7 @@
    - compose：`docker compose -f docker-compose.caddy.yml up -d`。
 5. 健康检查：`/health/ready` 的 `migrationsApplied` 与迁移文件数一致；**新增路由要单独探一次**
    （例：`POST /api/v1/auth/logout-all` 应为 401，而旧版本是 404 —— 防止"部署成功但跑的是旧代码"）。
-6. 冒烟：注册/验证码恢复/记账/预算/统计/家庭/导入各跑一遍真实链路。
+6. 冒烟：注册/验证码恢复/记账/统计/家庭/导入各跑一遍真实链路。
 7. 观察 15 分钟日志与 5xx；确认无异常后关闭变更窗口，并把本次发布追加到服务器
    `/opt/tally/DEPLOYMENT.md`（release、commit、迁移号、备份路径、验收结果、回滚命令）。
 8. 回滚：裸机切回上一个 release 软链并重启（[production-deploy.md](production-deploy.md) 第 5 节），
@@ -355,9 +356,10 @@
       `1` 个手机号账号、`0` 个邮箱账号），且无旧家庭/成员/邀请数据（0022 不迁移旧邀请）。
 - [ ] 发布前对生产 SQLite 做一致备份并保留到观察期结束（`scripts/backup.sh`；
       完整性校验必须用应用引擎 better-sqlite3，老 sqlite3 CLI 会误报 schema 损坏，见第 7 节）。
-- [ ] 先部署支持新协议的后端，启动后确认 `schema_migrations` 与 `backend/migrations/` 的文件数一致
-      （该次为 22；**当前最新为 23**，`0001` → `0023` 全部应用），再安装新版 iOS；如迁移中途失败（含 0021 守门触发），
-      SQLite 会整体回滚到 0020，可用备份直接恢复。
+- [ ] 先安装新版 iOS（旧客户端不兼容删除币种/预算后的新后端：缺字段会解码失败），
+      再部署后端，启动后确认 `schema_migrations` 与 `backend/migrations/` 的文件数一致
+      （**当前最新为 28**，`0001` → `0028` 全部应用）；如迁移中途失败（含 0021 守门触发），
+      SQLite 会整体回滚，用迁移前备份直接恢复。
 - [ ] 每次应用 0021 都会吊销全部旧会话：旧客户端必须重新登录；旧“用户”昵称账号
       下次通过短信验证后进入强制昵称设置页。
 - [ ] 上线后依次验证：短信登录（新/旧账号）、强制昵称设置、个人账本、创建/邀请/接受/

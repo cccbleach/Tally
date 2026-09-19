@@ -132,19 +132,19 @@ struct HomeView: View {
         VStack(spacing: 8) {
             if let s = store.summary {
                 Text("本月结余").font(.caption).foregroundColor(.secondary)
-                Text(Money.signed(s.net, currency: store.baseCurrencyCode))
+                Text(Money.signed(s.net))
                     .font(.system(size: 40, weight: .bold, design: .rounded))
                     .foregroundColor(s.net >= 0 ? .primary : .red)
                     .monospacedDigit()
                 HStack(spacing: 32) {
                     VStack(spacing: 2) {
                         Text("收入").font(.caption).foregroundColor(.secondary)
-                        Text(Money.format(s.income, currency: store.baseCurrencyCode)).font(.subheadline.weight(.semibold)).foregroundColor(.green).monospacedDigit()
+                        Text(Money.format(s.income)).font(.subheadline.weight(.semibold)).foregroundColor(.green).monospacedDigit()
                     }
                     Divider().frame(height: 32)
                     VStack(spacing: 2) {
                         Text("支出").font(.caption).foregroundColor(.secondary)
-                        Text(Money.format(s.expense, currency: store.baseCurrencyCode)).font(.subheadline.weight(.semibold)).foregroundColor(.red).monospacedDigit()
+                        Text(Money.format(s.expense)).font(.subheadline.weight(.semibold)).foregroundColor(.red).monospacedDigit()
                     }
                 }
             } else {
@@ -182,7 +182,7 @@ struct TransactionRow: View {
 
             Spacer()
 
-            AmountLabel(amount: transaction.amount, type: transaction.type, currency: transaction.currency)
+            AmountLabel(amount: transaction.amount, type: transaction.type)
         }
     }
 

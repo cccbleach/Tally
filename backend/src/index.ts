@@ -6,7 +6,6 @@ import { createDb } from "./db/client.js";
 import { runMigrations } from "./db/runner.js";
 import { buildApp } from "./server.js";
 import { runDueRecurring } from "./lib/recurringRunner.js";
-import { runExchangeRateFetchSafely } from "./lib/exchangeRateFetcher.js";
 import { makeJwt } from "./auth/jwt.js";
 import { makeAuthService } from "./auth/service.js";
 
@@ -21,13 +20,6 @@ try {
   if (n > 0) console.log("已补跑周期账单 " + n + " 笔");
 } catch (e) {
   console.error("补跑周期账单失败:", e);
-}
-
-// 汇率自动拉取（opt-in）：启动 30s 后拉一次（错开冷启动高峰），失败静默保留旧汇率
-if (config.exchangeRateFetchEnabled) {
-  setTimeout(() => {
-    void runExchangeRateFetchSafely(db, config.exchangeRateFetchUrl);
-  }, 30_000).unref();
 }
 
 const app = await buildApp({ db, jwtSecret: config.jwtSecret });
@@ -55,17 +47,6 @@ cron.schedule(
   // 显式指定业务时区：原先只跟随容器 TZ，当 APP_TIMEZONE 与 TZ 不一致时会算错"今天"
   { timezone: config.timezone },
 );
-
-// 汇率每日刷新（opt-in）：04:30 拉取最新全局兜底汇率；失败只记日志
-if (config.exchangeRateFetchEnabled) {
-  cron.schedule(
-    "30 4 * * *",
-    () => {
-      void runExchangeRateFetchSafely(db, config.exchangeRateFetchUrl);
-    },
-    { timezone: config.timezone },
-  );
-}
 
 // 优雅关闭：收到 SIGTERM/SIGINT 时停止接收新请求、关闭 SQLite（避免 WAL 半写与句柄泄漏）
 let shuttingDown = false;

@@ -26,17 +26,12 @@ struct AddTransactionView: View {
     private var selectedAccount: Account? {
         store.accounts.first(where: { $0.id == selectedAccountId })
     }
-    /// 录入币种 = 所选账户币种（服务端强制「流水币种 = 账户币种」，跨币种写入会被
-    /// 400 CURRENCY_MISMATCH 拒绝）；未选账户时按账本本位币兜底。
-    private var entryCurrency: String {
-        selectedAccount?.currency ?? store.baseCurrencyCode
-    }
     private var entryCurrencySymbol: String {
-        Currencies.info(for: entryCurrency).symbol
+        Money.currency.symbol
     }
-    /// 转账的两个账户必须同币种（服务端两侧都做护栏校验），只提供同币种选项
+    /// 转账的两个账户都可以选（全站人民币，不存在跨币种转账问题）
     private var transferCandidates: [Account] {
-        activeAccounts.filter { $0.id != selectedAccountId && $0.currency == entryCurrency }
+        activeAccounts.filter { $0.id != selectedAccountId }
     }
 
     var body: some View {
@@ -64,7 +59,7 @@ struct AddTransactionView: View {
                 Section("账户") {
                     Picker("账户", selection: $selectedAccountId) {
                         ForEach(activeAccounts) { a in
-                            Text(a.name + "（" + Money.format(a.balance, currency: a.currency) + "）").tag(a.id)
+                            Text(a.name + "（" + Money.format(a.balance) + "）").tag(a.id)
                         }
                     }
                 }
@@ -136,13 +131,13 @@ struct AddTransactionView: View {
     }
 
     private var canSave: Bool {
-        guard Money.minorUnits(fromInput: amountString, currency: entryCurrency) != nil else { return false }
+        guard Money.minorUnits(fromInput: amountString) != nil else { return false }
         if type == "transfer" { return !selectedAccountId.isEmpty && !transferToAccountId.isEmpty }
         return !selectedAccountId.isEmpty && !selectedCategoryId.isEmpty
     }
 
     private func save() async {
-        guard let amount = Money.minorUnits(fromInput: amountString, currency: entryCurrency) else { return }
+        guard let amount = Money.minorUnits(fromInput: amountString) else { return }
         isSaving = true
         defer { isSaving = false }
         let dateStr = TallyDate.dayFormatter.string(from: date)
@@ -153,7 +148,6 @@ struct AddTransactionView: View {
                 amount: amount,
                 date: dateStr,
                 note: note.isEmpty ? nil : note,
-                currency: entryCurrency,
                 accountId: selectedAccountId,
                 categoryId: type == "transfer" ? nil : selectedCategoryId,
                 transferToAccountId: type == "transfer" ? transferToAccountId : nil,
@@ -170,7 +164,6 @@ struct AddTransactionView: View {
                     amount: amount,
                     date: dateStr,
                     note: note.isEmpty ? nil : note,
-                    currency: entryCurrency,
                     accountId: selectedAccountId,
                     categoryId: type == "transfer" ? nil : selectedCategoryId,
                     transferToAccountId: type == "transfer" ? transferToAccountId : nil,

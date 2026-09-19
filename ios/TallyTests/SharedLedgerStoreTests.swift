@@ -103,34 +103,6 @@ final class SharedLedgerStoreTests: XCTestCase {
         XCTAssertEqual(data.reloadCount, 1)
     }
 
-    // 账本币种必须随快照/切换同步给 DataStore：统计/预算/负债的聚合金额由服务端
-    // 折算到本位币返回，展示层用错币种会把 USD 账本的结余显示成 ¥。
-    func testBaseCurrencyFollowsLedgerSnapshotAndSwitch() async {
-        let service = MockSharedLedgerService()
-        let data = MockLedgerDataManager(ledgerId: "personal")
-        service.family = .sample(ownerUserId: "owner")
-        service.detail = .sample(ownerUserId: "owner")
-        service.ledgerItems = [.personal(current: true), .usdShared(current: false)]
-        let store = SharedLedgerStore(service: service)
-        store.bind(userId: "me", dataManager: data)
-
-        XCTAssertEqual(data.baseCurrencyCode, "CNY", "初始应为默认本位币")
-
-        _ = await store.refresh()
-        XCTAssertEqual(data.baseCurrencyCode, "CNY", "快照后仍指向 CNY 个人账本")
-
-        // 服务端返回的当前账本已变为 USD（如别处设备切换后本端刷新）
-        service.ledgerItems = [.personal(current: false), .usdShared(current: true)]
-        _ = await store.refresh()
-        XCTAssertEqual(data.baseCurrencyCode, "USD", "快照刷新必须同步当前账本币种")
-
-        // 本端切换回个人账本：markCurrentLedger 路径也要同步
-        service.ledgerItems = [.personal(current: false), .usdShared(current: true)]
-        let switched = await store.switchToLedger(.personal(current: false))
-        XCTAssertTrue(switched)
-        XCTAssertEqual(data.baseCurrencyCode, "CNY", "切换账本后必须同步新账本币种")
-    }
-
     func testMemberExitAndOwnerDeleteReturnToPersonalLedger() async {
         do {
             let service = MockSharedLedgerService()
@@ -180,7 +152,6 @@ private enum MockFailure: Error {
 private final class MockLedgerDataManager: LedgerDataManaging {
     private(set) var ledgerId: String?
     private(set) var reloadCount = 0
-    private(set) var baseCurrencyCode = Money.defaultCurrencyCode
 
     init(ledgerId: String?) {
         self.ledgerId = ledgerId
@@ -188,10 +159,6 @@ private final class MockLedgerDataManager: LedgerDataManaging {
 
     func setContext(userId: String?, ledgerId: String?) {
         self.ledgerId = ledgerId
-    }
-
-    func setBaseCurrency(code: String) {
-        baseCurrencyCode = code
     }
 
     func loadAll() async {
@@ -245,7 +212,6 @@ private final class MockSharedLedgerService: SharedLedgerServing {
             LedgerInfo(
                 id: $0.id,
                 name: $0.name,
-                currency: $0.currency,
                 isDefault: $0.isDefault,
                 familyId: $0.familyId,
                 isCurrent: $0.id == id
@@ -339,15 +305,11 @@ private final class MockSharedLedgerService: SharedLedgerServing {
 
 private extension LedgerInfo {
     static func personal(current: Bool) -> LedgerInfo {
-        LedgerInfo(id: "personal", name: "个人账本", currency: "CNY", isDefault: true, familyId: nil, isCurrent: current)
+        LedgerInfo(id: "personal", name: "个人账本", isDefault: true, familyId: nil, isCurrent: current)
     }
 
     static func shared(current: Bool) -> LedgerInfo {
-        LedgerInfo(id: "shared", name: "旧内部名称", currency: "CNY", isDefault: false, familyId: "family", isCurrent: current)
-    }
-
-    static func usdShared(current: Bool) -> LedgerInfo {
-        LedgerInfo(id: "shared", name: "美元共享账本", currency: "USD", isDefault: false, familyId: "family", isCurrent: current)
+        LedgerInfo(id: "shared", name: "旧内部名称", isDefault: false, familyId: "family", isCurrent: current)
     }
 }
 
@@ -379,7 +341,7 @@ private extension FamilyDetail {
             createdAt: "2026-01-01T00:00:00Z",
             updatedAt: "2026-01-01T00:00:00Z",
             members: members,
-            ledgers: [FamilyLedgerInfo(id: "shared", name: name, currency: "CNY")],
+            ledgers: [FamilyLedgerInfo(id: "shared", name: name)],
             invitations: []
         )
     }

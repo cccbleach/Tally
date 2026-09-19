@@ -7,12 +7,12 @@ import type { FastifyInstance } from "fastify";
 import { createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/runner.js";
 import { buildApp } from "../src/server.js";
-import { currentYearMonth, todayStr } from "../src/lib/date.js";
+import { todayStr } from "../src/lib/date.js";
 import { eq } from "drizzle-orm";
-import { ledgers, budgets, transactions } from "../src/db/schema.js";
+import { ledgers, transactions } from "../src/db/schema.js";
 import { smsRegister, authHeaders } from "./helpers.js";
 
-// 权限与数据隔离 + 单家庭生命周期 + 预算唯一性 + 跨币种策略 回归测试（P0）
+// 权限与数据隔离 + 单家庭生命周期 回归测试（P0）
 process.env.ALIYUN_SMS_ENABLED = "false";
 process.env.ALIYUN_ACCESS_KEY_ID = "";
 process.env.ALIYUN_ACCESS_KEY_SECRET = "";
@@ -27,7 +27,6 @@ let hB: Record<string, string>;
 let idB: string;
 let familyId: string;
 let familyLedger: string;
-let personalLedgerA: string;
 let accountId: string;
 let expenseCat: string;
 
@@ -76,17 +75,12 @@ test("A 创建家庭、按昵称邀请 B，B 接受后 member 可写共享账本
   assert.equal(accept.statusCode, 200, accept.body);
 
   // 建立账户/分类
-  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭户", type: "bank", currency: "CNY", ledgerId: familyLedger });
+  const acc = await api(hA, "POST", "/api/v1/accounts", { name: "家庭户", type: "bank", ledgerId: familyLedger });
   assert.equal(acc.statusCode, 200, acc.body);
   accountId = acc.json().item.id;
   const cats = await api(hA, "GET", "/api/v1/categories?ledgerId=" + familyLedger);
   const expense = (cats.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
   expenseCat = expense!.id;
-
-  // member（B）可写：预算
-  const { year, month } = currentYearMonth();
-  const budget = await api(hB, "POST", "/api/v1/budgets", { year, month, amount: 10000, ledgerId: familyLedger });
-  assert.equal(budget.statusCode, 200, "member 创建预算应成功: " + budget.body);
 
   // member 可写：周期账单
   const recurring = await api(hB, "POST", "/api/v1/recurring", {
@@ -126,7 +120,6 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
     categoryId: expenseCat,
     type: "expense",
     amount: 500,
-    currency: "CNY",
     date: todayStr(),
     note: "A 记的",
     ledgerId: familyLedger,
@@ -149,7 +142,6 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
     categoryId: expenseCat,
     type: "expense",
     amount: 300,
-    currency: "CNY",
     date: todayStr(),
     note: "B 自己的",
     ledgerId: familyLedger,
@@ -167,7 +159,6 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
     categoryId: expenseCat,
     type: "expense",
     amount: 100,
-    currency: "CNY",
     date: todayStr(),
     note: "B 再记一笔",
     ledgerId: familyLedger,
@@ -177,67 +168,15 @@ test("member 不能修改/删除其他成员流水，只能改自己的；owner 
   assert.equal(patchByOwner.statusCode, 200, "owner 应能改任意成员流水: " + patchByOwner.body);
 });
 
-test("预算唯一性按 ledger 作用域：同一用户个人账本与家庭账本同月同分类可共存", async () => {
-  const { year, month } = currentYearMonth();
-
-  const ledgersRes = await api(hA, "GET", "/api/v1/ledgers");
-  const personal = (ledgersRes.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null);
-  assert.ok(personal, "A 应有个人账本");
-  personalLedgerA = personal!.id;
-
-  // 个人账本建分类预算
-  const personalCats = await api(hA, "GET", "/api/v1/categories?ledgerId=" + personalLedgerA);
-  const personalCat = (personalCats.json().items as Array<{ id: string; type: string }>).find((c) => c.type === "expense");
-  assert.ok(personalCat);
-  const b1 = await api(hA, "POST", "/api/v1/budgets", { year, month, categoryId: personalCat!.id, amount: 1000, ledgerId: personalLedgerA });
-  assert.equal(b1.statusCode, 200, "个人账本预算: " + b1.body);
-
-  // 家庭账本同月同分类预算 → 成功（不同 ledger）
-  const b2 = await api(hA, "POST", "/api/v1/budgets", { year, month, categoryId: expenseCat, amount: 2000, ledgerId: familyLedger });
-  assert.equal(b2.statusCode, 200, "家庭账本同分类预算应成功而不是 500: " + b2.body);
-
-  const rows = db
-    .select()
-    .from(budgets)
-    .where(eq(budgets.year, year), eq(budgets.month, month))
-    .all();
-  assert.ok(rows.length >= 2, "个人与家庭账本应各有独立预算行");
-});
-
-test("跨币种转账/还款被明确拒绝", async () => {
-  const fxAcc = await api(hA, "POST", "/api/v1/accounts", { name: "美元户", type: "bank", currency: "USD", ledgerId: familyLedger });
-  assert.equal(fxAcc.statusCode, 200, fxAcc.body);
-  const fxId = fxAcc.json().item.id;
-
-  const transfer = await api(hA, "POST", "/api/v1/transactions", {
-    accountId,
-    transferToAccountId: fxId,
-    type: "transfer",
-    amount: 100,
-    currency: "CNY",
-    date: todayStr(),
-    ledgerId: familyLedger,
-  });
-  assert.equal(transfer.statusCode, 400, "跨币种转账应 400: " + transfer.body);
-  assert.equal(transfer.json().error.code, "CURRENCY_MISMATCH");
-
-  const wrongCur = await api(hA, "POST", "/api/v1/transactions", {
-    accountId,
-    categoryId: expenseCat,
-    type: "expense",
-    amount: 100,
-    currency: "USD",
-    date: todayStr(),
-    ledgerId: familyLedger,
-  });
-  assert.equal(wrongCur.statusCode, 400, "账户与流水币种不一致应 400: " + wrongCur.body);
-  assert.equal(wrongCur.json().error.code, "CURRENCY_MISMATCH");
-});
-
 test("删除家庭后：原 owner 无法访问旧家庭账本，当前账本回退个人账本，历史数据保留但不可见", async () => {
   const beforeDel = await api(hA, "GET", `/api/v1/transactions?ledgerId=${familyLedger}`);
   assert.equal(beforeDel.statusCode, 200, beforeDel.body);
   assert.ok(beforeDel.json().items.length > 0, "删除前应有流水");
+
+  // 删除前先记住个人账本（familyId 为 null 的那个），删除后要断言当前账本回退到它
+  const ledgersBefore = await api(hA, "GET", "/api/v1/ledgers");
+  const personal = (ledgersBefore.json().items as Array<{ id: string; familyId: string | null }>).find((l) => l.familyId === null);
+  assert.ok(personal, "A 应有个人账本");
 
   const del = await api(hA, "DELETE", `/api/v1/families/${familyId}`);
   assert.equal(del.statusCode, 200, del.body);
@@ -250,7 +189,7 @@ test("删除家庭后：原 owner 无法访问旧家庭账本，当前账本回�
   assert.ok(!listed.includes(familyLedger), "ledgers 不应包含已删除的家庭账本");
   const current = (ledgersAfter.json().items as Array<{ id: string; isCurrent: boolean }>).find((l) => l.isCurrent);
   assert.ok(current, "应有一个当前账本");
-  assert.equal(current!.id, personalLedgerA, "当前账本应回退到个人默认账本");
+  assert.equal(current!.id, personal!.id, "当前账本应回退到个人默认账本");
 
   const ledgerRow = db.select().from(ledgers).where(eq(ledgers.id, familyLedger)).get();
   assert.ok(ledgerRow, "家庭账本行应保留");

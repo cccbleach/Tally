@@ -124,7 +124,7 @@ curl http://127.0.0.1:18080/health/ready  # {"status":"ok","migrationsApplied":2
 ## 3. backend 全量验收 ✅
 
 - `pnpm typecheck` 通过
-- `pnpm test`：**183 个测试全部通过，0 条 FD 告警**
+- `pnpm test`：**183 个测试全部通过，0 条 FD 告警**（本文件记录的是负债域下线当次的验收结论；此后预算/多币种下线又调整了用例集，数量以当次 CI 输出为准）
 - CI 固定以 `TZ=UTC` 宿主 + `APP_TIMEZONE=Asia/Shanghai` 业务时区运行测试；预算/统计/RBAC 月份断言统一取 `currentYearMonth()`，不再在 UTC 月末边界混用宿主 `new Date()`。
 - `pnpm audit --audit-level=high --prod`：**0 个高危**
 - `pnpm build` 通过；`node scripts/smoke-dist-xlsx.mjs`（dist 产物 smoke）通过

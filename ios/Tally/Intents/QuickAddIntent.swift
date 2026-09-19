@@ -58,7 +58,7 @@ struct TallyShortcuts: AppShortcutsProvider {
 protocol QuickAddServicing: Sendable {
     func accounts() async throws -> [Account]
     func categories() async throws -> [Category]
-    func createTransaction(type: String, amount: Int, date: String, note: String?, currency: String, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
+    func createTransaction(type: String, amount: Int, date: String, note: String?, accountId: String, categoryId: String?, transferToAccountId: String?, clientRequestId: String?) async throws -> Transaction
 }
 
 extension APIService: QuickAddServicing {}
@@ -89,8 +89,7 @@ enum QuickAddService {
             return .failure(message: "尚未登录，请先打开 Tally 登录后再使用快捷记账")
         }
         // 快捷指令的金额参数是 Double：立即换算成整数最小单位，后续不再经过浮点。
-        // 换算必须用**目标账户的币种精度**（JPY/KRW 是 0 位小数），不能固定 ×100 ——
-        // 固定 ×100 会把「¥500」记成 50000（差 100 倍）。因此先取账户再换算。
+        // 人民币是 2 位小数（×100）；这里用 Money 的精度而不是写死数字，避免将来改精度时漏改。
         guard amountDouble.isFinite, amountDouble > 0 else {
             return .failure(message: "金额无效，请输入大于 0 的数字")
         }
@@ -104,8 +103,7 @@ enum QuickAddService {
             guard let account = accounts.first else {
                 return .failure(message: "当前账本还没有可用账户，请先打开 App 创建")
             }
-            let currencyInfo = Currencies.info(for: account.currency)
-            let scaled = amountDouble * Double(currencyInfo.scale)
+            let scaled = amountDouble * Double(Money.currency.scale)
             // Double(Int.max) 会精度溢出，用 /2 留出取整与符号的安全余量；
             // 超大金额在快捷指令里可以直接传入，Int(Double) 越界会直接崩溃。
             guard scaled.isFinite, scaled <= Double(Int.max / 2) else {
@@ -123,14 +121,12 @@ enum QuickAddService {
                 amount: minorUnits,
                 date: dateText,
                 note: normalizedNote,
-                // 币种必须等于账户币种，否则服务端护栏直接 400
-                currency: account.currency,
                 accountId: account.id,
                 categoryId: category?.id,
                 transferToAccountId: nil,
                 clientRequestId: nil
             )
-            let describe = Currencies.info(for: transaction.currency).formatMagnitude(transaction.amount)
+            let describe = Money.formatMagnitude(transaction.amount)
             return .success(message: "已记录\(kind == .expense ? "支出" : "收入") \(describe)（\(account.name)）")
         } catch APIError.unauthorized {
             return .failure(message: "登录已过期，请打开 Tally 重新登录")
@@ -138,7 +134,6 @@ enum QuickAddService {
             return .failure(message: "记账失败：\(error.localizedDescription)")
         } catch {
             // 网络类错误：尝试离线入队（读本地缓存账户；没有缓存账户才提示失败）。
-            // 离线路径同样按账户币种精度换算（enqueueOfflineOrFail 内部处理）。
             return await enqueueOfflineOrFail(
                 amountDouble: amountDouble,
                 kind: kind,
@@ -150,9 +145,8 @@ enum QuickAddService {
         }
     }
 
-    /// 断网降级：以缓存里的第一个活跃账户（及其币种）入队。
+    /// 断网降级：以缓存里的第一个活跃账户入队。
     /// 队列按当前命名空间隔离——快捷指令运行在 App 进程内，命名空间与 App 一致。
-    /// 金额换算放在这里（拿到账户币种之后）做，避免固定 ×100 在 JPY/KRW 上错 100 倍。
     private static func enqueueOfflineOrFail(
         amountDouble: Double,
         kind: QuickAddKind,
@@ -168,8 +162,7 @@ enum QuickAddService {
         guard let account = fallback else {
             return .failure(message: "网络不可用，且本地没有可用的账户缓存，请联网后重试（\(underlying.localizedDescription)）")
         }
-        let scale = Currencies.info(for: account.currency).scale
-        let scaled = amountDouble * Double(scale)
+        let scaled = amountDouble * Double(Money.currency.scale)
         guard scaled.isFinite, scaled <= Double(Int.max / 2) else {
             return .failure(message: "金额过大，请检查输入")
         }
@@ -184,14 +177,13 @@ enum QuickAddService {
                 amount: minorUnits,
                 date: dateText,
                 note: note,
-                currency: account.currency,
                 accountId: account.id,
                 categoryId: nil,
                 transferToAccountId: nil,
                 queuedAt: Date()
             ))
         }
-        let describe = Currencies.info(for: account.currency).formatMagnitude(minorUnits)
+        let describe = Money.formatMagnitude(minorUnits)
         return .success(message: "当前离线：已保存\(kind == .expense ? "支出" : "收入") \(describe)（\(account.name)），联网后自动同步")
     }
 }

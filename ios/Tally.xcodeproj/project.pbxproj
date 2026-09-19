@@ -29,7 +29,6 @@
 		4ACE38362BF5CFA0C472AD2B /* DeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = F510B2D8277AFD387F7037BB /* DeepLink.swift */; };
 		51A795CEF78D1F0D56AC4FDA /* RecurringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06310F711F4FEFBA429E1B31 /* RecurringView.swift */; };
 		59F2AC3004F8BBA5A7C14447 /* SharedLedgerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36810BB7B46C56BEDF90540D /* SharedLedgerStore.swift */; };
-		645FD11014CDAE745CBD6021 /* BudgetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E7347CB4B2A04DD32C15BDF /* BudgetsView.swift */; };
 		65759403BFDCB63F746BBE95 /* PendingTransactionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE9F8E70E0C5AD528F8A532 /* PendingTransactionQueue.swift */; };
 		72692AAE2A3457C24CE63E58 /* BillScreenshotOCRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E07C53B388B8DDA5E06E5F /* BillScreenshotOCRTests.swift */; };
 		72ED8615BB6B48E8877F8EB7 /* Currency.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0DBE8554DF2AB6FACC711BB /* Currency.swift */; };
@@ -125,7 +124,6 @@
 		8A580637C6B4E1E557E311BF /* TallyWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TallyWidgetBundle.swift; sourceTree = "<group>"; };
 		972B31498E1C7FEDCB929B04 /* QuickAddIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAddIntentTests.swift; sourceTree = "<group>"; };
 		9D11F056F5CBE54B0BB73A62 /* SharedLedgerStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLedgerStoreTests.swift; sourceTree = "<group>"; };
-		9E7347CB4B2A04DD32C15BDF /* BudgetsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BudgetsView.swift; sourceTree = "<group>"; };
 		A73FCE09AE18EE3B81AA586A /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		AE08867B8DEAB77A713CFF6E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		AF996E1B698CC64A9AE0760F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -279,14 +277,6 @@
 			path = Categories;
 			sourceTree = "<group>";
 		};
-		90F4CDF547E1FFB8A645A116 /* Budgets */ = {
-			isa = PBXGroup;
-			children = (
-				9E7347CB4B2A04DD32C15BDF /* BudgetsView.swift */,
-			);
-			path = Budgets;
-			sourceTree = "<group>";
-		};
 		9A2F72C39DB705F7BB237887 /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -355,7 +345,6 @@
 				A73FCE09AE18EE3B81AA586A /* MainTabView.swift */,
 				D666A1AEDA990755509AA95D /* Accounts */,
 				3990AFAC777A04E124995A75 /* Auth */,
-				90F4CDF547E1FFB8A645A116 /* Budgets */,
 				8DBD85956AC9C9DFC2062AF3 /* Categories */,
 				211696BB6833B783591F3B0B /* Components */,
 				DC39752DA1AA31D3495721DE /* Home */,
@@ -548,7 +537,6 @@
 				A32674C9FF582790F5FEBFDC /* AppState.swift in Sources */,
 				D705C9C9901A1D97B70BCBE8 /* BillImportFile.swift in Sources */,
 				FA552C0050B1A65DAB5F1E4B /* BillScreenshotOCR.swift in Sources */,
-				645FD11014CDAE745CBD6021 /* BudgetsView.swift in Sources */,
 				38D8930ECE127B52B0160F08 /* CategoryListView.swift in Sources */,
 				286BD23E07C78B2FD353C28F /* Components.swift in Sources */,
 				72ED8615BB6B48E8877F8EB7 /* Currency.swift in Sources */,
@@ -665,7 +653,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XN5LYQCCY2;
 				INFOPLIST_FILE = Tally/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -685,7 +673,7 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XN5LYQCCY2;
 				INFOPLIST_FILE = TallyWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -764,7 +752,7 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XN5LYQCCY2;
 				INFOPLIST_FILE = TallyWidget/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -787,7 +775,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XN5LYQCCY2;
 				INFOPLIST_FILE = Tally/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
