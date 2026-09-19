@@ -12,6 +12,7 @@ import { getAccessibleLedger } from "../lib/access.js";
 import { requireLedgerPermission } from "../lib/authorization.js";
 import { buildDedupKey, normalizeMerchant } from "../lib/dedup.js";
 import { writeAudit } from "../lib/audit.js";
+import { suggestCategoryId, type TxType } from "../lib/categorize.js";
 import { listCategoriesForUser } from "../repositories/categoryRepository.js";
 import {
   decodeBillBuffer,
@@ -303,9 +304,6 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
     if (job.status !== "staged") throw conflict("IMPORT_NOT_STAGED", "任务已提交或已失败");
 
     const cats = listCategoriesForUser(db, userId, ledgerId);
-    const incomeCat = cats.find((c) => c.type === "income");
-    const expenseCat = cats.find((c) => c.type === "expense");
-
     const items = db.select().from(importItems).where(eq(importItems.jobId, id)).all();
     if (items.length === 0) throw badRequest("EMPTY_IMPORT", "任务没有明细项");
 
@@ -316,7 +314,9 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
         for (const it of items) {
           if (it.decision !== "accept") continue;
           const forced = it.duplicateStatus === "duplicate" || it.duplicateStatus === "suspected";
-          const categoryId = it.categoryId ?? (it.type === "income" ? incomeCat : expenseCat)?.id ?? null;
+          // 分类：用户在暂存时指定的优先；否则按备注关键词自动建议；未命中留空（未分类）。
+          // 历史缺陷：曾默认挂「账本第一个支出分类」（生产 1546 笔全变餐饮），已废弃。
+          const categoryId = it.categoryId ?? suggestCategoryId(it.rawDescription ?? it.merchant, cats, it.type as TxType);
           const row = {
             id: randomUUID(),
             userId,
@@ -326,7 +326,6 @@ export function registerImportRoutes(app: FastifyInstance, deps: { db: AppDb["db
             amount: it.amount,
             note: it.rawDescription,
             date: it.occurredAt,
-            transferToAccountId: null,
             recurringId: null,
             externalId: it.externalId,
             sourceType: it.source ?? job.source,

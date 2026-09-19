@@ -22,6 +22,7 @@ import { buildDedupKey } from "../lib/dedup.js";
 import { badRequest as _badRequest } from "../lib/errors.js";
 import { isUniqueViolation } from "../lib/sqliteErrors.js";
 import { dateStr } from "../lib/schemas.js";
+import { suggestCategoryId } from "../lib/categorize.js";
 import type { Jwt } from "../auth/jwt.js";
 
 // xlsx 解析错误统一转为 400（旧版导入接口）
@@ -373,8 +374,6 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
     if (items.length === 0) throw badRequest("EMPTY_BILL", "未解析到可导入的账单，请确认文件内容或来源");
 
     const cats = listCategoriesForUser(db, userId, ledgerId);
-    const incomeCat = cats.find((c) => c.type === "income");
-    const expenseCat = cats.find((c) => c.type === "expense");
 
     const now = new Date().toISOString();
     const sourceType = body.mode === "raw" ? body.source! : "import";
@@ -400,7 +399,7 @@ export function registerTransactionRoutes(app: FastifyInstance, deps: { db: AppD
         id: randomUUID(),
         userId,
         ledgerId,
-        categoryId: (it.type === "income" ? incomeCat : expenseCat)?.id ?? null,
+        categoryId: suggestCategoryId(it.note, cats, it.type),
         type: it.type,
         amount: it.amount,
         note: it.note,
