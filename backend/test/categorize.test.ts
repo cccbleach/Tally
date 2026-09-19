@@ -45,6 +45,9 @@ test("支出：关键词命中对应分类（生产备注的真实样例）", ()
     ["结售汇即时售汇 彭冲 （原 HKD 5000.00，已按 1 HKD = 0.92 CNY 折算）", "c-qita"],
     ["柜台取现", "c-qita"],
     ["Bandwagon Host Compute Cloud - Invoice 230", "c-qita"],
+    ["海底捞(杭州三十五店)", "c-canyin"],
+    ["火山引擎订单", "c-qita"],
+    ["腾讯云购买云服务-100051991014", "c-qita"],
   ];
   for (const [note, expected] of cases) {
     assert.equal(suggestCategoryId(note, cats, "expense"), expected, note);
