@@ -171,12 +171,16 @@ pnpm-lock.yaml  pnpm-workspace.yaml  scripts`（`current` 软链直接指向它�
 
 ```bash
 ssh root@<主机> "set -e
+  # pnpm 的 shebang 是 #!/usr/bin/env node：非交互 ssh 里 PATH 不含 runtime node，
+  # 直接按绝对路径调 pnpm 会报 `/usr/bin/env: 'node': No such file or directory`（实测）。
+  # 必须把 node 与 pnpm 都放进 PATH。
+  export PATH=/opt/tally/runtime/node-v24.20.0-linux-x64/bin:/opt/tally/runtime/pnpm-11.19.0/bin:\$PATH
   cd /opt/tally/releases/$REL
-  /opt/tally/runtime/pnpm-11.19.0/bin/pnpm install --prod --frozen-lockfile
+  pnpm install --prod --frozen-lockfile
   # 原生模块必须能装载（better-sqlite3 有预编译产物，装错会在这里炸）
-  /opt/tally/runtime/node-v24.20.0-linux-x64/bin/node -e \"require('better-sqlite3');console.log('better-sqlite3 ok')\"
+  node -e \"require('better-sqlite3');console.log('better-sqlite3 ok')\"
   # 产物冒烟（xlsx 解析）
-  /opt/tally/runtime/node-v24.20.0-linux-x64/bin/node scripts/smoke-dist-xlsx.mjs
+  node scripts/smoke-dist-xlsx.mjs
   chown -R tally:tally /opt/tally/releases/$REL"
 ```
 
