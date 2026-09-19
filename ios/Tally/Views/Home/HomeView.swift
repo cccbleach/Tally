@@ -6,12 +6,22 @@ struct TransactionGroup: Identifiable {
     var id: String { date }
 }
 
+/// 明细页的展示形态：日历（按日收支，默认）/ 列表（按日分组的流水清单）。
+enum HomeViewMode: String {
+    case calendar
+    case list
+}
+
 struct HomeView: View {
     @Environment(DataStore.self) private var store
     @Environment(SharedLedgerStore.self) private var ledgerStore
     @State private var showAdd = false
     @State private var showLedgerSwitcher = false
     @State private var ledgerSheetDetent: PresentationDetent = .medium
+    // 记住用户上次的选择；首次使用按日历展示（先看日级别统计，再看明细清单）
+    @AppStorage("home.viewMode") private var viewMode: HomeViewMode = .calendar
+    @State private var calendarFilter: MonthCalendar.Filter = .all
+    @State private var selectedDay: String?
 
     private var grouped: [TransactionGroup] {
         let dict = Dictionary(grouping: store.transactions, by: { $0.date })
@@ -36,24 +46,44 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity)
                     }
 
-                    ForEach(grouped) { group in
-                        Section {
-                            ForEach(group.items) { tx in
-                                TransactionRow(transaction: tx)
-                            }
-                        } header: {
-                            Text(TallyDate.display(group.date))
+                    Section {
+                        Picker("视图", selection: $viewMode) {
+                            Text("日历").tag(HomeViewMode.calendar)
+                            Text("列表").tag(HomeViewMode.list)
                         }
+                        .pickerStyle(.segmented)
                     }
 
-                    if grouped.isEmpty && !store.isLoading {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tray").font(.largeTitle).foregroundColor(.secondary)
-                            Text("本月还没有流水").foregroundColor(.secondary)
-                            Text("点右下角「+」记一笔").font(.caption).foregroundColor(.secondary)
+                    if viewMode == .calendar {
+                        Section {
+                            MonthCalendarView(
+                                year: store.selectedYear,
+                                month: store.selectedMonth,
+                                daily: store.summary?.daily ?? [],
+                                filter: $calendarFilter,
+                                onSelect: { selectedDay = $0 }
+                            )
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
+                    } else {
+                        ForEach(grouped) { group in
+                            Section {
+                                ForEach(group.items) { tx in
+                                    TransactionRow(transaction: tx)
+                                }
+                            } header: {
+                                Text(TallyDate.display(group.date))
+                            }
+                        }
+
+                        if grouped.isEmpty && !store.isLoading {
+                            VStack(spacing: 8) {
+                                Image(systemName: "tray").font(.largeTitle).foregroundColor(.secondary)
+                                Text("本月还没有流水").foregroundColor(.secondary)
+                                Text("点右下角「+」记一笔").font(.caption).foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                        }
                     }
                 }
 
@@ -84,6 +114,9 @@ struct HomeView: View {
                             : "没有待处理邀请"
                     )
                 }
+            }
+            .navigationDestination(item: $selectedDay) { day in
+                DayDetailView(date: day)
             }
             .sheet(isPresented: $showAdd) { AddTransactionView() }
             .sheet(isPresented: $showLedgerSwitcher) {
